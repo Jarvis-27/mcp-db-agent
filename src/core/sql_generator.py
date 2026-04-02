@@ -35,9 +35,19 @@ class SQLGenerator:
             f"Question: {question}"
         )
 
-    async def generate(self, question: str, dialect: str = "sqlite") -> str:
-        prompt = self._build_prompt(question, dialect)
+    async def generate_from_prompt(self, prompt: str) -> str:
+        """Call the LLM with a pre-built prompt and return cleaned SQL.
 
+        Used by SelfCorrector to send correction prompts that include error
+        context not available through the standard generate() path.
+        """
+        return await self._call_llm(prompt)
+
+    async def generate(self, question: str, dialect: str = "sqlite") -> str:
+        return await self._call_llm(self._build_prompt(question, dialect))
+
+    async def _call_llm(self, prompt: str) -> str:
+        """Send *prompt* to the configured LLM and return cleaned SQL."""
         if isinstance(self._client, groq.AsyncGroq):
             response = await self._client.chat.completions.create(
                 model=self._settings.groq_model,

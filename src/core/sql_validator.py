@@ -10,7 +10,7 @@ from src.core.schema_inspector import SchemaInspector
 
 _FORBIDDEN_DML = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
 
-_AGGREGATION_PATTERNS = ("GROUP BY", "COUNT(", "SUM(", "AVG(", "MAX(", "MIN(")
+_AGGREGATION_PATTERNS = ("GROUP BY", "COUNT(", "COUNT (", "SUM(", "SUM (", "AVG(", "AVG (", "MAX(", "MAX (", "MIN(", "MIN (")
 
 
 @dataclass
