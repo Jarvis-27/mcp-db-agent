@@ -8,7 +8,11 @@ import sqlparse.tokens as T
 
 from src.core.schema_inspector import SchemaInspector
 
+# Caught via sqlparse token types (DML / DDL subtypes)
 _FORBIDDEN_DML = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
+
+# sqlparse does NOT classify these as DML/DDL — checked separately with regex
+_FORBIDDEN_KEYWORD_ONLY = {"EXEC", "EXECUTE", "GRANT", "REVOKE"}
 
 _AGGREGATION_PATTERNS = ("GROUP BY", "COUNT(", "COUNT (", "SUM(", "SUM (", "AVG(", "AVG (", "MAX(", "MAX (", "MIN(", "MIN (")
 
@@ -35,12 +39,21 @@ class SQLValidator:
                 if token.ttype in (T.Keyword.DML, T.Keyword.DDL) and token.value.upper() in _FORBIDDEN_DML:
                     return ValidationResult(is_valid=False, error="Write operations are not allowed")
 
+        # sqlparse classifies EXEC/EXECUTE/GRANT/REVOKE as T.Keyword (no DML/DDL subtype),
+        # so the loop above misses them. Catch them with a word-boundary regex.
+        sql_upper = sql.upper()
+        for keyword in _FORBIDDEN_KEYWORD_ONLY:
+            if re.search(rf"\b{keyword}\b", sql_upper):
+                return ValidationResult(is_valid=False, error="Write operations are not allowed")
+
         # Check 2: Verify all referenced tables exist
+        # Exclude CTE aliases — they are valid references but not real DB tables.
         referenced = _extract_table_names(sql)
         if referenced:
             actual_tables = {t.lower() for t in self._schema_inspector.get_table_names()}
+            cte_names = _extract_cte_names(sql)
             for table in referenced:
-                if table.lower() not in actual_tables:
+                if table.lower() not in actual_tables and table.lower() not in cte_names:
                     return ValidationResult(is_valid=False, error=f"Table '{table}' does not exist in the database")
 
         # Check 3: Auto-inject LIMIT if the query is a plain SELECT without aggregation
@@ -60,3 +73,14 @@ def _extract_table_names(sql: str) -> list[str]:
         re.IGNORECASE,
     )
     return pattern.findall(sql)
+
+
+def _extract_cte_names(sql: str) -> set[str]:
+    """Extract CTE alias names defined in WITH clauses.
+
+    In ``WITH cte_name AS (...)``, ``name AS (`` only appears at CTE definition
+    sites — subquery aliases use ``(...) AS name`` (parenthesis on the left),
+    so this pattern produces no false positives for ordinary subquery aliases.
+    """
+    pattern = re.compile(r"\b(\w+)\s+AS\s*\(", re.IGNORECASE)
+    return {m.group(1).lower() for m in pattern.finditer(sql)}

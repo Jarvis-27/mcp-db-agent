@@ -35,6 +35,10 @@ class SQLGenerator:
             f"Question: {question}"
         )
 
+    def get_schema_context(self) -> str:
+        """Return the full schema string for use in correction prompts."""
+        return self._schema_inspector.get_full_schema()
+
     async def generate_from_prompt(self, prompt: str) -> str:
         """Call the LLM with a pre-built prompt and return cleaned SQL.
 

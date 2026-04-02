@@ -13,6 +13,8 @@ def _json_default(obj):
         return obj.isoformat()
     if isinstance(obj, decimal.Decimal):
         return float(obj)
+    if isinstance(obj, bytes):
+        return obj.hex()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 

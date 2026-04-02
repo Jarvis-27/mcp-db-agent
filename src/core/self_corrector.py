@@ -40,7 +40,13 @@ class SelfCorrector:
             validation = self._validator.validate(sql)
             if not validation.is_valid:
                 errors_so_far.append(validation.error or "Validation failed")
-                sql = await self._fix_sql(question, sql, validation.error or "Validation failed", errors_so_far)
+                try:
+                    sql = await self._fix_sql(
+                        question, sql, validation.error or "Validation failed", errors_so_far
+                    )
+                except Exception as fix_exc:
+                    errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
+                    break
                 continue
 
             # Use the LIMIT-injected version if the validator produced one
@@ -60,7 +66,11 @@ class SelfCorrector:
             except Exception as exc:
                 error_msg = str(exc)
                 errors_so_far.append(error_msg)
-                sql = await self._fix_sql(question, sql, error_msg, errors_so_far)
+                try:
+                    sql = await self._fix_sql(question, sql, error_msg, errors_so_far)
+                except Exception as fix_exc:
+                    errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
+                    break
 
         # All retries exhausted
         return {
@@ -78,11 +88,17 @@ class SelfCorrector:
         error: str,
         error_history: list[str],
     ) -> str:
-        """Ask the LLM to repair *failed_sql* given the error context."""
+        """Ask the LLM to repair *failed_sql* given the error context.
+
+        The full database schema is included so the LLM can reference correct
+        table and column names when the original failure was a name error.
+        """
+        schema = self._generator.get_schema_context()
         history_lines = "\n".join(f"- {e}" for e in error_history)
         prompt = (
             "You are a SQL expert. Fix the SQL query below so it no longer produces the given error.\n\n"
             f"Original question: {question}\n\n"
+            f"Database schema:\n{schema}\n\n"
             f"Failed SQL:\n{failed_sql}\n\n"
             f"Error: {error}\n\n"
             f"Previous errors in this session:\n{history_lines}\n\n"
