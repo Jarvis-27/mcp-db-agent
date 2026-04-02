@@ -27,10 +27,12 @@ class SQLValidator:
 
     def validate(self, sql: str) -> ValidationResult:
         # Check 1: Forbid write operations
+        # DML covers INSERT/UPDATE/DELETE; DDL covers CREATE/DROP/ALTER.
+        # Both token types must be checked to catch all mutation operations.
         parsed_statements = sqlparse.parse(sql)
         for statement in parsed_statements:
             for token in statement.flatten():
-                if token.ttype is T.Keyword.DML and token.value.upper() in _FORBIDDEN_DML:
+                if token.ttype in (T.Keyword.DML, T.Keyword.DDL) and token.value.upper() in _FORBIDDEN_DML:
                     return ValidationResult(is_valid=False, error="Write operations are not allowed")
 
         # Check 2: Verify all referenced tables exist
