@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "mcp-db-agent": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/mcp-db-agent",
+        "run",
+        "src/server.py"
+      ],
+      "env": {
+        "DATABASE_URL": "sqlite:////absolute/path/to/mcp-db-agent/demo.db",
+        "GROQ_API_KEY": "your-groq-api-key",
+        "ANTHROPIC_API_KEY": "your-anthropic-api-key",
+        "LLM_PROVIDER": "groq",
+        "GROQ_MODEL": "llama-3.3-70b-versatile",
+        "MAX_QUERY_ROWS": "100",
+        "QUERY_TIMEOUT_SECONDS": "30",
+        "MAX_SELF_CORRECTION_RETRIES": "3"
+      }
+    }
+  }
+}
