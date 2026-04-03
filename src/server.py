@@ -1,5 +1,15 @@
 """MCP server entrypoint — wires all pipeline components and registers tools/resources."""
 
+import sys
+from pathlib import Path
+
+# When executed as a script (`uv run src/server.py`), Python adds `src/` to
+# sys.path but NOT the project root.  The absolute `src.*` imports below
+# require the project root on sys.path, so we insert it before they resolve.
+_project_root = Path(__file__).parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import create_engine
 
