@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     max_query_rows: int
     query_timeout_seconds: int
     max_self_correction_retries: int
+    transport: str = "stdio"
 
 
 settings = Settings()

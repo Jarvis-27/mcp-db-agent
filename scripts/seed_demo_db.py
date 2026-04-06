@@ -1,5 +1,15 @@
-"""Seed the demo SQLite database with realistic e-commerce data."""
+"""Seed the demo database with realistic e-commerce data.
 
+Supports both SQLite (default) and PostgreSQL via --db-url:
+
+    # SQLite (default)
+    uv run python scripts/seed_demo_db.py
+
+    # PostgreSQL
+    uv run python scripts/seed_demo_db.py --db-url "postgresql://admin:secret@localhost:5432/ecommerce"
+"""
+
+import argparse
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,11 +28,10 @@ from sqlalchemy import (
     insert,
 )
 
-# Always create demo.db in the project root (parent of scripts/)
-DB_PATH = Path(__file__).parent.parent / "demo.db"
-DB_URL = f"sqlite:///{DB_PATH}"
+# Default: create demo.db in the project root (parent of scripts/)
+_DEFAULT_DB_PATH = Path(__file__).parent.parent / "demo.db"
+_DEFAULT_DB_URL = f"sqlite:///{_DEFAULT_DB_PATH}"
 
-engine = create_engine(DB_URL, echo=False)
 metadata = MetaData()
 
 users = Table(
@@ -73,10 +82,11 @@ def random_date(start: datetime, end: datetime) -> datetime:
     return start + timedelta(seconds=random.randint(0, int(delta.total_seconds())))
 
 
-def seed() -> None:
+def seed(db_url: str = _DEFAULT_DB_URL) -> None:
+    eng = create_engine(db_url, echo=False)
     random.seed(42)
-    metadata.drop_all(engine)
-    metadata.create_all(engine)
+    metadata.drop_all(eng)
+    metadata.create_all(eng)
 
     countries = ["US", "UK", "India", "Germany", "Canada"]
     first_names = [
@@ -157,22 +167,34 @@ def seed() -> None:
             "unit_price": round(random.uniform(5.0, 999.99), 2),
         })
 
-    with engine.begin() as conn:
+    with eng.begin() as conn:
         conn.execute(insert(users), user_rows)
         conn.execute(insert(products), product_rows)
         conn.execute(insert(orders), order_rows)
         conn.execute(insert(order_items), order_item_rows)
 
     # Summary
-    with engine.connect() as conn:
+    with eng.connect() as conn:
         from sqlalchemy import text
-        print(f"\nDatabase created at: {DB_PATH}\n")
+        print(f"\nDatabase seeded at: {db_url}\n")
         print(f"{'Table':<15} {'Rows':>6}")
         print("-" * 23)
         for table_name in ["users", "products", "orders", "order_items"]:
-            count = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+            count = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
             print(f"{table_name:<15} {count:>6}")
 
 
 if __name__ == "__main__":
-    seed()
+    parser = argparse.ArgumentParser(
+        description="Seed the demo database with e-commerce data."
+    )
+    parser.add_argument(
+        "--db-url",
+        default=_DEFAULT_DB_URL,
+        help=(
+            "SQLAlchemy database URL to seed "
+            f"(default: sqlite:///{_DEFAULT_DB_PATH})"
+        ),
+    )
+    args = parser.parse_args()
+    seed(args.db_url)

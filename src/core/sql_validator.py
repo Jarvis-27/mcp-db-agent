@@ -11,8 +11,10 @@ from src.core.schema_inspector import SchemaInspector
 # Caught via sqlparse token types (DML / DDL subtypes)
 _FORBIDDEN_DML = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
 
-# sqlparse does NOT classify these as DML/DDL — checked separately with regex
-_FORBIDDEN_KEYWORD_ONLY = {"EXEC", "EXECUTE", "GRANT", "REVOKE"}
+# sqlparse does NOT classify these as DML/DDL — checked separately with regex.
+# TRUNCATE is classified as T.Keyword (not DDL) by sqlparse, so the token loop above
+# misses it. MERGE and the others never appear as DML/DDL tokens either.
+_FORBIDDEN_KEYWORD_ONLY = {"EXEC", "EXECUTE", "GRANT", "REVOKE", "TRUNCATE", "MERGE"}
 
 _AGGREGATION_PATTERNS = ("GROUP BY", "COUNT(", "COUNT (", "SUM(", "SUM (", "AVG(", "AVG (", "MAX(", "MAX (", "MIN(", "MIN (")
 
@@ -56,9 +58,11 @@ class SQLValidator:
                 if table.lower() not in actual_tables and table.lower() not in cte_names:
                     return ValidationResult(is_valid=False, error=f"Table '{table}' does not exist in the database")
 
-        # Check 3: Auto-inject LIMIT if the query is a plain SELECT without aggregation
+        # Check 3: Auto-inject LIMIT if the query is a plain SELECT without aggregation.
+        # Use a depth-aware check so a LIMIT buried inside a subquery (e.g. "SELECT *
+        # FROM (SELECT id FROM users LIMIT 5) AS sub") doesn't fool the outer-query check.
         sql_upper = sql.upper()
-        if "LIMIT" not in sql_upper and not any(pat in sql_upper for pat in _AGGREGATION_PATTERNS):
+        if not _has_top_level_limit(sql) and not any(pat in sql_upper for pat in _AGGREGATION_PATTERNS):
             modified = sql.rstrip(";") + " LIMIT 100;"
             return ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified)
 
@@ -73,6 +77,33 @@ def _extract_table_names(sql: str) -> list[str]:
         re.IGNORECASE,
     )
     return pattern.findall(sql)
+
+
+def _has_top_level_limit(sql: str) -> bool:
+    """Return True if LIMIT appears at the top level (outside all parentheses).
+
+    A plain string search would be fooled by ``SELECT * FROM (SELECT id FROM t
+    LIMIT 5) AS sub`` — the LIMIT is inside a subquery but the outer query is
+    still unbounded.  Walking character-by-character and tracking parenthesis
+    depth solves this correctly.
+    """
+    depth = 0
+    upper = sql.upper()
+    n = len(upper)
+    i = 0
+    while i < n:
+        c = sql[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0 and upper[i : i + 5] == "LIMIT":
+            before_ok = i == 0 or not (upper[i - 1].isalnum() or upper[i - 1] == "_")
+            after_ok = (i + 5) >= n or not (upper[i + 5].isalnum() or upper[i + 5] == "_")
+            if before_ok and after_ok:
+                return True
+        i += 1
+    return False
 
 
 def _extract_cte_names(sql: str) -> set[str]:

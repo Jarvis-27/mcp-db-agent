@@ -64,7 +64,9 @@ class SelfCorrector:
                     "errors": errors_so_far,
                 }
             except Exception as exc:
-                error_msg = str(exc)
+                # asyncio.TimeoutError.__str__() returns "" in Python 3.11+,
+                # which gives the LLM no context to correct.  Use a fallback.
+                error_msg = str(exc) or "Query timed out"
                 errors_so_far.append(error_msg)
                 try:
                     sql = await self._fix_sql(question, sql, error_msg, errors_so_far)

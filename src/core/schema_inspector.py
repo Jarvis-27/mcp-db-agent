@@ -1,5 +1,6 @@
 """Schema inspection utilities for extracting database metadata."""
 
+import sqlalchemy.types as sqltypes
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.engine.interfaces import (
     ReflectedColumn,
@@ -26,7 +27,10 @@ class SchemaInspector:
         return self._inspector.get_foreign_keys(table_name)
 
     def get_sample_values(self, table_name: str, column_name: str, limit: int = 5) -> list:
-        sql = text(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT :limit")
+        # Double-quote identifiers so PostgreSQL reserved words (e.g. "order",
+        # "user") and mixed-case names work without error.  SQLite accepts
+        # double-quoted identifiers too, so this is safe for both dialects.
+        sql = text(f'SELECT DISTINCT "{column_name}" FROM "{table_name}" LIMIT :limit')
         with self._engine.connect() as conn:
             rows = conn.execute(sql, {"limit": limit}).fetchall()
         return [row[0] for row in rows]
@@ -44,7 +48,18 @@ class SchemaInspector:
             for col in self.get_columns(table_name):
                 col_type = str(col["type"])
                 suffix = " PRIMARY KEY" if col["name"] in pk_set else ""
-                lines.append(f"  {col['name']} {col_type}{suffix}")
+
+                sample_suffix = ""
+                if isinstance(col["type"], sqltypes.String):
+                    samples = [
+                        v for v in self.get_sample_values(table_name, col["name"], limit=20)
+                        if v is not None
+                    ]
+                    if 0 < len(samples) < 20:
+                        sample_str = ", ".join(f"'{v}'" for v in samples[:5])
+                        sample_suffix = f" (sample values: {sample_str})"
+
+                lines.append(f"  {col['name']} {col_type}{suffix}{sample_suffix}")
 
             for fk in self.get_foreign_keys(table_name):
                 local_cols = ", ".join(fk["constrained_columns"])
@@ -86,12 +101,12 @@ class SchemaInspector:
         result = []
         with self._engine.connect() as conn:
             for table_name in self.get_table_names():
-                count = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+                count = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
                 result.append({"table_name": table_name, "row_count": count})
         return result
 
     def get_sample_rows(self, table_name: str, limit: int = 5) -> list[dict]:
-        sql = text(f"SELECT * FROM {table_name} LIMIT :limit")
+        sql = text(f'SELECT * FROM "{table_name}" LIMIT :limit')
         with self._engine.connect() as conn:
             rows = conn.execute(sql, {"limit": limit}).mappings().all()
         return [dict(row) for row in rows]
