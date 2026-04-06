@@ -24,6 +24,9 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "integration: End-to-end tests that call the real LLM API (skip with '-m not integration')",
+]
 
 [tool.ruff]
 line-length = 100
