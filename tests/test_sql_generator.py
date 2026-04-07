@@ -44,6 +44,7 @@ def _patch_client(gen: SQLGenerator, raw_sql: str) -> None:
     still runs, which is the behaviour we want to verify.
     """
     import groq as _groq
+
     if isinstance(gen._client, _groq.AsyncGroq):
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock()]
@@ -52,6 +53,7 @@ def _patch_client(gen: SQLGenerator, raw_sql: str) -> None:
         gen._client.chat.completions.create = AsyncMock(return_value=mock_resp)
     else:
         import anthropic as _ant
+
         block = MagicMock(spec=_ant.types.TextBlock)
         block.text = raw_sql
         mock_resp = MagicMock()
@@ -108,6 +110,7 @@ async def test_generate_strips_plain_fence_from_response(mock_inspector):
 # _clean_sql unit tests (no API call)
 # ---------------------------------------------------------------------------
 
+
 def test_clean_sql_strips_sql_fence():
     assert _clean_sql("```sql\nSELECT 1\n```") == "SELECT 1"
 
@@ -127,6 +130,7 @@ def test_clean_sql_passthrough():
 # ---------------------------------------------------------------------------
 # Real API integration tests
 # ---------------------------------------------------------------------------
+
 
 async def test_generate_returns_string(generator):
     sql = await generator.generate("How many users are there?")

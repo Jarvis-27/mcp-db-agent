@@ -15,8 +15,7 @@ def describe_schema(table_name: str, inspector: SchemaInspector) -> str:
         return json.dumps(
             {
                 "error": (
-                    f"Table '{table_name}' not found. "
-                    "Call list_tables to see available tables."
+                    f"Table '{table_name}' not found. Call list_tables to see available tables."
                 )
             }
         )

@@ -31,9 +31,7 @@ class SQLExecutor:
         # PostgreSQL benefits from REPEATABLE READ to prevent dirty reads.
         # SQLite uses the default isolation (autocommit-compatible for reads).
         exec_opts: dict[str, str] = (
-            {"isolation_level": "REPEATABLE READ"}
-            if dialect_name == "postgresql"
-            else {}
+            {"isolation_level": "REPEATABLE READ"} if dialect_name == "postgresql" else {}
         )
         with self._engine.connect() as conn:
             if exec_opts:

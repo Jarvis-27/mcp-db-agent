@@ -15,7 +15,9 @@ from src.core.sql_validator import SQLValidator, ValidationResult, _has_top_leve
 def _validator(tables: list[str] | None = None) -> SQLValidator:
     """Return a SQLValidator backed by a mock SchemaInspector."""
     inspector = MagicMock()
-    inspector.get_table_names.return_value = tables if tables is not None else ["users", "orders", "products", "order_items"]
+    inspector.get_table_names.return_value = (
+        tables if tables is not None else ["users", "orders", "products", "order_items"]
+    )
     return SQLValidator(inspector)
 
 
@@ -91,9 +93,7 @@ def test_known_table_passes():
 
 def test_join_with_unknown_table_rejected():
     v = _validator(tables=["users"])
-    result = v.validate(
-        "SELECT u.id FROM users u JOIN ghost g ON u.id = g.user_id LIMIT 10"
-    )
+    result = v.validate("SELECT u.id FROM users u JOIN ghost g ON u.id = g.user_id LIMIT 10")
     assert result.is_valid is False
     assert "ghost" in result.error
 
@@ -119,9 +119,7 @@ def test_cte_alias_not_flagged_as_missing_table():
 def test_subquery_alias_not_flagged_as_missing_table():
     """An inline subquery alias should not be treated as a DB table."""
     v = _validator()
-    result = v.validate(
-        "SELECT sub.total FROM (SELECT COUNT(*) AS total FROM users) AS sub"
-    )
+    result = v.validate("SELECT sub.total FROM (SELECT COUNT(*) AS total FROM users) AS sub")
     assert result.is_valid is True
 
 
@@ -191,9 +189,7 @@ def test_limit_not_injected_for_min():
 def test_limit_injected_when_limit_only_in_subquery():
     """LIMIT inside a subquery must not suppress injection on the outer query."""
     v = _validator()
-    result = v.validate(
-        "SELECT * FROM (SELECT id FROM users LIMIT 5) AS sub"
-    )
+    result = v.validate("SELECT * FROM (SELECT id FROM users LIMIT 5) AS sub")
     assert result.is_valid is True
     assert result.modified_sql is not None
     assert "LIMIT 100" in result.modified_sql

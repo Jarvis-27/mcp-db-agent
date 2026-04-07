@@ -86,12 +86,7 @@ class QueryLog:
             row_count, attempts, duration_ms, error.
         """
         with Session(self._engine) as session:
-            rows = (
-                session.query(_QueryHistory)
-                .order_by(_QueryHistory.id.desc())
-                .limit(limit)
-                .all()
-            )
+            rows = session.query(_QueryHistory).order_by(_QueryHistory.id.desc()).limit(limit).all()
             return [
                 {
                     "id": r.id,

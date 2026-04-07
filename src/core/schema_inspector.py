@@ -52,7 +52,8 @@ class SchemaInspector:
                 sample_suffix = ""
                 if isinstance(col["type"], sqltypes.String):
                     samples = [
-                        v for v in self.get_sample_values(table_name, col["name"], limit=20)
+                        v
+                        for v in self.get_sample_values(table_name, col["name"], limit=20)
                         if v is not None
                     ]
                     if 0 < len(samples) < 20:

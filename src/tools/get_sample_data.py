@@ -16,8 +16,7 @@ def get_sample_data(table_name: str, inspector: SchemaInspector, limit: int = 5)
         return json.dumps(
             {
                 "error": (
-                    f"Table '{table_name}' not found. "
-                    "Call list_tables to see available tables."
+                    f"Table '{table_name}' not found. Call list_tables to see available tables."
                 )
             }
         )

@@ -42,8 +42,8 @@ def test_format_caps_data_at_100_rows(fmt):
     rows = [{"id": i} for i in range(150)]
     out = json.loads(fmt.format("SELECT id FROM users;", rows, attempts=1))
 
-    assert out["row_count"] == 150   # reports actual count
-    assert len(out["data"]) == 100   # but only sends first 100
+    assert out["row_count"] == 150  # reports actual count
+    assert len(out["data"]) == 100  # but only sends first 100
 
 
 def test_format_attempts_preserved(fmt):
