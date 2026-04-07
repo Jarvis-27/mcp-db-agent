@@ -1,4 +1,11 @@
-"""MCP server entrypoint — wires all pipeline components and registers tools/resources."""
+"""MCP server entrypoint — wires all pipeline components and registers tools/resources.
+
+Supports two modes:
+- **Single-tenant** (default): One DATABASE_URL in .env, works exactly like before.
+- **Multi-tenant** (MULTI_TENANT=true): Each request carries an api_key that is
+  resolved to a database URL via the tenant registry.  Engines are pooled and
+  reused across requests.
+"""
 
 import json
 import logging
@@ -34,29 +41,106 @@ from src.tools.get_sample_data import get_sample_data as _get_sample_data
 from src.tools.list_tables import list_tables as _list_tables
 
 # ---------------------------------------------------------------------------
-# Bootstrap — engine and pipeline components (shared across all requests)
+# Multi-tenant components (only initialised when MULTI_TENANT=true)
 # ---------------------------------------------------------------------------
 
-engine = create_engine(settings.database_url)
+_engine_pool = None  # EnginePool | None
+_tenant_registry = None  # TenantRegistry | None
 
-inspector = SchemaInspector(engine)
-generator = SQLGenerator(settings, inspector)
-validator = SQLValidator(inspector)
-executor = SQLExecutor(engine, settings)
-corrector = SelfCorrector(generator, validator, executor, settings)
+if settings.multi_tenant:
+    from src.core.engine_pool import EnginePool
+    from src.core.tenant_registry import TenantRegistry
+
+    _engine_pool = EnginePool(
+        max_size=settings.engine_pool_max_size,
+        max_idle_seconds=settings.engine_pool_idle_seconds,
+    )
+    _tenant_registry = TenantRegistry()
+
+# ---------------------------------------------------------------------------
+# Single-tenant bootstrap (shared across all requests — the original path)
+# ---------------------------------------------------------------------------
+
+_single_engine = None  # Engine | None
+_single_inspector = None  # SchemaInspector | None
+_single_generator = None  # SQLGenerator | None
+_single_validator = None  # SQLValidator | None
+_single_executor = None  # SQLExecutor | None
+_single_corrector = None  # SelfCorrector | None
+_single_dialect = "sqlite"
+
+if not settings.multi_tenant:
+    if not settings.database_url:
+        raise RuntimeError("DATABASE_URL is required in single-tenant mode")
+    _single_engine = create_engine(settings.database_url)
+    _single_inspector = SchemaInspector(_single_engine)
+    _single_generator = SQLGenerator(settings, _single_inspector)
+    _single_validator = SQLValidator(_single_inspector)
+    _single_executor = SQLExecutor(_single_engine, settings)
+    _single_corrector = SelfCorrector(
+        _single_generator, _single_validator, _single_executor, settings
+    )
+    _single_dialect = "postgresql" if settings.database_url.startswith("postgresql") else "sqlite"
+
 formatter = ResultFormatter()
 query_log = QueryLog()
 
-# Derive the SQL dialect once at startup so every ask_database call uses the
-# right date functions and syntax for the configured database.
-dialect: str = "postgresql" if settings.database_url.startswith("postgresql") else "sqlite"
+# ---------------------------------------------------------------------------
+# Tenant resolution helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_tenant(
+    api_key: str | None,
+) -> tuple[SchemaInspector, SQLGenerator, SQLValidator, SQLExecutor, SelfCorrector, str]:
+    """Return pipeline components for the given API key.
+
+    In single-tenant mode, api_key is ignored and the shared components are
+    returned.  In multi-tenant mode, the api_key is resolved via the tenant
+    registry and an engine is fetched from the pool.
+    """
+    if not settings.multi_tenant:
+        assert (
+            _single_inspector
+            and _single_generator
+            and _single_validator
+            and _single_executor
+            and _single_corrector
+        )
+        return (
+            _single_inspector,
+            _single_generator,
+            _single_validator,
+            _single_executor,
+            _single_corrector,
+            _single_dialect,
+        )
+
+    if not api_key:
+        raise ValueError("api_key is required in multi-tenant mode")
+
+    assert _tenant_registry and _engine_pool
+    database_url = _tenant_registry.resolve(api_key)
+    if not database_url:
+        raise ValueError("Invalid or inactive API key")
+
+    engine = _engine_pool.get(database_url)
+    dialect = "postgresql" if database_url.startswith("postgresql") else "sqlite"
+
+    inspector = SchemaInspector(engine)
+    generator = SQLGenerator(settings, inspector)
+    validator = SQLValidator(inspector)
+    executor = SQLExecutor(engine, settings)
+    corrector = SelfCorrector(generator, validator, executor, settings)
+    return inspector, generator, validator, executor, corrector, dialect
+
 
 # ---------------------------------------------------------------------------
 # In-memory LRU cache for repeated identical questions
 # ---------------------------------------------------------------------------
 
-# Maps lowercased+stripped question → (formatted_json_result, monotonic_timestamp)
-_cache: dict[str, tuple[str, float]] = {}
+# Maps (api_key_or_none, lowercased_question) → (formatted_json_result, monotonic_timestamp)
+_cache: dict[tuple[str | None, str], tuple[str, float]] = {}
 CACHE_TTL = 3600  # seconds
 
 # ---------------------------------------------------------------------------
@@ -83,28 +167,41 @@ def schema_overview() -> str:
     into your context before writing a query. It covers every table, column
     type, primary key, and foreign key relationship — equivalent to calling
     describe_schema on every table at once but faster.
+
+    Note: In multi-tenant mode, use the describe_schema and list_tables tools
+    instead, as they accept your api_key.
     """
-    return get_schema_overview(inspector)
+    if not _single_inspector:
+        return "Resource unavailable in multi-tenant mode. Use list_tables and describe_schema tools with your api_key."
+    return get_schema_overview(_single_inspector)
 
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
+# In multi-tenant mode, every tool accepts an optional api_key parameter.
+# In single-tenant mode, api_key is simply ignored so existing clients work
+# without any configuration change.
+
 
 @mcp.tool()
-def list_tables() -> str:
+def list_tables(api_key: str = "") -> str:
     """List all tables in the database with their row counts.
 
     Returns a JSON array where each element has ``table_name`` (str) and
     ``row_count`` (int). Call this first to discover what data is available
     before running a query or describing a specific table.
+
+    Args:
+        api_key: Your tenant API key (required in multi-tenant mode, ignored otherwise).
     """
+    inspector, *_ = _resolve_tenant(api_key or None)
     return _list_tables(inspector)
 
 
 @mcp.tool()
-def describe_schema(table_name: str) -> str:
+def describe_schema(table_name: str, api_key: str = "") -> str:
     """Describe the columns, primary keys, foreign keys, and sample values for a table.
 
     Returns a formatted string with full column metadata — type, nullability,
@@ -115,12 +212,14 @@ def describe_schema(table_name: str) -> str:
 
     Args:
         table_name: Name of the table to describe.
+        api_key: Your tenant API key (required in multi-tenant mode, ignored otherwise).
     """
+    inspector, *_ = _resolve_tenant(api_key or None)
     return _describe_schema(table_name, inspector)
 
 
 @mcp.tool()
-def get_sample_data(table_name: str, limit: int = 5) -> str:
+def get_sample_data(table_name: str, limit: int = 5, api_key: str = "") -> str:
     """Get sample rows from a table to understand the data format and values.
 
     Returns a JSON array of row objects. The limit is clamped to [1, 20];
@@ -131,12 +230,14 @@ def get_sample_data(table_name: str, limit: int = 5) -> str:
     Args:
         table_name: Name of the table to sample.
         limit: Number of rows to return (1–20). Defaults to 5.
+        api_key: Your tenant API key (required in multi-tenant mode, ignored otherwise).
     """
+    inspector, *_ = _resolve_tenant(api_key or None)
     return _get_sample_data(table_name, inspector, limit)
 
 
 @mcp.tool()
-async def ask_database(question: str) -> str:
+async def ask_database(question: str, api_key: str = "") -> str:
     """Ask a natural-language question about the database.
 
     The agent translates your question into SQL, validates it for safety
@@ -162,8 +263,15 @@ async def ask_database(question: str) -> str:
         question: Plain-English question about the data, e.g.
                   "How many orders were placed in 2024?" or
                   "List the top 5 products by revenue."
+        api_key: Your tenant API key (required in multi-tenant mode, ignored otherwise).
     """
-    cache_key = question.lower().strip()
+    resolved_key = api_key or None
+    try:
+        _, generator, _, _, corrector, dialect = _resolve_tenant(resolved_key)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+    cache_key = (resolved_key, question.lower().strip())
     now = time.monotonic()
     schema_context_length = len(generator.get_schema_context())
 

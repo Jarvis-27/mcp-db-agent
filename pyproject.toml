@@ -37,3 +37,4 @@ target-version = "py311"
 # the path when running as a script.  E402 (module-level import not at top) is
 # expected and intentional here.
 "src/server.py" = ["E402"]
+"scripts/manage_tenants.py" = ["E402"]
