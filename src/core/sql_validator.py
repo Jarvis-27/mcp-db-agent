@@ -9,14 +9,38 @@ import sqlparse.tokens as T
 from src.core.schema_inspector import SchemaInspector
 
 # Caught via sqlparse token types (DML / DDL subtypes)
-_FORBIDDEN_DML = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
+_FORBIDDEN_DML = {
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DROP",
+    "ALTER",
+    "TRUNCATE",
+    "CREATE",
+    "GRANT",
+    "REVOKE",
+    "EXEC",
+    "EXECUTE",
+}
 
 # sqlparse does NOT classify these as DML/DDL — checked separately with regex.
 # TRUNCATE is classified as T.Keyword (not DDL) by sqlparse, so the token loop above
 # misses it. MERGE and the others never appear as DML/DDL tokens either.
 _FORBIDDEN_KEYWORD_ONLY = {"EXEC", "EXECUTE", "GRANT", "REVOKE", "TRUNCATE", "MERGE"}
 
-_AGGREGATION_PATTERNS = ("GROUP BY", "COUNT(", "COUNT (", "SUM(", "SUM (", "AVG(", "AVG (", "MAX(", "MAX (", "MIN(", "MIN (")
+_AGGREGATION_PATTERNS = (
+    "GROUP BY",
+    "COUNT(",
+    "COUNT (",
+    "SUM(",
+    "SUM (",
+    "AVG(",
+    "AVG (",
+    "MAX(",
+    "MAX (",
+    "MIN(",
+    "MIN (",
+)
 
 
 @dataclass
@@ -38,8 +62,13 @@ class SQLValidator:
         parsed_statements = sqlparse.parse(sql)
         for statement in parsed_statements:
             for token in statement.flatten():
-                if token.ttype in (T.Keyword.DML, T.Keyword.DDL) and token.value.upper() in _FORBIDDEN_DML:
-                    return ValidationResult(is_valid=False, error="Write operations are not allowed")
+                if (
+                    token.ttype in (T.Keyword.DML, T.Keyword.DDL)
+                    and token.value.upper() in _FORBIDDEN_DML
+                ):
+                    return ValidationResult(
+                        is_valid=False, error="Write operations are not allowed"
+                    )
 
         # sqlparse classifies EXEC/EXECUTE/GRANT/REVOKE as T.Keyword (no DML/DDL subtype),
         # so the loop above misses them. Catch them with a word-boundary regex.
@@ -56,13 +85,17 @@ class SQLValidator:
             cte_names = _extract_cte_names(sql)
             for table in referenced:
                 if table.lower() not in actual_tables and table.lower() not in cte_names:
-                    return ValidationResult(is_valid=False, error=f"Table '{table}' does not exist in the database")
+                    return ValidationResult(
+                        is_valid=False, error=f"Table '{table}' does not exist in the database"
+                    )
 
         # Check 3: Auto-inject LIMIT if the query is a plain SELECT without aggregation.
         # Use a depth-aware check so a LIMIT buried inside a subquery (e.g. "SELECT *
         # FROM (SELECT id FROM users LIMIT 5) AS sub") doesn't fool the outer-query check.
         sql_upper = sql.upper()
-        if not _has_top_level_limit(sql) and not any(pat in sql_upper for pat in _AGGREGATION_PATTERNS):
+        if not _has_top_level_limit(sql) and not any(
+            pat in sql_upper for pat in _AGGREGATION_PATTERNS
+        ):
             modified = sql.rstrip(";") + " LIMIT 100;"
             return ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified)
 

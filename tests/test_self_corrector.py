@@ -29,9 +29,7 @@ def _make_corrector(
     generator.generate_from_prompt = AsyncMock(return_value=generate_from_prompt_return)
 
     validator = MagicMock()
-    validator.validate = MagicMock(
-        return_value=validate_return or ValidationResult(is_valid=True)
-    )
+    validator.validate = MagicMock(return_value=validate_return or ValidationResult(is_valid=True))
 
     executor = MagicMock()
     executor.execute = AsyncMock(
@@ -74,7 +72,9 @@ async def test_limit_injection_used():
 
     corrector = _make_corrector(
         generate_return=original_sql,
-        validate_return=ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified_sql),
+        validate_return=ValidationResult(
+            is_valid=True, warning="No LIMIT added", modified_sql=modified_sql
+        ),
         execute_return=rows,
     )
     result = await corrector.execute_with_correction("All users", "sqlite")
@@ -136,9 +136,7 @@ async def test_corrects_after_execution_error():
     generator.generate_from_prompt = AsyncMock(return_value=good_sql)
 
     executor = MagicMock()
-    executor.execute = AsyncMock(
-        side_effect=[RuntimeError("no such table: nonexistent"), rows]
-    )
+    executor.execute = AsyncMock(side_effect=[RuntimeError("no such table: nonexistent"), rows])
 
     corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
     result = await corrector.execute_with_correction("Query nonexistent", "sqlite")

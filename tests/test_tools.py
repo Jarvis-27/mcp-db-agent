@@ -153,15 +153,13 @@ async def test_ask_database_success_path():
 
 async def test_ask_database_failure_path():
     errors = ["Table 'x' does not exist", "syntax error"]
-    corrector = _make_corrector(
-        success=False, sql="SELECT * FROM x", errors=errors, attempts=3
-    )
+    corrector = _make_corrector(success=False, sql="SELECT * FROM x", errors=errors, attempts=3)
     fmt = ResultFormatter()
 
     out = json.loads(await ask_database("Bad question", corrector, fmt, "sqlite"))
 
     assert "error" in out
-    assert out["error"] == "syntax error"   # last error
+    assert out["error"] == "syntax error"  # last error
     assert out["errors"] == errors
     assert "suggestion" in out
 
@@ -180,7 +178,9 @@ async def test_ask_database_failure_empty_errors_list():
 async def test_ask_database_forwards_dialect():
     corrector = _make_corrector(success=True)
     fmt = MagicMock()
-    fmt.format.return_value = '{"query":"SELECT 1","row_count":0,"columns":[],"data":[],"attempts":1}'
+    fmt.format.return_value = (
+        '{"query":"SELECT 1","row_count":0,"columns":[],"data":[],"attempts":1}'
+    )
 
     await ask_database("Count users", corrector, fmt, dialect="postgresql")
 

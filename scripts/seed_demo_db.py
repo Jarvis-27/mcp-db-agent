@@ -90,15 +90,54 @@ def seed(db_url: str = _DEFAULT_DB_URL) -> None:
 
     countries = ["US", "UK", "India", "Germany", "Canada"]
     first_names = [
-        "Alice", "Bob", "Carol", "David", "Emma", "Frank", "Grace", "Henry",
-        "Isla", "Jack", "Karen", "Liam", "Mia", "Noah", "Olivia", "Paul",
-        "Quinn", "Rachel", "Sam", "Tina", "Uma", "Victor", "Wendy", "Xavier",
-        "Yara", "Zoe",
+        "Alice",
+        "Bob",
+        "Carol",
+        "David",
+        "Emma",
+        "Frank",
+        "Grace",
+        "Henry",
+        "Isla",
+        "Jack",
+        "Karen",
+        "Liam",
+        "Mia",
+        "Noah",
+        "Olivia",
+        "Paul",
+        "Quinn",
+        "Rachel",
+        "Sam",
+        "Tina",
+        "Uma",
+        "Victor",
+        "Wendy",
+        "Xavier",
+        "Yara",
+        "Zoe",
     ]
     last_names = [
-        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller",
-        "Davis", "Martinez", "Wilson", "Anderson", "Taylor", "Thomas", "Jackson",
-        "White", "Harris", "Martin", "Thompson", "Robinson", "Clark",
+        "Smith",
+        "Johnson",
+        "Williams",
+        "Brown",
+        "Jones",
+        "Garcia",
+        "Miller",
+        "Davis",
+        "Martinez",
+        "Wilson",
+        "Anderson",
+        "Taylor",
+        "Thomas",
+        "Jackson",
+        "White",
+        "Harris",
+        "Martin",
+        "Thompson",
+        "Robinson",
+        "Clark",
     ]
 
     user_rows = []
@@ -111,61 +150,117 @@ def seed(db_url: str = _DEFAULT_DB_URL) -> None:
         while email in emails_used:
             email = f"{base}{i}_{random.randint(1, 999)}@example.com"
         emails_used.add(email)
-        user_rows.append({
-            "name": f"{fn} {ln}",
-            "email": email,
-            "country": random.choice(countries),
-            "created_at": random_date(datetime(2022, 1, 1), datetime(2024, 12, 31)),
-        })
+        user_rows.append(
+            {
+                "name": f"{fn} {ln}",
+                "email": email,
+                "country": random.choice(countries),
+                "created_at": random_date(datetime(2022, 1, 1), datetime(2024, 12, 31)),
+            }
+        )
 
     categories = ["Electronics", "Clothing", "Books", "Home", "Sports"]
     product_names = {
-        "Electronics": ["Laptop", "Headphones", "Smartwatch", "Tablet", "Keyboard",
-                        "Mouse", "Monitor", "Speaker", "Camera", "Phone"],
-        "Clothing":    ["T-Shirt", "Jeans", "Jacket", "Dress", "Shorts",
-                        "Hoodie", "Sweater", "Coat", "Socks", "Hat"],
-        "Books":       ["Python Crash Course", "Clean Code", "The Pragmatic Programmer",
-                        "Design Patterns", "Atomic Habits", "Deep Work", "Dune",
-                        "1984", "Sapiens", "The Lean Startup"],
-        "Home":        ["Lamp", "Pillow", "Blanket", "Towel Set", "Curtains",
-                        "Rug", "Candle", "Picture Frame", "Clock", "Vase"],
-        "Sports":      ["Yoga Mat", "Dumbbells", "Resistance Bands", "Jump Rope",
-                        "Water Bottle", "Running Shoes", "Gym Bag", "Foam Roller",
-                        "Knee Brace", "Bicycle Helmet"],
+        "Electronics": [
+            "Laptop",
+            "Headphones",
+            "Smartwatch",
+            "Tablet",
+            "Keyboard",
+            "Mouse",
+            "Monitor",
+            "Speaker",
+            "Camera",
+            "Phone",
+        ],
+        "Clothing": [
+            "T-Shirt",
+            "Jeans",
+            "Jacket",
+            "Dress",
+            "Shorts",
+            "Hoodie",
+            "Sweater",
+            "Coat",
+            "Socks",
+            "Hat",
+        ],
+        "Books": [
+            "Python Crash Course",
+            "Clean Code",
+            "The Pragmatic Programmer",
+            "Design Patterns",
+            "Atomic Habits",
+            "Deep Work",
+            "Dune",
+            "1984",
+            "Sapiens",
+            "The Lean Startup",
+        ],
+        "Home": [
+            "Lamp",
+            "Pillow",
+            "Blanket",
+            "Towel Set",
+            "Curtains",
+            "Rug",
+            "Candle",
+            "Picture Frame",
+            "Clock",
+            "Vase",
+        ],
+        "Sports": [
+            "Yoga Mat",
+            "Dumbbells",
+            "Resistance Bands",
+            "Jump Rope",
+            "Water Bottle",
+            "Running Shoes",
+            "Gym Bag",
+            "Foam Roller",
+            "Knee Brace",
+            "Bicycle Helmet",
+        ],
     }
 
     product_rows = []
     for i in range(100):
         cat = categories[i % len(categories)]
         name_list = product_names[cat]
-        product_rows.append({
-            "name": f"{name_list[i % len(name_list)]} {i + 1}",
-            "category": cat,
-            "price": round(random.uniform(5.0, 999.99), 2),
-            "stock_quantity": random.randint(0, 500),
-            "created_at": random_date(datetime(2022, 1, 1), datetime(2024, 6, 1)),
-        })
+        product_rows.append(
+            {
+                "name": f"{name_list[i % len(name_list)]} {i + 1}",
+                "category": cat,
+                "price": round(random.uniform(5.0, 999.99), 2),
+                "stock_quantity": random.randint(0, 500),
+                "created_at": random_date(datetime(2022, 1, 1), datetime(2024, 6, 1)),
+            }
+        )
 
     start_date = datetime(2023, 1, 1)
     end_date = datetime(2024, 12, 31)
     statuses = ["pending", "shipped", "delivered", "cancelled"]
     order_rows = []
     for _ in range(2000):
-        order_rows.append({
-            "user_id": random.randint(1, 500),
-            "status": random.choice(statuses),
-            "total_amount": round(random.uniform(10.0, 2000.0), 2),
-            "created_at": random_date(start_date, end_date),
-        })
+        order_rows.append(
+            {
+                "user_id": random.randint(1, 500),
+                "status": random.choice(statuses),
+                "total_amount": round(random.uniform(10.0, 2000.0), 2),
+                "created_at": random_date(start_date, end_date),
+            }
+        )
 
     order_item_rows = []
     for _ in range(5000):
-        order_item_rows.append({
-            "order_id": random.randint(1, 2000),
-            "product_id": random.randint(1, 100),
-            "quantity": random.randint(1, 10),
-            "unit_price": round(random.uniform(5.0, 999.99), 2),
-        })
+        order_item_rows.append(
+            {
+                "order_id": random.randint(1, 2000),
+                "product_id": random.randint(1, 100),
+                "quantity": random.randint(1, 10),
+                "unit_price": round(random.uniform(5.0, 999.99), 2),
+            }
+        )
 
     with eng.begin() as conn:
         conn.execute(insert(users), user_rows)
@@ -176,6 +271,7 @@ def seed(db_url: str = _DEFAULT_DB_URL) -> None:
     # Summary
     with eng.connect() as conn:
         from sqlalchemy import text
+
         print(f"\nDatabase seeded at: {db_url}\n")
         print(f"{'Table':<15} {'Rows':>6}")
         print("-" * 23)
@@ -185,16 +281,11 @@ def seed(db_url: str = _DEFAULT_DB_URL) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Seed the demo database with e-commerce data."
-    )
+    parser = argparse.ArgumentParser(description="Seed the demo database with e-commerce data.")
     parser.add_argument(
         "--db-url",
         default=_DEFAULT_DB_URL,
-        help=(
-            "SQLAlchemy database URL to seed "
-            f"(default: sqlite:///{_DEFAULT_DB_PATH})"
-        ),
+        help=(f"SQLAlchemy database URL to seed (default: sqlite:///{_DEFAULT_DB_PATH})"),
     )
     args = parser.parse_args()
     seed(args.db_url)

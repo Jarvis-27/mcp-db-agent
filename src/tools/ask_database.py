@@ -21,7 +21,5 @@ async def ask_database(
     if result["success"]:
         return formatter.format(result["sql"], result["data"], result["attempts"])
 
-    last_error = (
-        result["errors"][-1] if result["errors"] else "Query failed after maximum retries"
-    )
+    last_error = result["errors"][-1] if result["errors"] else "Query failed after maximum retries"
     return formatter.format_error(last_error, result["sql"], result["errors"])

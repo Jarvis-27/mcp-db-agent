@@ -50,19 +50,23 @@ def engine():
     e = create_engine("sqlite:///:memory:")
     _Base.metadata.create_all(e)
     with Session(e) as session:
-        session.add_all([
-            _Customer(id=1, name="Alice", city="New York"),
-            _Customer(id=2, name="Bob", city="Chicago"),
-            _Customer(id=3, name="Carol", city="New York"),
-        ])
+        session.add_all(
+            [
+                _Customer(id=1, name="Alice", city="New York"),
+                _Customer(id=2, name="Bob", city="Chicago"),
+                _Customer(id=3, name="Carol", city="New York"),
+            ]
+        )
         session.flush()
-        session.add_all([
-            _Sale(customer_id=1, amount=100, sale_date="2024-01-15"),
-            _Sale(customer_id=1, amount=200, sale_date="2024-03-22"),
-            _Sale(customer_id=2, amount=150, sale_date="2023-11-05"),
-            _Sale(customer_id=3, amount=300, sale_date="2024-06-10"),
-            _Sale(customer_id=3, amount=50, sale_date="2023-08-30"),
-        ])
+        session.add_all(
+            [
+                _Sale(customer_id=1, amount=100, sale_date="2024-01-15"),
+                _Sale(customer_id=1, amount=200, sale_date="2024-03-22"),
+                _Sale(customer_id=2, amount=150, sale_date="2023-11-05"),
+                _Sale(customer_id=3, amount=300, sale_date="2024-06-10"),
+                _Sale(customer_id=3, amount=50, sale_date="2023-08-30"),
+            ]
+        )
         session.commit()
     return e
 
@@ -84,9 +88,7 @@ def corrector(engine):
 @pytest.mark.integration
 async def test_simple_count_query(corrector):
     """LLM should generate a COUNT query returning exactly 3 customers."""
-    result = await corrector.execute_with_correction(
-        "How many customers are there?", "sqlite"
-    )
+    result = await corrector.execute_with_correction("How many customers are there?", "sqlite")
     assert result["success"] is True
     assert len(result["data"]) == 1
     count = list(result["data"][0].values())[0]

@@ -40,10 +40,12 @@ def engine():
         a2 = _Author(id=2, name="Bob")
         session.add_all([a1, a2])
         session.flush()
-        session.add_all([
-            _Book(title="Python Tricks", author_id=1),
-            _Book(title="Clean Code", author_id=2),
-        ])
+        session.add_all(
+            [
+                _Book(title="Python Tricks", author_id=1),
+                _Book(title="Clean Code", author_id=2),
+            ]
+        )
         session.commit()
     return e
 
