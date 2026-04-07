@@ -75,7 +75,7 @@ class QueryLog:
             session.add(entry)
             session.commit()
 
-    def get_recent_queries(self, limit: int = 10) -> list[dict]:
+    def get_recent_queries(self, limit: int = 10) -> list[dict[str, object]]:
         """Return the *limit* most recent query records, newest first.
 
         Args:

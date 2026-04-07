@@ -1,8 +1,6 @@
 """Unit tests for SelfCorrector — all LLM/DB calls are mocked."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from src.core.self_corrector import SelfCorrector
 from src.core.sql_validator import ValidationResult

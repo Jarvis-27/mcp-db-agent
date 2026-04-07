@@ -63,7 +63,11 @@ CACHE_TTL = 3600  # seconds
 # MCP server instance
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("Database Analytics Agent")
+mcp = FastMCP(
+    "Database Analytics Agent",
+    host="0.0.0.0" if settings.transport == "streamable-http" else "127.0.0.1",
+    port=8000,
+)
 _log = get_logger()
 
 # ---------------------------------------------------------------------------
@@ -295,6 +299,6 @@ def query_history(limit: int = 10) -> str:
 
 if __name__ == "__main__":
     if settings.transport == "streamable-http":
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+        mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")

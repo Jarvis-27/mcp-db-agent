@@ -13,7 +13,7 @@ class SQLExecutor:
         self._engine = engine
         self._timeout = settings.query_timeout_seconds
 
-    async def execute(self, sql: str) -> list[dict]:
+    async def execute(self, sql: str) -> list[dict[str, object]]:
         """Execute validated SQL and return results as a list of row dicts.
 
         Runs the synchronous SQLAlchemy call in a thread-pool executor so
@@ -26,11 +26,11 @@ class SQLExecutor:
             timeout=float(self._timeout),
         )
 
-    def _run_query(self, sql: str) -> list[dict]:
+    def _run_query(self, sql: str) -> list[dict[str, object]]:
         dialect_name = self._engine.dialect.name
         # PostgreSQL benefits from REPEATABLE READ to prevent dirty reads.
         # SQLite uses the default isolation (autocommit-compatible for reads).
-        exec_opts: dict = (
+        exec_opts: dict[str, str] = (
             {"isolation_level": "REPEATABLE READ"}
             if dialect_name == "postgresql"
             else {}

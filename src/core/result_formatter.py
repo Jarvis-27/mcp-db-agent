@@ -5,7 +5,7 @@ import decimal
 import json
 
 
-def _json_default(obj):
+def _json_default(obj: object) -> str | float:
     """Custom serializer for types json.dumps cannot handle by default."""
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
@@ -19,7 +19,7 @@ def _json_default(obj):
 
 
 class ResultFormatter:
-    def format(self, sql: str, rows: list[dict], attempts: int) -> str:
+    def format(self, sql: str, rows: list[dict[str, object]], attempts: int) -> str:
         """Format successful query results as a JSON string.
 
         Args:

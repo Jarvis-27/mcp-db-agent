@@ -19,7 +19,7 @@ class SelfCorrector:
         self._executor = executor
         self._max_retries = settings.max_self_correction_retries
 
-    async def execute_with_correction(self, question: str, dialect: str = "sqlite") -> dict:
+    async def execute_with_correction(self, question: str, dialect: str = "sqlite") -> dict[str, object]:
         """Generate SQL for *question*, validate, execute, and self-correct on failure.
 
         Returns a dict with keys:

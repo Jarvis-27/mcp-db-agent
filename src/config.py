@@ -19,4 +19,4 @@ class Settings(BaseSettings):
     transport: str = "stdio"
 
 
-settings = Settings()
+settings: Settings = Settings()

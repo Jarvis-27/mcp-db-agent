@@ -3,8 +3,6 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from src.tools.ask_database import ask_database
 from src.tools.describe_schema import describe_schema
 from src.tools.get_sample_data import get_sample_data

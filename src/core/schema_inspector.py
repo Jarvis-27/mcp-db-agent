@@ -26,7 +26,7 @@ class SchemaInspector:
     def get_foreign_keys(self, table_name: str) -> list[ReflectedForeignKeyConstraint]:
         return self._inspector.get_foreign_keys(table_name)
 
-    def get_sample_values(self, table_name: str, column_name: str, limit: int = 5) -> list:
+    def get_sample_values(self, table_name: str, column_name: str, limit: int = 5) -> list[object]:
         # Double-quote identifiers so PostgreSQL reserved words (e.g. "order",
         # "user") and mixed-case names work without error.  SQLite accepts
         # double-quoted identifiers too, so this is safe for both dialects.
@@ -97,7 +97,7 @@ class SchemaInspector:
 
         return "\n".join(lines)
 
-    def get_tables_with_counts(self) -> list[dict]:
+    def get_tables_with_counts(self) -> list[dict[str, object]]:
         result = []
         with self._engine.connect() as conn:
             for table_name in self.get_table_names():
@@ -105,7 +105,7 @@ class SchemaInspector:
                 result.append({"table_name": table_name, "row_count": count})
         return result
 
-    def get_sample_rows(self, table_name: str, limit: int = 5) -> list[dict]:
+    def get_sample_rows(self, table_name: str, limit: int = 5) -> list[dict[str, object]]:
         sql = text(f'SELECT * FROM "{table_name}" LIMIT :limit')
         with self._engine.connect() as conn:
             rows = conn.execute(sql, {"limit": limit}).mappings().all()
