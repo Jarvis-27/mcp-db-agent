@@ -25,5 +25,16 @@ jobs:
       - name: Format check (ruff format)
         run: uv run ruff format --check .
 
+      - name: Type check (mypy)
+        run: uv run mypy src --ignore-missing-imports
+
       - name: Unit tests
         run: uv run pytest tests/ -m "not integration" -v
+
+      - name: Security audit (pip-audit)
+        run: uv run pip-audit
+
+      - name: Alembic schema check
+        run: uv run alembic check
+        env:
+          AUTH_DATABASE_URL: sqlite:///./auth_ci.db

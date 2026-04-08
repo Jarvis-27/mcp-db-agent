@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # When executed as a script (`uv run src/server.py`), Python adds `src/` to
@@ -14,17 +15,11 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy import create_engine
 
+from src.auth.middleware import user_config_var
 from src.config import settings
 from src.core.logger import get_logger
-from src.core.result_formatter import ResultFormatter
-from src.core.schema_inspector import SchemaInspector
-from src.core.self_corrector import SelfCorrector
-from src.core.sql_executor import SQLExecutor
-from src.core.sql_generator import SQLGenerator
-from src.core.sql_validator import SQLValidator
-from src.core.query_log import QueryLog
+from src.core.pipeline_factory import PipelineFactory, PipelineComponents
 from src.resources.schema_overview import get_schema_overview
 
 # Import tool implementations under private aliases so the public names below
@@ -34,41 +29,92 @@ from src.tools.get_sample_data import get_sample_data as _get_sample_data
 from src.tools.list_tables import list_tables as _list_tables
 
 # ---------------------------------------------------------------------------
-# Bootstrap — engine and pipeline components (shared across all requests)
+# Module-level references populated by src/app.py lifespan startup.
+# In stdio mode they are created lazily inside _get_pipeline().
 # ---------------------------------------------------------------------------
 
-engine = create_engine(settings.database_url)
+_factory: PipelineFactory | None = None
+_query_log = None  # QueryLog | None — populated by src/app.py
 
-inspector = SchemaInspector(engine)
-generator = SQLGenerator(settings, inspector)
-validator = SQLValidator(inspector)
-executor = SQLExecutor(engine, settings)
-corrector = SelfCorrector(generator, validator, executor, settings)
-formatter = ResultFormatter()
-query_log = QueryLog()
+# Bounded TTL cache — multi-tenant safe (keyed on (user_id, question)).
+# In HTTP mode this is populated from src/app.py. In stdio mode it is
+# a module-level dict for backward compat.
+from cachetools import TTLCache
 
-# Derive the SQL dialect once at startup so every ask_database call uses the
-# right date functions and syntax for the configured database.
-dialect: str = "postgresql" if settings.database_url.startswith("postgresql") else "sqlite"
+_cache: TTLCache = TTLCache(maxsize=1000, ttl=3600)
+CACHE_TTL = 3600
 
-# ---------------------------------------------------------------------------
-# In-memory LRU cache for repeated identical questions
-# ---------------------------------------------------------------------------
-
-# Maps lowercased+stripped question → (formatted_json_result, monotonic_timestamp)
-_cache: dict[str, tuple[str, float]] = {}
-CACHE_TTL = 3600  # seconds
-
-# ---------------------------------------------------------------------------
-# MCP server instance
-# ---------------------------------------------------------------------------
-
-mcp = FastMCP(
-    "Database Analytics Agent",
-    host="0.0.0.0" if settings.transport == "streamable-http" else "127.0.0.1",
-    port=8000,
-)
 _log = get_logger()
+
+
+# ---------------------------------------------------------------------------
+# FastMCP factory
+# ---------------------------------------------------------------------------
+
+
+def build_mcp(
+    *,
+    stateless_http: bool = True,
+    json_response: bool = True,
+    streamable_http_path: str = "/",
+) -> FastMCP:
+    """Construct the FastMCP instance with the requested HTTP flags.
+
+    Called by src/app.py for hosted mode and by __main__ for stdio mode.
+    """
+    return FastMCP(
+        "Database Analytics Agent",
+        host="0.0.0.0",
+        port=settings.port,
+        stateless_http=stateless_http,
+        json_response=json_response,
+        streamable_http_path=streamable_http_path,
+    )
+
+
+# Stdio / single-process mode: stateless_http=False, no double-prefix
+mcp = build_mcp(stateless_http=False, json_response=False, streamable_http_path="/mcp")
+
+
+# ---------------------------------------------------------------------------
+# Per-request pipeline resolution
+# ---------------------------------------------------------------------------
+
+
+async def _get_pipeline() -> PipelineComponents:
+    global _factory
+    user_config = user_config_var.get()
+
+    if _factory is None:
+        # Stdio fallback: build a factory the first time.
+        _factory = PipelineFactory(settings, ThreadPoolExecutor(max_workers=8))
+
+    if user_config is not None:
+        return await _factory.get(user_config)
+
+    return _factory.get_from_settings(settings)
+
+
+def _current_user_id() -> str:
+    uc = user_config_var.get()
+    return uc.user_id if uc is not None else "__stdio__"
+
+
+def _get_query_log():
+    """Return the query log, creating a stdio one if running standalone."""
+    global _query_log
+    if _query_log is None:
+        from pathlib import Path
+        from sqlalchemy import create_engine
+        from src.core.query_log import QueryLog
+        from src.auth.user_store import Base
+
+        db_path = str(Path(__file__).parent.parent / "query_log.db")
+        log_engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(log_engine)
+        _query_log = QueryLog(log_engine)
+    return _query_log
+
 
 # ---------------------------------------------------------------------------
 # Resource
@@ -76,7 +122,7 @@ _log = get_logger()
 
 
 @mcp.resource("schema://overview")
-def schema_overview() -> str:
+async def schema_overview() -> str:
     """Full database schema in compact DDL-like notation.
 
     Fetch this resource to inject the complete table and column definitions
@@ -84,7 +130,8 @@ def schema_overview() -> str:
     type, primary key, and foreign key relationship — equivalent to calling
     describe_schema on every table at once but faster.
     """
-    return get_schema_overview(inspector)
+    pipeline = await _get_pipeline()
+    return get_schema_overview(pipeline.inspector)
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +140,19 @@ def schema_overview() -> str:
 
 
 @mcp.tool()
-def list_tables() -> str:
+async def list_tables() -> str:
     """List all tables in the database with their row counts.
 
     Returns a JSON array where each element has ``table_name`` (str) and
     ``row_count`` (int). Call this first to discover what data is available
     before running a query or describing a specific table.
     """
-    return _list_tables(inspector)
+    pipeline = await _get_pipeline()
+    return _list_tables(pipeline.inspector)
 
 
 @mcp.tool()
-def describe_schema(table_name: str) -> str:
+async def describe_schema(table_name: str) -> str:
     """Describe the columns, primary keys, foreign keys, and sample values for a table.
 
     Returns a formatted string with full column metadata — type, nullability,
@@ -116,11 +164,12 @@ def describe_schema(table_name: str) -> str:
     Args:
         table_name: Name of the table to describe.
     """
-    return _describe_schema(table_name, inspector)
+    pipeline = await _get_pipeline()
+    return _describe_schema(table_name, pipeline.inspector)
 
 
 @mcp.tool()
-def get_sample_data(table_name: str, limit: int = 5) -> str:
+async def get_sample_data(table_name: str, limit: int = 5) -> str:
     """Get sample rows from a table to understand the data format and values.
 
     Returns a JSON array of row objects. The limit is clamped to [1, 20];
@@ -132,7 +181,8 @@ def get_sample_data(table_name: str, limit: int = 5) -> str:
         table_name: Name of the table to sample.
         limit: Number of rows to return (1–20). Defaults to 5.
     """
-    return _get_sample_data(table_name, inspector, limit)
+    pipeline = await _get_pipeline()
+    return _get_sample_data(table_name, pipeline.inspector, limit)
 
 
 @mcp.tool()
@@ -163,9 +213,12 @@ async def ask_database(question: str) -> str:
                   "How many orders were placed in 2024?" or
                   "List the top 5 products by revenue."
     """
-    cache_key = question.lower().strip()
+    pipeline = await _get_pipeline()
+    user_id = _current_user_id()
+    query_log = _get_query_log()
+
+    cache_key = (user_id, question.lower().strip())
     now = time.monotonic()
-    schema_context_length = len(generator.get_schema_context())
 
     _log.info(
         "ask_database",
@@ -174,7 +227,7 @@ async def ask_database(question: str) -> str:
                 "tool": "ask_database",
                 "event": "started",
                 "question": question,
-                "schema_context_length": schema_context_length,
+                "user_id": user_id,
             }
         },
     )
@@ -192,26 +245,37 @@ async def ask_database(question: str) -> str:
                         "tool": "ask_database",
                         "event": "completed",
                         "question": question,
-                        "schema_context_length": schema_context_length,
-                        "generated_sql": payload.get("query"),
-                        "validation_result": "passed",
-                        "execution_time_ms": 0,
-                        "result_row_count": payload.get("row_count", 0),
-                        "attempts": payload.get("attempts", 1),
-                        "error": None,
+                        "user_id": user_id,
                         "cached": True,
                     }
                 },
             )
             return json.dumps(payload, indent=2)
 
+    # --- LLM quota enforcement on fallback path ---
+    uc = user_config_var.get()
+    on_fallback = uc is not None and (
+        (uc.llm_provider == "anthropic" and not uc.anthropic_api_key)
+        or (uc.llm_provider == "groq" and not uc.groq_api_key)
+    )
+    if on_fallback and _factory is not None and hasattr(_factory, "_user_store"):
+        import asyncio
+
+        used = await asyncio.to_thread(_factory._user_store.increment_daily_quota, user_id)
+        if used > settings.ask_database_quota_per_day:
+            return pipeline.formatter.format_error(
+                "Daily fallback quota exceeded. Provide your own LLM key via PUT /v1/users/me.",
+                "",
+                [],
+            )
+
     # --- Execute pipeline ---
     start = time.monotonic()
-    result = await corrector.execute_with_correction(question, dialect)
+    result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
     duration_ms = int((time.monotonic() - start) * 1000)
 
     if result["success"]:
-        formatted = formatter.format(result["sql"], result["data"], result["attempts"])
+        formatted = pipeline.formatter.format(result["sql"], result["data"], result["attempts"])
         query_log.log_query(
             question=question,
             sql=result["sql"],
@@ -220,6 +284,7 @@ async def ask_database(question: str) -> str:
             attempts=result["attempts"],
             duration_ms=duration_ms,
             error=None,
+            user_id=user_id,
         )
         _cache[cache_key] = (formatted, time.monotonic())
         log_level = logging.WARNING if result["attempts"] > 1 else logging.INFO
@@ -231,9 +296,8 @@ async def ask_database(question: str) -> str:
                     "tool": "ask_database",
                     "event": "completed",
                     "question": question,
-                    "schema_context_length": schema_context_length,
+                    "user_id": user_id,
                     "generated_sql": result["sql"],
-                    "validation_result": "passed",
                     "execution_time_ms": duration_ms,
                     "result_row_count": len(result["data"]),
                     "attempts": result["attempts"],
@@ -244,7 +308,7 @@ async def ask_database(question: str) -> str:
         return formatted
 
     last_error = result["errors"][-1] if result["errors"] else "Query failed after maximum retries"
-    formatted = formatter.format_error(last_error, result["sql"], result["errors"])
+    formatted = pipeline.formatter.format_error(last_error, result["sql"], result["errors"])
     query_log.log_query(
         question=question,
         sql=result["sql"],
@@ -253,6 +317,7 @@ async def ask_database(question: str) -> str:
         attempts=result["attempts"],
         duration_ms=duration_ms,
         error=last_error,
+        user_id=user_id,
     )
     _log.error(
         "ask_database",
@@ -261,9 +326,8 @@ async def ask_database(question: str) -> str:
                 "tool": "ask_database",
                 "event": "completed",
                 "question": question,
-                "schema_context_length": schema_context_length,
+                "user_id": user_id,
                 "generated_sql": result["sql"],
-                "validation_result": "failed",
                 "execution_time_ms": duration_ms,
                 "result_row_count": 0,
                 "attempts": result["attempts"],
@@ -275,7 +339,7 @@ async def ask_database(question: str) -> str:
 
 
 @mcp.tool()
-def query_history(limit: int = 10) -> str:
+async def query_history(limit: int = 10) -> str:
     """See recent questions asked to the database, the SQL generated, and whether they succeeded.
 
     Returns a JSON array of the last N queries (default 10), newest first.
@@ -292,7 +356,9 @@ def query_history(limit: int = 10) -> str:
     Args:
         limit: Number of recent queries to return (default 10).
     """
-    return json.dumps(query_log.get_recent_queries(limit), indent=2)
+    user_id = _current_user_id()
+    query_log = _get_query_log()
+    return json.dumps(query_log.get_recent_queries(limit, user_id=user_id), indent=2)
 
 
 # ---------------------------------------------------------------------------

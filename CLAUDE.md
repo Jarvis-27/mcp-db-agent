@@ -6,16 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An MCP (Model Context Protocol) server that exposes any PostgreSQL or SQLite database as a natural-language queryable endpoint. Any MCP client (Claude Desktop, Cursor, VS Code Copilot) can connect and ask questions in plain English. The server introspects the schema, generates SQL via an LLM, validates it for safety, executes it, and returns structured JSON — with a self-correction retry loop if execution fails.
 
+**Two deployment modes:**
+- **Stdio / single-user** (`uv run src/server.py`): local dev, Claude Desktop, VS Code Copilot.
+- **Hosted / multi-tenant** (`uvicorn src.app:app`): multiple users register their own database, receive an API key, and connect to a shared HTTP endpoint.
+
 ## Commands
 
 **Package manager: `uv` only** — do not use pip or Poetry.
 
 ```bash
-# Install all dependencies
+# Install all dependencies (including dev)
 uv sync
 
-# Run all tests
-uv run pytest
+# Run all unit tests (no LLM calls, no DB required)
+uv run pytest -m "not integration"
 
 # Run a single test file
 uv run pytest tests/test_sql_validator.py
@@ -23,28 +27,42 @@ uv run pytest tests/test_sql_validator.py
 # Run a single test by name
 uv run pytest tests/test_sql_executor.py::test_execute_aggregation_count
 
+# Run integration tests (needs API keys in .env and a seeded demo.db)
+uv run pytest -m integration
+
 # Lint and format
 uv run ruff check .
 uv run ruff format .
 
+# Type check
+uv run mypy src --ignore-missing-imports
+
 # Run the MCP server (stdio transport for Claude Desktop)
 uv run src/server.py
+
+# Run hosted HTTP server (multi-tenant)
+uv run uvicorn src.app:app --reload
 
 # Debug with MCP Inspector (requires Node.js)
 npx @modelcontextprotocol/inspector uv run src/server.py
 
 # Seed the demo SQLite database
 uv run scripts/seed_demo_db.py
+
+# Database migrations (Alembic)
+uv run alembic upgrade head          # apply all pending migrations
+uv run alembic check                 # verify schema is at head
+uv run alembic downgrade -1          # roll back one migration
 ```
 
 ## Architecture
 
-The pipeline for a natural-language query flows through these layers:
+### Stdio mode (single-user, local)
 
 ```
-MCP Client
+MCP Client (Claude Desktop / Cursor / VS Code)
     → FastMCP server (src/server.py)           # tool/resource registration, JSON-RPC
-        → ask_database tool (src/tools/)
+        → _get_pipeline() → PipelineFactory.get_from_settings()
             → SchemaInspector (src/core/)       # SQLAlchemy introspection → schema string
             → SQLGenerator (src/core/)          # schema + question → LLM → raw SQL
             → SQLValidator (src/core/)          # blocks writes, checks table refs, injects LIMIT
@@ -52,27 +70,53 @@ MCP Client
             → SelfCorrector (src/core/)         # retry loop: error → LLM fix → re-validate → re-execute
 ```
 
+### Hosted HTTP mode (multi-tenant)
+
+```
+HTTPS (terminated at reverse proxy)
+    → uvicorn workers (N)
+        → Starlette parent app (src/app.py)     # lifespan, route mounting, middlewares
+            ├── Mount("/api", FastAPI)           # REST: register, manage users, health
+            │       └── UserStore (auth DB)      # users table, quota, key rotation
+            └── Mount("/mcp", FastMCP)           # MCP tools/resources
+                    └── ApiKeyMiddleware         # X-API-Key / Bearer → UserConfig ContextVar
+                            → _get_pipeline()   # reads ContextVar → PipelineFactory
+                                → per-user pipeline (SchemaInspector, SQLGenerator, etc.)
+```
+
 ### Key components
 
-- **`src/config.py`** — `Settings` (pydantic-settings) loaded from `.env`. All tunable parameters live here: `DATABASE_URL`, `LLM_PROVIDER`, model names, `MAX_QUERY_ROWS`, `QUERY_TIMEOUT_SECONDS`, `MAX_SELF_CORRECTION_RETRIES`. Import the singleton `settings` object.
+- **`src/config.py`** — `Settings` (pydantic-settings) loaded from `.env`. Single-user fields now optional (default `""`). Multi-tenant fields: `auth_database_url`, `credential_encryption_keys`, `registration_open`, etc.
 
-- **`src/core/schema_inspector.py`** — `SchemaInspector` wraps SQLAlchemy `inspect()`. Key methods: `get_full_schema()` returns a compact DDL-like string injected into the LLM prompt; `get_table_detail()` includes sample values per column; `get_tables_with_counts()` and `get_sample_rows()` back the `list_tables` and `get_sample_data` MCP tools.
+- **`src/auth/url_guard.py`** — **Security-critical.** Validates every user-supplied `database_url`. Blocks SSRF, path traversal, private IPs, and DNS rebinding. Called at registration and again inside `PipelineFactory.get()`.
 
-- **`src/core/sql_generator.py`** — `SQLGenerator` selects either `anthropic.AsyncAnthropic` or `groq.AsyncGroq` based on `settings.llm_provider`. The `generate()` method embeds the full schema in the prompt and strips markdown fences from the response via `_clean_sql()`. Default dialect is `"sqlite"`.
+- **`src/auth/crypto.py`** — `CredentialCipher` wraps `MultiFernet`. Encrypts/decrypts database URLs and LLM keys at rest. Supports key rotation via comma-separated `CREDENTIAL_ENCRYPTION_KEYS`.
 
-- **`src/core/sql_validator.py`** — `SQLValidator.validate()` runs three checks in order: (1) forbid write DML/DDL keywords via `sqlparse`, (2) verify all referenced tables exist via regex extraction + `SchemaInspector.get_table_names()`, (3) auto-inject `LIMIT 100` for plain SELECTs without aggregation. Returns a `ValidationResult` dataclass; `modified_sql` carries the LIMIT-injected version when check 3 triggers.
+- **`src/auth/user_store.py`** — SQLAlchemy `User` model + `UserStore` data-access class. `UserConfig` frozen dataclass (in-memory only). Schema managed by Alembic — never calls `create_all`.
 
-- **`src/core/sql_executor.py`** — `SQLExecutor.execute()` is async; runs the synchronous SQLAlchemy call in a thread pool via `asyncio.run_in_executor` and enforces `query_timeout_seconds` with `asyncio.wait_for`. PostgreSQL connections use `REPEATABLE READ`; SQLite uses default isolation. Exceptions are **not** caught here — the SelfCorrector handles retries.
+- **`src/auth/middleware.py`** — `ApiKeyMiddleware` ASGI class. Reads `X-API-Key` or `Authorization: Bearer`. Caches lookups on `sha256(key)`. Sets `user_config_var` ContextVar for the request lifetime; resets in `finally`.
 
-- **`src/core/self_corrector.py`** *(planned)* — Orchestrates the retry loop: call `SQLGenerator.generate()`, then `SQLValidator.validate()`, then `SQLExecutor.execute()`. On failure, sends the failed SQL + error + history back to the LLM for correction. Max retries from `settings.max_self_correction_retries`.
+- **`src/core/pipeline_factory.py`** — `PipelineFactory` caches `PipelineComponents` per user config (TTL 1h, max 100 entries). `_DisposingTTLCache` calls `engine.dispose()` on eviction. `get_from_settings()` is the stdio backward-compat path.
 
-- **`src/server.py`** *(planned)* — `FastMCP` instance with 4 tools (`ask_database`, `list_tables`, `describe_schema`, `get_sample_data`) and 1 resource (`schema://overview`).
+- **`src/core/schema_inspector.py`** — `SchemaInspector` wraps SQLAlchemy `inspect()`. `get_full_schema()` is TTL-cached (default 600 s). `refresh()` busts the cache and re-initialises the inspector.
+
+- **`src/core/sql_validator.py`** — `SQLValidator.validate()` runs 6 checks: single-statement guard, forbidden function scan, forbidden pattern scan (COPY...FROM PROGRAM, ATTACH DATABASE, etc.), DML/DDL block, table existence, LIMIT injection.
+
+- **`src/core/sql_executor.py`** — `SQLExecutor` accepts an injected `ThreadPoolExecutor`. Async; runs SQLAlchemy synchronously in the pool. Exceptions are **not** caught — SelfCorrector handles retries.
+
+- **`src/core/query_log.py`** — Logs every query to `query_history` table. Non-nullable `user_id` (use `"__stdio__"` in single-user mode). UTC-aware timestamps. WAL mode enabled for SQLite.
+
+- **`src/api/app.py`** — FastAPI REST API. Endpoints: `POST /v1/users/register`, `GET/PUT/DELETE /v1/users/me`, `POST /v1/users/me/rotate-key`, `GET /health/live`, `GET /health/ready`. Rate-limited by `slowapi`.
+
+- **`src/app.py`** — Combined ASGI entry point for hosted mode. Starlette parent app with `lifespan` that composes the auth DB, `UserStore`, `PipelineFactory`, and `FastMCP`. All middlewares live on the parent app.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in values:
+### Stdio / single-user mode
 
-```
+Copy `.env.example` to `.env` and fill in the single-user section:
+
+```env
 DATABASE_URL=sqlite:///./demo.db        # or postgresql://user:pass@host/db
 ANTHROPIC_API_KEY=sk-ant-...
 GROQ_API_KEY=gsk_...
@@ -84,13 +128,60 @@ QUERY_TIMEOUT_SECONDS=30
 MAX_SELF_CORRECTION_RETRIES=3
 ```
 
+### Hosted multi-tenant mode
+
+Additional required settings:
+
+```env
+ENVIRONMENT=production
+AUTH_DATABASE_URL=postgresql://user:pass@host/mcp_auth
+CREDENTIAL_ENCRYPTION_KEYS=<base64-fernet-key>
+```
+
+Generate an encryption key:
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+## Connecting MCP Clients (HTTP mode)
+
+After starting the server (`uvicorn src.app:app`), register a user:
+
+```bash
+# Register
+curl -X POST http://localhost:8000/api/v1/users/register \
+  -H "Content-Type: application/json" \
+  -d '{"database_url": "postgresql://user:pass@host/db", "llm_provider": "anthropic", "anthropic_api_key": "sk-ant-..."}'
+# → {"user_id": "...", "api_key": "mdbk_...", "warning": "Store this key now."}
+
+# Configure Claude Desktop (claude_desktop_config.json):
+{
+  "mcpServers": {
+    "db-agent": {
+      "url": "http://localhost:8000/mcp/",
+      "headers": { "X-API-Key": "mdbk_..." }
+    }
+  }
+}
+```
+
 ## Testing Notes
 
-- `asyncio_mode = "auto"` is set in `pyproject.toml` — async test functions need no `@pytest.mark.asyncio` decorator.
+- `asyncio_mode = "auto"` is set in `pyproject.toml` — async test functions need no `@pytest.mark.asyncio`.
 - Integration tests (`test_sql_generator.py`, `test_sql_executor.py`) require a populated `demo.db` and valid API keys in `.env`. Run `scripts/seed_demo_db.py` first.
 - The executor tests assume `demo.db` contains exactly 500 users (hardcoded `assert rows[0]["total"] == 500`).
 - Executor intentionally does **not** catch exceptions — tests for error propagation (`test_execute_raises_on_*`) verify this contract.
+- `SQLExecutor` now requires an injected `ThreadPoolExecutor` — all tests construct one with `ThreadPoolExecutor(max_workers=2)`.
 
 ## Demo Database Schema
 
 The demo SQLite database (`demo.db`) has four tables: `users`, `products`, `orders`, `order_items`. Seeded with 500 users, 100 products, 2000 orders, 5000 order_items spanning 2023–2024. Used for all integration tests and Claude Desktop demos.
+
+## Security Model
+
+See `MIGRATION_PLAN.md §3` for the full threat model. Key points:
+- User-supplied `database_url` is validated by `src/auth/url_guard.py` (T1, T9) before any connection attempt.
+- Database URLs and LLM keys are Fernet-encrypted at rest (T6).
+- SQL is validated for dangerous functions and patterns before execution (T2).
+- Per-request ContextVar scoping prevents cross-tenant data leaks (T3).
+- Per-user rate limits and fallback-LLM quotas limit cost abuse (T4, T5).

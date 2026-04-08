@@ -1,28 +1,28 @@
 """SQL execution layer — runs validated queries against the database."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from sqlalchemy import Engine, text
 
-from src.config import Settings
-
 
 class SQLExecutor:
-    def __init__(self, engine: Engine, settings: Settings) -> None:
+    def __init__(self, engine: Engine, settings, pool: ThreadPoolExecutor) -> None:
         self._engine = engine
         self._timeout = settings.query_timeout_seconds
+        self._pool = pool
 
     async def execute(self, sql: str) -> list[dict[str, object]]:
         """Execute validated SQL and return results as a list of row dicts.
 
-        Runs the synchronous SQLAlchemy call in a thread-pool executor so
+        Runs the synchronous SQLAlchemy call in the injected thread pool so
         async callers are not blocked. Exceptions are intentionally not caught
         here — the SelfCorrector layer is responsible for retries.
         """
         loop = asyncio.get_running_loop()
         return await asyncio.wait_for(
-            loop.run_in_executor(None, partial(self._run_query, sql)),
+            loop.run_in_executor(self._pool, partial(self._run_query, sql)),
             timeout=float(self._timeout),
         )
 

@@ -1,44 +1,39 @@
-"""Persistent query history log backed by a dedicated SQLite database."""
+"""Persistent query history log — stores every query attempt and outcome."""
 
-import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy import Engine, event
+from sqlalchemy.orm import Session
 
-# Default log DB sits next to the project root so it is easy to find and inspect.
-_DEFAULT_DB_PATH = str(Path(__file__).parent.parent.parent / "query_log.db")
-
-
-class _Base(DeclarativeBase):
-    pass
+# Import the model from user_store where it is co-located with the Alembic Base
+from src.auth.user_store import QueryHistory
 
 
-class _QueryHistory(_Base):
-    __tablename__ = "query_history"
+def _enable_wal(dbapi_conn, _connection_record) -> None:
+    """Enable WAL mode + sane pragmas for SQLite.
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, nullable=False)
-    question = Column(Text, nullable=False)
-    sql = Column(Text, nullable=False)
-    success = Column(Boolean, nullable=False)
-    row_count = Column(Integer, nullable=True)
-    attempts = Column(Integer, nullable=False)
-    duration_ms = Column(Integer, nullable=False)
-    error = Column(Text, nullable=True)
+    WAL allows concurrent readers and one writer without blocking — important
+    when the auth DB and query log share the same SQLite file.
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
 
 
 class QueryLog:
-    """Logs every query attempt and its outcome to a dedicated SQLite database.
+    """Logs every query attempt and its outcome to the auth database.
 
-    Uses a *separate* engine so it never interferes with the user's database
-    connection and works regardless of which backend (PostgreSQL or SQLite)
-    the main database uses.
+    Constructor accepts an injected Engine so this class can share the auth DB
+    engine without opening a second connection.  Schema is managed by Alembic —
+    this class does NOT call create_all.
     """
 
-    def __init__(self, db_path: str = _DEFAULT_DB_PATH) -> None:
-        self._engine = create_engine(f"sqlite:///{db_path}")
-        _Base.metadata.create_all(self._engine)
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        if engine.dialect.name == "sqlite":
+            event.listen(engine, "connect", _enable_wal)
 
     def log_query(
         self,
@@ -49,6 +44,7 @@ class QueryLog:
         attempts: int,
         duration_ms: int,
         error: str | None,
+        user_id: str,
     ) -> None:
         """Insert a record into ``query_history``.
 
@@ -60,10 +56,15 @@ class QueryLog:
             attempts: Number of generation/correction cycles consumed.
             duration_ms: Wall-clock time for the full pipeline in milliseconds.
             error: Final error message, or ``None`` on success.
+            user_id: Non-nullable. Use ``"__stdio__"`` in single-user stdio mode.
         """
+        if not user_id:
+            raise ValueError("user_id is required and must not be empty")
+
         with Session(self._engine) as session:
-            entry = _QueryHistory(
-                timestamp=datetime.datetime.utcnow(),
+            entry = QueryHistory(
+                timestamp=datetime.now(UTC),
+                user_id=user_id,
                 question=question,
                 sql=sql,
                 success=success,
@@ -75,22 +76,32 @@ class QueryLog:
             session.add(entry)
             session.commit()
 
-    def get_recent_queries(self, limit: int = 10) -> list[dict[str, object]]:
-        """Return the *limit* most recent query records, newest first.
+    def get_recent_queries(self, limit: int = 10, user_id: str = "") -> list[dict[str, object]]:
+        """Return the *limit* most recent query records for *user_id*, newest first.
 
         Args:
             limit: Maximum number of records to return.
+            user_id: Non-nullable. Pass ``"__stdio__"`` in single-user stdio mode.
 
-        Returns:
-            List of dicts with keys: id, timestamp, question, sql, success,
-            row_count, attempts, duration_ms, error.
+        Raises:
+            ValueError: If user_id is empty.
         """
+        if not user_id:
+            raise ValueError("user_id is required and must not be empty")
+
         with Session(self._engine) as session:
-            rows = session.query(_QueryHistory).order_by(_QueryHistory.id.desc()).limit(limit).all()
+            rows = (
+                session.query(QueryHistory)
+                .filter(QueryHistory.user_id == user_id)
+                .order_by(QueryHistory.id.desc())
+                .limit(limit)
+                .all()
+            )
             return [
                 {
                     "id": r.id,
                     "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                    "user_id": r.user_id,
                     "question": r.question,
                     "sql": r.sql,
                     "success": r.success,

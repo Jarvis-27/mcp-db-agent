@@ -1,0 +1,35 @@
+# Demo ecommerce database — use this to seed a target database for development
+# and testing against the MCP server.
+#
+# Usage:
+#   docker compose -f docker-compose.demo.yml up -d
+#   uv run scripts/seed_demo_db.py --url postgresql://admin:secret@localhost:5432/ecommerce
+#
+# Then configure .env:
+#   DATABASE_URL=postgresql://admin:secret@localhost:5432/ecommerce
+
+services:
+  demo-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: ecommerce
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d ecommerce"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Seed the demo database on startup
+  demo-seeder:
+    build: .
+    command: ["uv", "run", "scripts/seed_demo_db.py"]
+    environment:
+      DATABASE_URL: postgresql://admin:secret@demo-db:5432/ecommerce
+    depends_on:
+      demo-db:
+        condition: service_healthy
+    restart: "no"

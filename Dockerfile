@@ -1,22 +1,40 @@
 FROM python:3.12-slim
 
-# Install uv via the official distroless image (no curl required)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Non-root user for security
+RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 
 # Copy dependency manifest first — changes here bust the cache, source changes do not
 COPY pyproject.toml uv.lock ./
-
-# Install production dependencies only into the project-local .venv
 RUN uv sync --no-dev --frozen
 
-# Copy application source
+# Copy application source and migration files
 COPY src/ ./src/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
+
+# Persist auth DB and user-supplied SQLite DBs (dev only) on a volume
+RUN mkdir -p /var/lib/mcp-db-agent/user-dbs && \
+    chown -R app:app /app /var/lib/mcp-db-agent
+
+USER app
 
 EXPOSE 8000
 
-# Default to HTTP transport; override with -e TRANSPORT=stdio for local/stdio use
+ENV ENVIRONMENT=production
 ENV TRANSPORT=streamable-http
 
-CMD ["uv", "run", "src/server.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys; \
+    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3).status==200 else 1)"
+
+# Production: 4 workers, proxy headers (for X-Forwarded-* from a reverse proxy)
+CMD ["uv", "run", "uvicorn", "src.app:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "4", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+# For stdio single-user mode:
+# docker run -e TRANSPORT=stdio --entrypoint uv ... run src/server.py

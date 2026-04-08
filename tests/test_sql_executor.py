@@ -1,5 +1,7 @@
 """Tests for SQLExecutor — runs validated SQL against demo.db."""
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from sqlalchemy import create_engine
 
@@ -14,7 +16,8 @@ def engine():
 
 @pytest.fixture(scope="module")
 def executor(engine):
-    return SQLExecutor(engine, settings)
+    pool = ThreadPoolExecutor(max_workers=2)
+    return SQLExecutor(engine, settings, pool)
 
 
 # ---------------------------------------------------------------------------

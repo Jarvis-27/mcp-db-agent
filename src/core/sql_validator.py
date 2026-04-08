@@ -8,6 +8,36 @@ import sqlparse.tokens as T
 
 from src.core.schema_inspector import SchemaInspector
 
+# ---------------------------------------------------------------------------
+# Security: dangerous functions and statement patterns (T2)
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_FUNCTIONS = {
+    # PostgreSQL file/network/RCE
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "lo_import",
+    "lo_export",
+    "dblink",
+    "dblink_connect",
+    # SQLite
+    "load_extension",
+}
+
+_FORBIDDEN_STATEMENT_PATTERNS = [
+    re.compile(r"\bCOPY\b.*\bFROM\s+PROGRAM\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bCOPY\b.*\bTO\s+PROGRAM\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bATTACH\s+DATABASE\b", re.IGNORECASE),
+    re.compile(r"\bDETACH\s+DATABASE\b", re.IGNORECASE),
+    re.compile(r"\bSELECT\b.*\bINTO\s+\w", re.IGNORECASE | re.DOTALL),  # SELECT INTO new_table
+    re.compile(r"\bPRAGMA\b\s+writable_schema", re.IGNORECASE),
+    re.compile(r"\bLOAD_FILE\s*\(", re.IGNORECASE),  # MySQL
+    re.compile(r"\bINTO\s+OUTFILE\b", re.IGNORECASE),  # MySQL
+    re.compile(r"\bINTO\s+DUMPFILE\b", re.IGNORECASE),  # MySQL
+]
+
 # Caught via sqlparse token types (DML / DDL subtypes)
 _FORBIDDEN_DML = {
     "INSERT",
@@ -56,6 +86,27 @@ class SQLValidator:
         self._schema_inspector = schema_inspector
 
     def validate(self, sql: str) -> ValidationResult:
+        # Check 0a: Single statement only — multi-statement strings are rejected.
+        parsed_all = sqlparse.parse(sql)
+        non_empty = [s for s in parsed_all if s.tokens and str(s).strip()]
+        if len(non_empty) > 1:
+            return ValidationResult(is_valid=False, error="Only a single SQL statement is allowed")
+
+        # Check 0b: Forbidden function scan (T2 — RCE/file-read via DB functions)
+        for func_name in _FORBIDDEN_FUNCTIONS:
+            if re.search(rf"\b{re.escape(func_name)}\s*\(", sql, re.IGNORECASE):
+                return ValidationResult(
+                    is_valid=False,
+                    error=f"Use of forbidden function '{func_name}' is not allowed",
+                )
+
+        # Check 0c: Forbidden statement pattern scan (T2)
+        for pattern in _FORBIDDEN_STATEMENT_PATTERNS:
+            if pattern.search(sql):
+                return ValidationResult(
+                    is_valid=False, error="SQL contains a forbidden statement pattern"
+                )
+
         # Check 1: Forbid write operations
         # DML covers INSERT/UPDATE/DELETE; DDL covers CREATE/DROP/ALTER.
         # Both token types must be checked to catch all mutation operations.

@@ -76,7 +76,10 @@ def corrector(engine):
     inspector = SchemaInspector(engine)
     generator = SQLGenerator(settings, inspector)
     validator = SQLValidator(inspector)
-    executor = SQLExecutor(engine, settings)
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    executor = SQLExecutor(engine, settings, pool)
     return SelfCorrector(generator, validator, executor, settings)
 
 

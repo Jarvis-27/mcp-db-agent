@@ -1,5 +1,7 @@
 """Schema inspection utilities for extracting database metadata."""
 
+import time
+
 import sqlalchemy.types as sqltypes
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.engine.interfaces import (
@@ -10,9 +12,20 @@ from sqlalchemy.engine.interfaces import (
 
 
 class SchemaInspector:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, cache_ttl_seconds: int = 600) -> None:
         self._engine = engine
         self._inspector = inspect(engine)
+        self._schema_cache: tuple[str, float] | None = None
+        self._cache_ttl = cache_ttl_seconds
+
+    def refresh(self) -> None:
+        """Bust the schema cache and re-initialise the SQLAlchemy inspector.
+
+        Called from PipelineFactory.invalidate() and optionally exposed as an
+        MCP tool so operators can force a re-read after schema migrations.
+        """
+        self._schema_cache = None
+        self._inspector = inspect(self._engine)
 
     def get_table_names(self) -> list[str]:
         return self._inspector.get_table_names()
@@ -36,6 +49,16 @@ class SchemaInspector:
         return [row[0] for row in rows]
 
     def get_full_schema(self) -> str:
+        if self._schema_cache is not None:
+            cached_text, ts = self._schema_cache
+            if time.monotonic() - ts < self._cache_ttl:
+                return cached_text
+
+        text_result = self._build_full_schema()
+        self._schema_cache = (text_result, time.monotonic())
+        return text_result
+
+    def _build_full_schema(self) -> str:
         lines: list[str] = []
         pk_set: set[str]
 
