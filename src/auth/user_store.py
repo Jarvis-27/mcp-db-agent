@@ -67,9 +67,6 @@ class UserConfig:
 
     user_id: str
     database_url: str  # decrypted, already passed url_guard
-    llm_provider: str
-    anthropic_api_key: str | None  # decrypted; None if user did not supply
-    groq_api_key: str | None  # decrypted; None if user did not supply
     is_active: bool
 
 
@@ -117,13 +114,7 @@ class UserStore:
     # Write operations
     # ------------------------------------------------------------------
 
-    def create_user(
-        self,
-        database_url: str,
-        llm_provider: str,
-        anthropic_api_key: str | None = None,
-        groq_api_key: str | None = None,
-    ) -> tuple[str, str]:
+    def create_user(self, database_url: str) -> tuple[str, str]:
         """Create a new user. Returns (user_id, raw_api_key).
 
         raw_api_key format: 'mdbk_' + secrets.token_urlsafe(32).
@@ -140,13 +131,7 @@ class UserStore:
             id=user_id,
             api_key_hash=_hash_key(raw_key),
             database_url_enc=self._cipher.encrypt(database_url),
-            llm_provider=llm_provider,
-            anthropic_api_key_enc=(
-                self._cipher.encrypt(anthropic_api_key) if anthropic_api_key else None
-            ),
-            groq_api_key_enc=(
-                self._cipher.encrypt(groq_api_key) if groq_api_key else None
-            ),
+            llm_provider="server",
             is_active=True,
             created_at=now,
             updated_at=now,
@@ -160,16 +145,8 @@ class UserStore:
 
         return user_id, raw_key
 
-    def update_user(
-        self,
-        user_id: str,
-        *,
-        database_url: str | None = None,
-        llm_provider: str | None = None,
-        anthropic_api_key: str | None = None,
-        groq_api_key: str | None = None,
-    ) -> bool:
-        """Partial update. Refreshes updated_at. Returns False if user not found."""
+    def update_user(self, user_id: str, *, database_url: str | None = None) -> bool:
+        """Update the database URL for a user. Refreshes updated_at. Returns False if not found."""
         with Session(self._engine) as session:
             user = session.get(User, user_id)
             if user is None:
@@ -178,12 +155,6 @@ class UserStore:
             if database_url is not None:
                 validate_database_url(database_url)
                 user.database_url_enc = self._cipher.encrypt(database_url)
-            if llm_provider is not None:
-                user.llm_provider = llm_provider
-            if anthropic_api_key is not None:
-                user.anthropic_api_key_enc = self._cipher.encrypt(anthropic_api_key)
-            if groq_api_key is not None:
-                user.groq_api_key_enc = self._cipher.encrypt(groq_api_key)
 
             user.updated_at = _utcnow()
             session.commit()
@@ -270,16 +241,5 @@ class UserStore:
         return UserConfig(
             user_id=user.id,
             database_url=self._cipher.decrypt(user.database_url_enc),
-            llm_provider=user.llm_provider,
-            anthropic_api_key=(
-                self._cipher.decrypt(user.anthropic_api_key_enc)
-                if user.anthropic_api_key_enc
-                else None
-            ),
-            groq_api_key=(
-                self._cipher.decrypt(user.groq_api_key_enc)
-                if user.groq_api_key_enc
-                else None
-            ),
             is_active=user.is_active,
         )

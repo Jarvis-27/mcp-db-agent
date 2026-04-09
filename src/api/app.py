@@ -19,7 +19,7 @@ from src.api.schemas import (
     UserMetaResponse,
 )
 from src.auth.url_guard import InvalidDatabaseURL, validate_database_url
-from src.auth.user_store import UserConfig, UserStore
+from src.auth.user_store import UserConfig, UserStore, User as UserModel
 from src.config import settings
 
 limiter = Limiter(key_func=get_remote_address)
@@ -124,12 +124,7 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     await asyncio.to_thread(_dry_run_connect, body.database_url)
 
     user_store: UserStore = request.app.state.user_store
-    user_id, raw_key = user_store.create_user(
-        database_url=body.database_url,
-        llm_provider=body.llm_provider,
-        anthropic_api_key=body.anthropic_api_key,
-        groq_api_key=body.groq_api_key,
-    )
+    user_id, raw_key = user_store.create_user(database_url=body.database_url)
     return RegisterResponse(user_id=user_id, api_key=raw_key)
 
 
@@ -140,10 +135,9 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
 
 @api_app.get("/v1/users/me", response_model=UserMetaResponse)
 async def get_me(request: Request, user: AuthedUser) -> UserMetaResponse:
-    """Return metadata for the authenticated user (no secrets)."""
+    """Return metadata for the authenticated user."""
     user_store: UserStore = request.app.state.user_store
     from sqlalchemy.orm import Session
-    from src.auth.user_store import User as UserModel
 
     with Session(user_store._engine) as session:
         row = session.get(UserModel, user.user_id)
@@ -151,18 +145,14 @@ async def get_me(request: Request, user: AuthedUser) -> UserMetaResponse:
             raise HTTPException(status_code=404, detail="User not found")
         return UserMetaResponse(
             user_id=row.id,
-            llm_provider=row.llm_provider,
-            has_anthropic_key=row.anthropic_api_key_enc is not None,
-            has_groq_key=row.groq_api_key_enc is not None,
             is_active=row.is_active,
             created_at=row.created_at.isoformat(),
-            daily_query_count=row.daily_query_count,
         )
 
 
 @api_app.put("/v1/users/me", status_code=200)
 async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> dict:
-    """Update database URL or API keys for the authenticated user."""
+    """Update the database URL for the authenticated user."""
     if body.database_url:
         try:
             validate_database_url(
@@ -173,13 +163,7 @@ async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> 
         await asyncio.to_thread(_dry_run_connect, body.database_url)
 
     user_store: UserStore = request.app.state.user_store
-    updated = user_store.update_user(
-        user.user_id,
-        database_url=body.database_url,
-        llm_provider=body.llm_provider,
-        anthropic_api_key=body.anthropic_api_key,
-        groq_api_key=body.groq_api_key,
-    )
+    updated = user_store.update_user(user.user_id, database_url=body.database_url)
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
 

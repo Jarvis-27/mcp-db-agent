@@ -23,12 +23,12 @@ log = logging.getLogger(__name__)
 
 
 class NoLLMKeyAvailable(Exception):
-    """Raised when neither the user nor the server has a key for the requested LLM provider."""
+    """Raised when the server has no key configured for the active LLM provider."""
 
     def __init__(self, provider: str) -> None:
         super().__init__(
-            f"No API key available for provider '{provider}'. "
-            "Supply your own key via PUT /v1/users/me."
+            f"No API key configured on the server for provider '{provider}'. "
+            "Set ANTHROPIC_API_KEY or GROQ_API_KEY in the server's .env file."
         )
 
 
@@ -109,15 +109,8 @@ class PipelineFactory:
             self._cache[cache_key] = components
             return components
 
-    def _build_key(self, uc: UserConfig) -> tuple[str, str, str, str]:
-        # Use key prefix only (first 8 chars) so two users sharing a DB URL but
-        # different keys cache separately without storing full keys in memory.
-        return (
-            uc.database_url,
-            uc.llm_provider,
-            (uc.anthropic_api_key or "")[:8],
-            (uc.groq_api_key or "")[:8],
-        )
+    def _build_key(self, uc: UserConfig) -> tuple[str]:
+        return (uc.database_url,)
 
     def _build_components(self, validated_url: URL, uc: UserConfig) -> PipelineComponents:
         engine = create_engine(
@@ -168,14 +161,15 @@ class PipelineFactory:
         return {}
 
     def _build_user_settings(self, uc: UserConfig) -> UserSettings:
-        anthropic = uc.anthropic_api_key or self._settings.anthropic_api_key or ""
-        groq = uc.groq_api_key or self._settings.groq_api_key or ""
-        if uc.llm_provider == "anthropic" and not anthropic:
+        provider = self._settings.llm_provider or "anthropic"
+        anthropic = self._settings.anthropic_api_key or ""
+        groq = self._settings.groq_api_key or ""
+        if provider == "anthropic" and not anthropic:
             raise NoLLMKeyAvailable("anthropic")
-        if uc.llm_provider == "groq" and not groq:
+        if provider == "groq" and not groq:
             raise NoLLMKeyAvailable("groq")
         return UserSettings(
-            llm_provider=uc.llm_provider,
+            llm_provider=provider,
             anthropic_api_key=anthropic,
             groq_api_key=groq,
             claude_model=self._settings.claude_model,

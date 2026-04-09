@@ -72,8 +72,9 @@ def build_mcp(
     )
 
 
-# Stdio / single-process mode: stateless_http=False, no double-prefix
-mcp = build_mcp(stateless_http=False, json_response=False, streamable_http_path="/mcp")
+# Single shared instance — tools registered here are available in both stdio and HTTP mode.
+# stateless_http/json_response are ignored by the stdio transport.
+mcp = build_mcp(stateless_http=True, json_response=True, streamable_http_path="/")
 
 
 # ---------------------------------------------------------------------------
@@ -251,23 +252,6 @@ async def ask_database(question: str) -> str:
                 },
             )
             return json.dumps(payload, indent=2)
-
-    # --- LLM quota enforcement on fallback path ---
-    uc = user_config_var.get()
-    on_fallback = uc is not None and (
-        (uc.llm_provider == "anthropic" and not uc.anthropic_api_key)
-        or (uc.llm_provider == "groq" and not uc.groq_api_key)
-    )
-    if on_fallback and _factory is not None and hasattr(_factory, "_user_store"):
-        import asyncio
-
-        used = await asyncio.to_thread(_factory._user_store.increment_daily_quota, user_id)
-        if used > settings.ask_database_quota_per_day:
-            return pipeline.formatter.format_error(
-                "Daily fallback quota exceeded. Provide your own LLM key via PUT /v1/users/me.",
-                "",
-                [],
-            )
 
     # --- Execute pipeline ---
     start = time.monotonic()

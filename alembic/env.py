@@ -1,9 +1,17 @@
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+
+# Load .env so AUTH_DATABASE_URL is available when running alembic from the CLI
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
 
 # Alembic Config object — provides access to values in alembic.ini
 config = context.config

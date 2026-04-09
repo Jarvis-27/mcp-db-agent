@@ -120,6 +120,10 @@ async def lifespan(app: Starlette):
     api_app.state.auth_key_cache = auth_key_cache
     api_app.state.factory = factory
 
+    # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
+    app.state.user_store = user_store
+    app.state.auth_key_cache = auth_key_cache
+
     # 6. Stash factory and query_log on server module for MCP tool handlers
     server_module = importlib.import_module("src.server")
     server_module._factory = factory
@@ -127,25 +131,25 @@ async def lifespan(app: Starlette):
 
     log.info("MCP Database Analytics Agent started (hosted multi-tenant mode)")
 
-    try:
-        yield
-    finally:
-        log.info("Shutting down...")
-        await factory.shutdown()
-        executor_pool.shutdown(wait=False, cancel_futures=True)
-        auth_engine.dispose()
+    # Start the FastMCP session manager — required for streamable HTTP transport.
+    # The sub-app lifespan is not automatically forwarded through _AuthedMCPWrapper,
+    # so we run it explicitly here.
+    async with _server_module.mcp.session_manager.run():
+        try:
+            yield
+        finally:
+            log.info("Shutting down...")
+            await factory.shutdown()
+            executor_pool.shutdown(wait=False, cancel_futures=True)
+            auth_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
 # Build the MCP ASGI app
 # ---------------------------------------------------------------------------
 
-mcp = _server_module.build_mcp(
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",  # so Mount("/mcp", ...) gives /mcp/... not /mcp/mcp/...
-)
-_mcp_app = mcp.streamable_http_app()
+# Reuse the same FastMCP instance from server.py — all tools are registered on it.
+_mcp_app = _server_module.mcp.streamable_http_app()
 
 # ---------------------------------------------------------------------------
 # Parent Starlette app — lifespan lives HERE, not on sub-apps
