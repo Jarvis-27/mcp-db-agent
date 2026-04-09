@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session
 
@@ -192,24 +193,41 @@ class UserStore:
     def increment_daily_quota(self, user_id: str) -> int:
         """Atomic counter increment with daily reset. Returns new count.
 
-        Resets the counter if daily_quota_reset_at has passed.
+        Uses a single SQL UPDATE … RETURNING so the read/modify/write is
+        evaluated atomically at the database level.  Both PostgreSQL and
+        SQLite ≥ 3.35 (Python 3.10+ ships 3.37+) support RETURNING.
+
+        Concurrent requests for the same user serialize on the row lock
+        (PostgreSQL) or the write lock (SQLite), so no increment can be lost.
         """
+        now = _utcnow()
+        next_reset = _next_midnight(now)
+
         with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                raise ValueError(f"User {user_id} not found")
-
-            now = _utcnow()
-            if now >= _ensure_utc(user.daily_quota_reset_at):  # type: ignore[arg-type]
-                user.daily_query_count = 1  # type: ignore[assignment]
-                user.daily_quota_reset_at = _next_midnight(now)  # type: ignore[assignment]
-            else:
-                user.daily_query_count = (user.daily_query_count or 0) + 1  # type: ignore[assignment]
-
-            count: int = user.daily_query_count  # type: ignore[assignment]
+            row = session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET
+                        daily_query_count = CASE
+                            WHEN :now >= daily_quota_reset_at THEN 1
+                            ELSE daily_query_count + 1
+                        END,
+                        daily_quota_reset_at = CASE
+                            WHEN :now >= daily_quota_reset_at THEN :next_reset
+                            ELSE daily_quota_reset_at
+                        END
+                    WHERE id = :user_id
+                    RETURNING daily_query_count
+                    """
+                ),
+                {"now": now, "next_reset": next_reset, "user_id": user_id},
+            ).fetchone()
             session.commit()
 
-        return count
+        if row is None:
+            raise ValueError(f"User {user_id} not found")
+        return int(row[0])
 
     # ------------------------------------------------------------------
     # Read operations

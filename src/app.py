@@ -128,6 +128,7 @@ async def lifespan(app: Starlette):
     server_module = importlib.import_module("src.server")
     server_module._factory = factory  # type: ignore[attr-defined]
     server_module._query_log = query_log  # type: ignore[attr-defined]
+    server_module._user_store = user_store  # type: ignore[attr-defined]
 
     log.info("MCP Database Analytics Agent started (hosted multi-tenant mode)")
 

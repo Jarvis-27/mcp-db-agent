@@ -231,3 +231,35 @@ def test_increment_daily_quota_resets_at_midnight(store):
 def test_increment_daily_quota_raises_for_missing(store):
     with pytest.raises(ValueError, match="not found"):
         store.increment_daily_quota("nonexistent-id")
+
+
+def test_increment_daily_quota_concurrent_no_lost_updates(tmp_path, cipher):
+    """Concurrent increments must not lose updates (no read/modify/write race).
+
+    Uses a file-backed SQLite database (not StaticPool) so that multiple
+    threads each get their own connection from the pool.  This exercises the
+    actual serialization guarantee of the atomic UPDATE … RETURNING statement.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    db_path = tmp_path / "concurrent_test.db"
+    eng = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(eng)
+    file_store = UserStore(eng, cipher)
+
+    try:
+        user_id, _ = _make_user(file_store)
+        n = 20
+
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futures = [pool.submit(file_store.increment_daily_quota, user_id) for _ in range(n)]
+            results = sorted(f.result() for f in as_completed(futures))
+
+        # Every increment must return a unique, consecutive value 1..n.
+        # If any two increments returned the same value an update was lost.
+        assert results == list(range(1, n + 1))
+    finally:
+        eng.dispose()

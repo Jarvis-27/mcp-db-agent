@@ -36,6 +36,7 @@ from src.tools.list_tables import list_tables as _list_tables
 
 _factory: PipelineFactory | None = None
 _query_log = None  # QueryLog | None — populated by src/app.py
+_user_store = None  # UserStore | None — populated by src/app.py
 
 # Bounded TTL cache — multi-tenant safe (keyed on (user_id, question)).
 # In HTTP mode this is populated from src/app.py. In stdio mode it is
@@ -248,7 +249,8 @@ async def ask_database(question: str) -> str:
                   "How many orders were placed in 2024?" or
                   "List the top 5 products by revenue."
     """
-    pipeline = await _get_pipeline()
+    # Resolve user identity and cache key before any I/O so we can short-circuit
+    # cheaply for cache hits and enforce quota BEFORE cold-path DB work.
     user_id = _current_user_id()
     query_log = _get_query_log()
 
@@ -267,7 +269,7 @@ async def ask_database(question: str) -> str:
         },
     )
 
-    # --- Cache hit ---
+    # --- Cache hit (no quota increment; no DB or LLM work) ---
     if cache_key in _cache:
         cached_result, cached_at = _cache[cache_key]
         if now - cached_at < CACHE_TTL:
@@ -286,6 +288,39 @@ async def ask_database(question: str) -> str:
                 },
             )
             return json.dumps(payload, indent=2)
+
+    # --- Enforce daily quota BEFORE pipeline resolution (hosted mode only) ---
+    # Quota must be checked here so that over-quota requests never trigger a
+    # cold-path DB connection inside _get_pipeline() / _build_components().
+    if user_id != "__stdio__" and _user_store is not None:
+        new_count = _user_store.increment_daily_quota(user_id)
+        if new_count > settings.ask_database_quota_per_day:
+            _log.warning(
+                "ask_database",
+                extra={
+                    "fields": {
+                        "tool": "ask_database",
+                        "event": "quota_exceeded",
+                        "user_id": user_id,
+                        "daily_count": new_count,
+                        "quota": settings.ask_database_quota_per_day,
+                    }
+                },
+            )
+            return json.dumps(
+                {
+                    "error": "Daily query quota exceeded",
+                    "quota": settings.ask_database_quota_per_day,
+                    "suggestion": (
+                        "Your daily quota resets at midnight UTC. "
+                        "Contact your administrator to increase your limit."
+                    ),
+                },
+                indent=2,
+            )
+
+    # --- Resolve pipeline (cold-path DB connect happens here if not cached) ---
+    pipeline = await _get_pipeline()
 
     # --- Execute pipeline ---
     start = time.monotonic()
