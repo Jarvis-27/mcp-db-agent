@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(grep:*)",
+      "Bash(xargs ls:*)",
+      "Bash(sort -k2)",
+      "Bash(xargs wc:*)",
+      "WebFetch(domain:pypi.org)"
     ]
   }
 }
