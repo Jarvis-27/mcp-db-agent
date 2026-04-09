@@ -5,7 +5,7 @@ import json
 from contextvars import ContextVar
 from typing import Callable
 
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 
 from src.auth.user_store import UserConfig, UserStore
 

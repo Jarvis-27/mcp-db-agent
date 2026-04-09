@@ -5,6 +5,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 from pathlib import Path
 
 # When executed as a script (`uv run src/server.py`), Python adds `src/` to
@@ -39,7 +40,7 @@ _query_log = None  # QueryLog | None — populated by src/app.py
 # Bounded TTL cache — multi-tenant safe (keyed on (user_id, question)).
 # In HTTP mode this is populated from src/app.py. In stdio mode it is
 # a module-level dict for backward compat.
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 
 _cache: TTLCache = TTLCache(maxsize=1000, ttl=3600)
 CACHE_TTL = 3600
@@ -102,17 +103,50 @@ def _current_user_id() -> str:
 
 
 def _get_query_log():
-    """Return the query log, creating a stdio one if running standalone."""
+    """Return the query log instance.
+
+    When AUTH_DATABASE_URL is set to a PostgreSQL database (e.g. Neon), query
+    history is written there — the query_history table is created by the initial
+    Alembic migration.  Without AUTH_DATABASE_URL, falls back to a local
+    SQLite file (query_log.db) for simple stdio-only setups.
+    """
     global _query_log
     if _query_log is None:
-        from pathlib import Path
         from sqlalchemy import create_engine
         from src.core.query_log import QueryLog
-        from src.auth.user_store import Base
 
-        db_path = str(Path(__file__).parent.parent / "query_log.db")
-        log_engine = create_engine(f"sqlite:///{db_path}")
-        Base.metadata.create_all(log_engine)
+        auth_url = settings.auth_database_url
+        if not auth_url.startswith("sqlite"):
+            # PostgreSQL (or other network DB) configured — use it directly.
+            # Create only the query_history table if it doesn't exist yet;
+            # we never touch other tables in the database.
+            from src.auth.user_store import QueryHistory
+            connect_args = {"connect_timeout": 10} if auth_url.startswith("postgresql") else {}
+            log_engine = create_engine(auth_url, connect_args=connect_args)
+            QueryHistory.__table__.create(log_engine, checkfirst=True)
+        else:
+            # No explicit auth DB — fall back to a local SQLite query_log.db.
+            from pathlib import Path
+            from sqlalchemy import inspect as _inspect, text
+            from src.auth.user_store import Base
+
+            db_path = str(Path(__file__).parent.parent / "query_log.db")
+            log_engine = create_engine(f"sqlite:///{db_path}")
+            Base.metadata.create_all(log_engine)
+            # Schema guard: add user_id if the file predates this column.
+            with log_engine.connect() as conn:
+                insp = _inspect(log_engine)
+                if "query_history" in insp.get_table_names():
+                    col_names = {c["name"] for c in insp.get_columns("query_history")}
+                    if "user_id" not in col_names:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE query_history "
+                                "ADD COLUMN user_id TEXT NOT NULL DEFAULT '__stdio__'"
+                            )
+                        )
+                        conn.commit()
+
         _query_log = QueryLog(log_engine)
     return _query_log
 
@@ -258,20 +292,25 @@ async def ask_database(question: str) -> str:
     result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
     duration_ms = int((time.monotonic() - start) * 1000)
 
+    sql: str = str(result["sql"])
+    attempts: int = cast(int, result["attempts"])
+    data: list[dict[str, object]] = cast(list[dict[str, object]], result["data"])
+    errors: list[str] = cast(list[str], result["errors"])
+
     if result["success"]:
-        formatted = pipeline.formatter.format(result["sql"], result["data"], result["attempts"])
+        formatted = pipeline.formatter.format(sql, data, attempts)
         query_log.log_query(
             question=question,
-            sql=result["sql"],
+            sql=sql,
             success=True,
-            row_count=len(result["data"]),
-            attempts=result["attempts"],
+            row_count=len(data),
+            attempts=attempts,
             duration_ms=duration_ms,
             error=None,
             user_id=user_id,
         )
         _cache[cache_key] = (formatted, time.monotonic())
-        log_level = logging.WARNING if result["attempts"] > 1 else logging.INFO
+        log_level = logging.WARNING if attempts > 1 else logging.INFO
         _log.log(
             log_level,
             "ask_database",
@@ -281,24 +320,24 @@ async def ask_database(question: str) -> str:
                     "event": "completed",
                     "question": question,
                     "user_id": user_id,
-                    "generated_sql": result["sql"],
+                    "generated_sql": sql,
                     "execution_time_ms": duration_ms,
-                    "result_row_count": len(result["data"]),
-                    "attempts": result["attempts"],
+                    "result_row_count": len(data),
+                    "attempts": attempts,
                     "error": None,
                 }
             },
         )
         return formatted
 
-    last_error = result["errors"][-1] if result["errors"] else "Query failed after maximum retries"
-    formatted = pipeline.formatter.format_error(last_error, result["sql"], result["errors"])
+    last_error = errors[-1] if errors else "Query failed after maximum retries"
+    formatted = pipeline.formatter.format_error(last_error, sql, errors)
     query_log.log_query(
         question=question,
-        sql=result["sql"],
+        sql=sql,
         success=False,
         row_count=0,
-        attempts=result["attempts"],
+        attempts=attempts,
         duration_ms=duration_ms,
         error=last_error,
         user_id=user_id,

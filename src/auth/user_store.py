@@ -120,8 +120,9 @@ class UserStore:
         raw_api_key format: 'mdbk_' + secrets.token_urlsafe(32).
         Stores SHA-256(raw_api_key) only — the raw key is never stored.
         """
-        # Validate URL before storing
-        validate_database_url(database_url)
+        # Validate URL and use the sanitized form before storing
+        sanitized_url = validate_database_url(database_url)
+        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
 
         raw_key = "mdbk_" + secrets.token_urlsafe(32)
         user_id = str(uuid.uuid4())
@@ -130,7 +131,7 @@ class UserStore:
         user = User(
             id=user_id,
             api_key_hash=_hash_key(raw_key),
-            database_url_enc=self._cipher.encrypt(database_url),
+            database_url_enc=self._cipher.encrypt(sanitized_url_str),
             llm_provider="server",
             is_active=True,
             created_at=now,
@@ -153,10 +154,11 @@ class UserStore:
                 return False
 
             if database_url is not None:
-                validate_database_url(database_url)
-                user.database_url_enc = self._cipher.encrypt(database_url)
+                sanitized_url = validate_database_url(database_url)
+                sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
+                user.database_url_enc = self._cipher.encrypt(sanitized_url_str)  # type: ignore[assignment]
 
-            user.updated_at = _utcnow()
+            user.updated_at = _utcnow()  # type: ignore[assignment]
             session.commit()
 
         return True
@@ -171,8 +173,8 @@ class UserStore:
             user = session.get(User, user_id)
             if user is None:
                 raise ValueError(f"User {user_id} not found")
-            user.api_key_hash = _hash_key(raw_key)
-            user.updated_at = _utcnow()
+            user.api_key_hash = _hash_key(raw_key)  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
             session.commit()
         return raw_key
 
@@ -182,8 +184,8 @@ class UserStore:
             user = session.get(User, user_id)
             if user is None:
                 return False
-            user.is_active = False
-            user.updated_at = _utcnow()
+            user.is_active = False  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
             session.commit()
         return True
 
@@ -198,13 +200,13 @@ class UserStore:
                 raise ValueError(f"User {user_id} not found")
 
             now = _utcnow()
-            if now >= _ensure_utc(user.daily_quota_reset_at):
-                user.daily_query_count = 1
-                user.daily_quota_reset_at = _next_midnight(now)
+            if now >= _ensure_utc(user.daily_quota_reset_at):  # type: ignore[arg-type]
+                user.daily_query_count = 1  # type: ignore[assignment]
+                user.daily_quota_reset_at = _next_midnight(now)  # type: ignore[assignment]
             else:
-                user.daily_query_count = (user.daily_query_count or 0) + 1
+                user.daily_query_count = (user.daily_query_count or 0) + 1  # type: ignore[assignment]
 
-            count = user.daily_query_count
+            count: int = user.daily_query_count  # type: ignore[assignment]
             session.commit()
 
         return count
@@ -239,7 +241,7 @@ class UserStore:
 
     def _to_config(self, user: User) -> UserConfig:
         return UserConfig(
-            user_id=user.id,
-            database_url=self._cipher.decrypt(user.database_url_enc),
-            is_active=user.is_active,
+            user_id=user.id,  # type: ignore[arg-type]
+            database_url=self._cipher.decrypt(user.database_url_enc),  # type: ignore[arg-type]
+            is_active=user.is_active,  # type: ignore[arg-type]
         )

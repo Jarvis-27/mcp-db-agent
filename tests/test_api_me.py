@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+import src.auth.url_guard as ug_module
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -39,7 +40,10 @@ def app_state():
     from src.api.app import limiter
 
     limiter._storage.reset()
-    yield
+    # Treat all tests as development so the SSL-mode requirement doesn't block
+    # clean test URLs. Production SSL enforcement is tested in test_url_guard.py.
+    with patch.object(ug_module.settings, "environment", "development"):
+        yield
     Base.metadata.drop_all(engine)
     engine.dispose()
 
@@ -55,7 +59,7 @@ def registered_user(client):
          patch("src.api.app._dry_run_connect"):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": _VALID_PG_URL, "llm_provider": "anthropic"},
+            json={"database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 201
     return resp.json()  # {user_id, api_key, warning}
@@ -71,7 +75,6 @@ def test_get_me_returns_200(client, registered_user):
     assert resp.status_code == 200
     data = resp.json()
     assert data["user_id"] == registered_user["user_id"]
-    assert data["llm_provider"] == "anthropic"
     assert data["is_active"] is True
 
 
@@ -90,17 +93,15 @@ def test_get_me_invalid_key_returns_401(client):
 # ---------------------------------------------------------------------------
 
 
-def test_put_me_updates_llm_provider(client, registered_user):
+def test_put_me_with_empty_body_returns_200(client, registered_user):
+    # PUT with no fields is a no-op update (only refreshes updated_at).
+    # LLM provider is server-owned and cannot be changed per-user.
     resp = client.put(
         "/v1/users/me",
         headers={"x-api-key": registered_user["api_key"]},
-        json={"llm_provider": "groq"},
+        json={},
     )
     assert resp.status_code == 200
-
-    # Verify the change persisted
-    me = client.get("/v1/users/me", headers={"x-api-key": registered_user["api_key"]})
-    assert me.json()["llm_provider"] == "groq"
 
 
 def test_put_me_bad_url_returns_400(client, registered_user):

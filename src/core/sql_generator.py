@@ -5,15 +5,16 @@ import re
 import anthropic
 import groq
 
-from src.config import Settings
+from src.config import UserSettings
 from src.core.schema_inspector import SchemaInspector
 
 
 class SQLGenerator:
-    def __init__(self, settings: Settings, schema_inspector: SchemaInspector) -> None:
+    def __init__(self, settings: UserSettings, schema_inspector: SchemaInspector) -> None:
         self._settings = settings
         self._schema_inspector = schema_inspector
 
+        self._client: groq.AsyncGroq | anthropic.AsyncAnthropic
         if settings.llm_provider == "groq":
             self._client = groq.AsyncGroq(api_key=settings.groq_api_key)
         else:
@@ -53,7 +54,7 @@ class SQLGenerator:
     async def _call_llm(self, prompt: str) -> str:
         """Send *prompt* to the configured LLM and return cleaned SQL."""
         if isinstance(self._client, groq.AsyncGroq):
-            response = await self._client.chat.completions.create(
+            groq_response = await self._client.chat.completions.create(
                 model=self._settings.groq_model,
                 max_tokens=1024,
                 messages=[
@@ -61,14 +62,14 @@ class SQLGenerator:
                     {"role": "user", "content": prompt},
                 ],
             )
-            raw_sql = response.choices[0].message.content or ""
+            raw_sql = groq_response.choices[0].message.content or ""
         else:
-            response = await self._client.messages.create(
+            anthropic_response = await self._client.messages.create(
                 model=self._settings.claude_model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
-            block = response.content[0]
+            block = anthropic_response.content[0]
             raw_sql = block.text if isinstance(block, anthropic.types.TextBlock) else ""
 
         return _clean_sql(raw_sql)

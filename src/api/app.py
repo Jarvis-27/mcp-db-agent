@@ -5,7 +5,6 @@ import hashlib
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -26,7 +25,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 api_app = FastAPI(title="MCP Database Analytics — Management API")
 api_app.state.limiter = limiter
-api_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+api_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -112,19 +111,21 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     if not settings.registration_open:
         raise HTTPException(status_code=403, detail="Registration is currently closed.")
 
-    # Validate URL (raises InvalidDatabaseURL → 400)
+    # Validate URL and get the sanitized form (raises InvalidDatabaseURL → 400)
     try:
-        validate_database_url(
+        sanitized_url = validate_database_url(
             body.database_url, allow_sqlite=settings.allow_sqlite_user_dbs
         )
     except InvalidDatabaseURL as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Dry-run connect to fail fast on bad credentials
-    await asyncio.to_thread(_dry_run_connect, body.database_url)
+    sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
+
+    # Dry-run connect using the sanitized URL to fail fast on bad credentials
+    await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     user_store: UserStore = request.app.state.user_store
-    user_id, raw_key = user_store.create_user(database_url=body.database_url)
+    user_id, raw_key = user_store.create_user(database_url=sanitized_url_str)
     return RegisterResponse(user_id=user_id, api_key=raw_key)
 
 
@@ -144,8 +145,8 @@ async def get_me(request: Request, user: AuthedUser) -> UserMetaResponse:
         if row is None:
             raise HTTPException(status_code=404, detail="User not found")
         return UserMetaResponse(
-            user_id=row.id,
-            is_active=row.is_active,
+            user_id=row.id,  # type: ignore[arg-type]
+            is_active=row.is_active,  # type: ignore[arg-type]
             created_at=row.created_at.isoformat(),
         )
 
@@ -153,17 +154,19 @@ async def get_me(request: Request, user: AuthedUser) -> UserMetaResponse:
 @api_app.put("/v1/users/me", status_code=200)
 async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> dict:
     """Update the database URL for the authenticated user."""
+    sanitized_url_str: str | None = None
     if body.database_url:
         try:
-            validate_database_url(
+            sanitized_url = validate_database_url(
                 body.database_url, allow_sqlite=settings.allow_sqlite_user_dbs
             )
         except InvalidDatabaseURL as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        await asyncio.to_thread(_dry_run_connect, body.database_url)
+        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
+        await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     user_store: UserStore = request.app.state.user_store
-    updated = user_store.update_user(user.user_id, database_url=body.database_url)
+    updated = user_store.update_user(user.user_id, database_url=sanitized_url_str)
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -247,8 +250,8 @@ async def health_ready(request: Request) -> dict:
         # Verify cipher is initialised (it lives on the user_store)
         _ = user_store._cipher
     except Exception:
-        return JSONResponse(
+        raise HTTPException(
             status_code=503,
-            content={"status": "degraded", "detail": "Auth database not reachable"},
+            detail="Auth database not reachable",
         )
     return {"status": "ok"}

@@ -72,6 +72,14 @@ _AGGREGATION_PATTERNS = (
     "MIN (",
 )
 
+# ---------------------------------------------------------------------------
+# Allowlist: only SELECT (and WITH for CTEs) are valid read-only entry points.
+# Every other top-level keyword — COPY, CALL, VACUUM, SET, SHOW, etc. — is
+# denied before any other checks run.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_FIRST_KEYWORDS = {"SELECT", "WITH"}
+
 
 @dataclass
 class ValidationResult:
@@ -92,7 +100,23 @@ class SQLValidator:
         if len(non_empty) > 1:
             return ValidationResult(is_valid=False, error="Only a single SQL statement is allowed")
 
-        # Check 0b: Forbidden function scan (T2 — RCE/file-read via DB functions)
+        # Check 0b: Allowlist — the statement must begin with SELECT or WITH.
+        # This is the primary gate against COPY, CALL, VACUUM, SET, SHOW, and
+        # any other non-read statement that the blacklist below might miss.
+        # WITH is permitted as the CTE prefix for read-only queries; the DML
+        # check below (Check 1) still catches writable CTEs such as
+        # "WITH d AS (DELETE …) SELECT …".
+        first_kw = _first_sql_keyword(sql)
+        if first_kw not in _ALLOWED_FIRST_KEYWORDS:
+            return ValidationResult(
+                is_valid=False,
+                error=(
+                    f"Only SELECT queries are allowed "
+                    f"(statement starts with: {first_kw or 'unknown'})"
+                ),
+            )
+
+        # Check 0d: Forbidden function scan (T2 — RCE/file-read via DB functions)
         for func_name in _FORBIDDEN_FUNCTIONS:
             if re.search(rf"\b{re.escape(func_name)}\s*\(", sql, re.IGNORECASE):
                 return ValidationResult(
@@ -100,7 +124,7 @@ class SQLValidator:
                     error=f"Use of forbidden function '{func_name}' is not allowed",
                 )
 
-        # Check 0c: Forbidden statement pattern scan (T2)
+        # Check 0e: Forbidden statement pattern scan (T2)
         for pattern in _FORBIDDEN_STATEMENT_PATTERNS:
             if pattern.search(sql):
                 return ValidationResult(
@@ -151,6 +175,21 @@ class SQLValidator:
             return ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified)
 
         return ValidationResult(is_valid=True)
+
+
+def _first_sql_keyword(sql: str) -> str:
+    """Return the first SQL keyword of *sql*, ignoring comments and whitespace.
+
+    Used by the allowlist check so that ``COPY``, ``CALL``, ``VACUUM``,
+    ``SET``, etc. are caught before any token-level scanning.  Returns the
+    keyword uppercased, or ``""`` for an empty/comment-only string.
+    """
+    # Strip single-line comments (-- …)
+    stripped = re.sub(r"--[^\n]*", " ", sql)
+    # Strip block comments (/* … */)
+    stripped = re.sub(r"/\*.*?\*/", " ", stripped, flags=re.DOTALL)
+    match = re.match(r"\s*([A-Za-z_]\w*)", stripped)
+    return match.group(1).upper() if match else ""
 
 
 def _extract_table_names(sql: str) -> list[str]:

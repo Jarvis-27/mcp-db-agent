@@ -10,7 +10,7 @@ import src.server as _server_module  # noqa: E402 — must come after sys.path s
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 from sqlalchemy import create_engine, event
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -126,8 +126,8 @@ async def lifespan(app: Starlette):
 
     # 6. Stash factory and query_log on server module for MCP tool handlers
     server_module = importlib.import_module("src.server")
-    server_module._factory = factory
-    server_module._query_log = query_log
+    server_module._factory = factory  # type: ignore[attr-defined]
+    server_module._query_log = query_log  # type: ignore[attr-defined]
 
     log.info("MCP Database Analytics Agent started (hosted multi-tenant mode)")
 

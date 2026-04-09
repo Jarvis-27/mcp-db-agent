@@ -3,7 +3,7 @@
 from src.core.sql_executor import SQLExecutor
 from src.core.sql_generator import SQLGenerator
 from src.core.sql_validator import SQLValidator
-from src.config import Settings
+from src.config import UserSettings
 
 
 class SelfCorrector:
@@ -12,7 +12,7 @@ class SelfCorrector:
         generator: SQLGenerator,
         validator: SQLValidator,
         executor: SQLExecutor,
-        settings: Settings,
+        settings: UserSettings,
     ) -> None:
         self._generator = generator
         self._validator = validator

@@ -5,13 +5,13 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine.url import URL
 
 from src.auth import url_guard
 from src.auth.user_store import UserConfig
-from src.config import Settings
+from src.config import Settings, UserSettings
 from src.core.result_formatter import ResultFormatter
 from src.core.schema_inspector import SchemaInspector
 from src.core.self_corrector import SelfCorrector
@@ -30,23 +30,6 @@ class NoLLMKeyAvailable(Exception):
             f"No API key configured on the server for provider '{provider}'. "
             "Set ANTHROPIC_API_KEY or GROQ_API_KEY in the server's .env file."
         )
-
-
-@dataclass(frozen=True)
-class UserSettings:
-    """Satisfies the attribute interface expected by SQLGenerator, SQLExecutor,
-    and SelfCorrector. Decouples them from the global Settings so they can be
-    constructed per-request without leaking config across users.
-    """
-
-    llm_provider: str
-    anthropic_api_key: str
-    groq_api_key: str
-    claude_model: str
-    groq_model: str
-    max_query_rows: int
-    query_timeout_seconds: int
-    max_self_correction_retries: int
 
 
 @dataclass(frozen=True)
@@ -221,9 +204,6 @@ class PipelineFactory:
         synthetic = UserConfig(
             user_id="__stdio__",
             database_url=s.database_url,
-            llm_provider=s.llm_provider or "anthropic",
-            anthropic_api_key=s.anthropic_api_key or None,
-            groq_api_key=s.groq_api_key or None,
             is_active=True,
         )
 

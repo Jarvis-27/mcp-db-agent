@@ -72,8 +72,8 @@ def _is_blocked_ip(addr: str) -> bool:
             if isinstance(cidr, ipaddress.IPv4Network) and ip in cidr:
                 return True
     else:
-        for net in _BLOCKED_IPV6_NETWORKS:
-            if ip in net:
+        for net6 in _BLOCKED_IPV6_NETWORKS:
+            if ip in net6:
                 return True
         for cidr in _extra_blocked_networks():
             if isinstance(cidr, ipaddress.IPv6Network) and ip in cidr:
@@ -85,7 +85,7 @@ def _is_blocked_ip(addr: str) -> bool:
 def _extra_blocked_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     if not settings.extra_blocked_cidrs:
         return []
-    result = []
+    result: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for cidr in settings.extra_blocked_cidrs.split(","):
         cidr = cidr.strip()
         if cidr:
@@ -103,7 +103,7 @@ def _resolve_and_check_hostname(hostname: str) -> None:
     except socket.gaierror as exc:
         raise InvalidDatabaseURL(f"Cannot resolve hostname '{hostname}': {exc}") from exc
 
-    resolved_ips = {info[4][0] for info in infos}
+    resolved_ips = {str(info[4][0]) for info in infos}
     for ip_str in resolved_ips:
         if _is_blocked_ip(ip_str):
             raise InvalidDatabaseURL(
@@ -166,7 +166,7 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
 
     # Require SSL in non-development environments
     if scheme.startswith("postgresql") and settings.environment != "development":
-        sslmode = (url.query or {}).get("sslmode", "")
+        sslmode = dict(url.query).get("sslmode", "") if url.query else ""  # type: ignore[call-overload]
         if sslmode not in ("require", "verify-ca", "verify-full"):
             raise InvalidDatabaseURL(
                 "PostgreSQL connections require sslmode=require, verify-ca, or verify-full "

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.sql_validator import SQLValidator, ValidationResult, _has_top_level_limit
+from src.core.sql_validator import SQLValidator, ValidationResult, _first_sql_keyword, _has_top_level_limit
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,10 @@ def test_write_operations_are_rejected(sql):
     v = _validator()
     result = v.validate(sql)
     assert result.is_valid is False
-    assert "not allowed" in result.error.lower()
+    # The allowlist check fires first for non-SELECT statements ("Only SELECT
+    # queries are allowed"); the DML check fires for writable CTEs ("Write
+    # operations are not allowed"). Both contain "allowed".
+    assert "allowed" in result.error.lower()
 
 
 def test_write_check_is_case_insensitive():
@@ -211,6 +214,88 @@ def test_all_checks_pass_returns_valid_no_warning():
     assert result.error is None
     assert result.warning is None
     assert result.modified_sql is None
+
+
+# ---------------------------------------------------------------------------
+# Allowlist: statements that previously bypassed the blacklist (Critical #1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # COPY — file-read / file-write (plain path, no PROGRAM keyword)
+        "COPY users TO '/tmp/out.csv'",
+        "COPY users FROM '/etc/passwd'",
+        "COPY (SELECT * FROM users) TO '/tmp/out.csv'",
+        # CALL — arbitrary stored procedure execution
+        "CALL dangerous_procedure()",
+        # VACUUM — side-effecting maintenance command
+        "VACUUM",
+        "VACUUM users",
+        # SET — privilege escalation / session hijack
+        "SET ROLE postgres",
+        "SET search_path TO evil_schema",
+        # Other non-SELECT statements that must be denied
+        "SHOW search_path",
+        "EXPLAIN SELECT id FROM users",
+        "DO $$ BEGIN NULL; END $$",
+    ],
+)
+def test_non_select_statements_rejected_by_allowlist(sql):
+    """Every statement whose first keyword is not SELECT or WITH must be rejected."""
+    v = _validator()
+    result = v.validate(sql)
+    assert result.is_valid is False
+    assert "Only SELECT queries are allowed" in result.error
+
+
+def test_cte_select_allowed_by_allowlist():
+    """WITH … SELECT is a valid read-only CTE and must pass."""
+    v = _validator()
+    result = v.validate(
+        "WITH recent AS (SELECT id FROM orders WHERE status = 'pending') "
+        "SELECT * FROM recent LIMIT 10"
+    )
+    assert result.is_valid is True
+
+
+def test_writable_cte_rejected_by_dml_check():
+    """WITH … DELETE … SELECT must be rejected even though it starts with WITH."""
+    v = _validator()
+    result = v.validate(
+        "WITH d AS (DELETE FROM users WHERE id = 1 RETURNING *) SELECT * FROM d"
+    )
+    assert result.is_valid is False
+
+
+# ---------------------------------------------------------------------------
+# _first_sql_keyword helper
+# ---------------------------------------------------------------------------
+
+
+def test_first_keyword_select():
+    assert _first_sql_keyword("SELECT id FROM users") == "SELECT"
+
+
+def test_first_keyword_with():
+    assert _first_sql_keyword("WITH cte AS (SELECT 1) SELECT * FROM cte") == "WITH"
+
+
+def test_first_keyword_copy():
+    assert _first_sql_keyword("COPY users TO '/tmp/x.csv'") == "COPY"
+
+
+def test_first_keyword_strips_line_comment():
+    assert _first_sql_keyword("-- comment\nSELECT 1") == "SELECT"
+
+
+def test_first_keyword_strips_block_comment():
+    assert _first_sql_keyword("/* comment */ VACUUM") == "VACUUM"
+
+
+def test_first_keyword_empty():
+    assert _first_sql_keyword("   ") == ""
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,25 @@
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@dataclass(frozen=True)
+class UserSettings:
+    """Per-request LLM + query settings. Satisfies the attribute interface expected
+    by SQLGenerator, SQLExecutor, and SelfCorrector without coupling them to the
+    global Settings singleton."""
+
+    llm_provider: str
+    anthropic_api_key: str
+    groq_api_key: str
+    claude_model: str
+    groq_model: str
+    max_query_rows: int
+    query_timeout_seconds: int
+    max_self_correction_retries: int
 
 _ENV_FILE = Path(__file__).parent.parent / ".env"
 

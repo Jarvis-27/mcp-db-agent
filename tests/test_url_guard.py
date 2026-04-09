@@ -4,8 +4,24 @@ import socket
 from unittest.mock import patch
 
 import pytest
+import src.auth.url_guard as ug_module
 
 from src.auth.url_guard import InvalidDatabaseURL, validate_database_url, assert_url_still_safe
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _dev_environment():
+    """Run all url_guard tests in development mode so the SSL-mode check does not
+    interfere with SSRF / IP / hostname tests that intentionally use plain URLs.
+    The SSL-mode validation itself is tested explicitly in test_ssl_required_in_nondev.
+    """
+    with patch.object(ug_module.settings, "environment", "development"):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +147,27 @@ def test_unresolvable_hostname():
     with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name or service not known")):
         with pytest.raises(InvalidDatabaseURL, match="Cannot resolve hostname"):
             validate_database_url(_pg("nonexistent.invalid"), allow_sqlite=False)
+
+
+# ---------------------------------------------------------------------------
+# SSL mode enforcement in non-development environments
+# ---------------------------------------------------------------------------
+
+
+def test_ssl_required_in_nondev():
+    """PostgreSQL URLs without sslmode must be rejected outside development."""
+    with patch.object(ug_module.settings, "environment", "production"):
+        with patch("socket.getaddrinfo", return_value=_mock_resolve()):
+            with pytest.raises(InvalidDatabaseURL, match="sslmode"):
+                validate_database_url(_pg("db.example.com"), allow_sqlite=False)
+
+
+def test_ssl_require_accepted_in_nondev():
+    """sslmode=require satisfies the non-development SSL check."""
+    with patch.object(ug_module.settings, "environment", "production"):
+        with patch("socket.getaddrinfo", return_value=_mock_resolve()):
+            url = validate_database_url(_pg("db.example.com", sslmode="require"))
+    assert url is not None
 
 
 # ---------------------------------------------------------------------------

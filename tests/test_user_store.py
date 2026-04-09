@@ -45,11 +45,15 @@ def store(engine, cipher):
 _PUBLIC_IP = "8.8.8.8"
 _VALID_URL = f"postgresql://user:pass@{_PUBLIC_IP}/db"
 
+_MOCK_RESOLVE = [(2, 1, 0, "", (_PUBLIC_IP, 5432))]
 
-def _make_user(store, url=_VALID_URL, provider="anthropic", ant_key=None, groq_key=None):
-    with patch("socket.getaddrinfo") as mock_resolve:
-        mock_resolve.return_value = [(2, 1, 0, "", (_PUBLIC_IP, 5432))]
-        return store.create_user(url, provider, ant_key, groq_key)
+
+def _make_user(store, url=_VALID_URL):
+    import src.auth.url_guard as ug_module
+
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        return store.create_user(url)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,20 @@ def test_create_user_key_not_stored_plaintext(store, engine):
     assert len(stored_hash) == 64
 
 
+def test_create_user_sanitizes_dangerous_params(store):
+    """Dangerous query params must not survive persistence."""
+    import src.auth.url_guard as ug_module
+
+    dirty_url = f"postgresql://user:pass@{_PUBLIC_IP}/db?passfile=/etc/passwd&sslmode=require"
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        user_id, raw_key = store.create_user(dirty_url)
+    config = store.get_user_by_api_key(raw_key)
+    assert config is not None
+    assert "passfile" not in config.database_url
+    assert "sslmode=require" in config.database_url  # safe param survives
+
+
 # ---------------------------------------------------------------------------
 # get_user_by_api_key
 # ---------------------------------------------------------------------------
@@ -89,7 +107,6 @@ def test_get_user_by_api_key_returns_config(store):
     assert config is not None
     assert config.user_id == user_id
     assert config.database_url == _VALID_URL
-    assert config.llm_provider == "anthropic"
     assert config.is_active is True
 
 
@@ -109,23 +126,37 @@ def test_deactivated_user_returns_none(store):
 # ---------------------------------------------------------------------------
 
 
-def test_update_user_partial_llm_provider(store):
-    user_id, raw_key = _make_user(store, provider="anthropic")
-    result = store.update_user(user_id, llm_provider="groq")
+def test_update_user_database_url(store):
+    import src.auth.url_guard as ug_module
+
+    user_id, raw_key = _make_user(store)
+    new_url = f"postgresql://newuser:newpass@{_PUBLIC_IP}/newdb"
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        result = store.update_user(user_id, database_url=new_url)
     assert result is True
     config = store.get_user_by_api_key(raw_key)
-    assert config.llm_provider == "groq"
+    assert config is not None
+    assert config.database_url == new_url
+
+
+def test_update_user_sanitizes_dangerous_params(store):
+    """Dangerous query params must not survive a database URL update."""
+    import src.auth.url_guard as ug_module
+
+    user_id, raw_key = _make_user(store)
+    dirty_url = f"postgresql://user:pass@{_PUBLIC_IP}/db?sslkey=/etc/ssl/key.pem&sslmode=require"
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        store.update_user(user_id, database_url=dirty_url)
+    config = store.get_user_by_api_key(raw_key)
+    assert config is not None
+    assert "sslkey" not in config.database_url
+    assert "sslmode=require" in config.database_url  # safe param survives
 
 
 def test_update_user_returns_false_for_missing(store):
-    assert store.update_user("nonexistent-id", llm_provider="groq") is False
-
-
-def test_update_user_api_key_encrypted(store):
-    user_id, raw_key = _make_user(store)
-    store.update_user(user_id, anthropic_api_key="sk-ant-new-key")
-    config = store.get_user_by_api_key(raw_key)
-    assert config.anthropic_api_key == "sk-ant-new-key"
+    assert store.update_user("nonexistent-id") is False
 
 
 # ---------------------------------------------------------------------------

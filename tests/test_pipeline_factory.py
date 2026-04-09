@@ -40,13 +40,10 @@ def mock_settings():
     return s
 
 
-def _make_user(url: str = "sqlite:///./demo.db", provider: str = "anthropic") -> UserConfig:  # noqa: E501
+def _make_user(url: str = "sqlite:///./demo.db") -> UserConfig:
     return UserConfig(
         user_id="test-user-1",
         database_url=url,
-        llm_provider=provider,
-        anthropic_api_key="sk-ant-user",
-        groq_api_key=None,
         is_active=True,
     )
 
@@ -113,8 +110,8 @@ async def test_shutdown_disposes_all_engines(mock_settings, pool):
     engine2 = MagicMock()
     c1 = MagicMock(engine=engine1, inspector=MagicMock())
     c2 = MagicMock(engine=engine2, inspector=MagicMock())
-    factory._cache[("url1", "anthropic", "", "")] = c1
-    factory._cache[("url2", "groq", "", "")] = c2
+    factory._cache[("url1",)] = c1
+    factory._cache[("url2",)] = c2
 
     await factory.shutdown()
 
@@ -124,60 +121,31 @@ async def test_shutdown_disposes_all_engines(mock_settings, pool):
 
 
 # ---------------------------------------------------------------------------
-# LLM key fallback
+# LLM key resolution (server-owned keys after multi-tenant migration)
 # ---------------------------------------------------------------------------
 
 
-async def test_user_key_used_when_present(mock_settings, pool):
+def test_server_anthropic_key_used(mock_settings, pool):
+    """After the multi-tenant migration, LLM keys come from server settings only."""
     factory = PipelineFactory(mock_settings, pool)
-
-    uc = UserConfig(
-        user_id="u1",
-        database_url="sqlite:///./test.db",
-        llm_provider="anthropic",
-        anthropic_api_key="sk-ant-user-key",
-        groq_api_key=None,
-        is_active=True,
-    )
-
-    with patch("src.core.pipeline_factory.url_guard") as mock_guard:
-        mock_guard.validate_database_url.return_value = MagicMock(drivername="sqlite")
-        mock_guard.assert_url_still_safe = MagicMock(return_value=None)
-        factory._build_components = MagicMock(return_value=MagicMock(engine=MagicMock(), inspector=MagicMock()))
-        await factory.get(uc)
-
-    # Verify key resolution by calling _build_user_settings directly
-    us = factory._build_user_settings(uc)
-    assert us.anthropic_api_key == "sk-ant-user-key"
-
-
-def test_global_fallback_key_used_when_user_key_none(mock_settings, pool):
-    factory = PipelineFactory(mock_settings, pool)
-    uc = UserConfig(
-        user_id="u1",
-        database_url="sqlite:///./test.db",
-        llm_provider="anthropic",
-        anthropic_api_key=None,
-        groq_api_key=None,
-        is_active=True,
-    )
-    us = factory._build_user_settings(uc)
+    us = factory._build_user_settings(_make_user())
     assert us.anthropic_api_key == "sk-ant-global"
+    assert us.llm_provider == "anthropic"
+
+
+def test_server_groq_key_used(mock_settings, pool):
+    mock_settings.llm_provider = "groq"
+    factory = PipelineFactory(mock_settings, pool)
+    us = factory._build_user_settings(_make_user())
+    assert us.groq_api_key == "gsk-global"
+    assert us.llm_provider == "groq"
 
 
 def test_no_llm_key_available_raises(mock_settings, pool):
     mock_settings.anthropic_api_key = ""
     factory = PipelineFactory(mock_settings, pool)
-    uc = UserConfig(
-        user_id="u1",
-        database_url="sqlite:///./test.db",
-        llm_provider="anthropic",
-        anthropic_api_key=None,
-        groq_api_key=None,
-        is_active=True,
-    )
     with pytest.raises(NoLLMKeyAvailable):
-        factory._build_user_settings(uc)
+        factory._build_user_settings(_make_user())
 
 
 # ---------------------------------------------------------------------------
@@ -190,3 +158,19 @@ def test_get_from_settings_raises_without_database_url(mock_settings, pool):
     factory = PipelineFactory(mock_settings, pool)
     with pytest.raises(RuntimeError, match="DATABASE_URL must be set"):
         factory.get_from_settings(mock_settings)
+
+
+def test_get_from_settings_stdio_path_works(mock_settings, pool):
+    """Regression: get_from_settings previously passed stale kwargs to UserConfig,
+    raising TypeError: UserConfig.__init__() got an unexpected keyword argument 'llm_provider'.
+    Pre-seed the cache so no real DB connection is attempted; the UserConfig
+    construction (which was the crash site) runs before the cache check.
+    """
+    mock_settings.database_url = "sqlite:///./demo.db"
+    factory = PipelineFactory(mock_settings, pool)
+
+    expected = MagicMock()
+    factory._cache[("sqlite:///./demo.db",)] = expected
+
+    result = factory.get_from_settings(mock_settings)
+    assert result is expected

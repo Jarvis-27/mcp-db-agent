@@ -18,9 +18,6 @@ def _make_user(user_id: str = "user-1") -> UserConfig:
     return UserConfig(
         user_id=user_id,
         database_url="sqlite:///./demo.db",
-        llm_provider="anthropic",
-        anthropic_api_key="sk-ant-test",
-        groq_api_key=None,
         is_active=True,
     )
 

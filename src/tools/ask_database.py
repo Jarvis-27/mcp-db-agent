@@ -1,5 +1,7 @@
 """MCP tool: answer a natural-language question against the database."""
 
+from typing import cast
+
 from src.core.result_formatter import ResultFormatter
 from src.core.self_corrector import SelfCorrector
 
@@ -19,7 +21,12 @@ async def ask_database(
     result = await corrector.execute_with_correction(question, dialect)
 
     if result["success"]:
-        return formatter.format(result["sql"], result["data"], result["attempts"])
+        return formatter.format(
+            str(result["sql"]),
+            cast(list[dict[str, object]], result["data"]),
+            cast(int, result["attempts"]),
+        )
 
-    last_error = result["errors"][-1] if result["errors"] else "Query failed after maximum retries"
-    return formatter.format_error(last_error, result["sql"], result["errors"])
+    errors = cast(list[str], result["errors"])
+    last_error = errors[-1] if errors else "Query failed after maximum retries"
+    return formatter.format_error(last_error, str(result["sql"]), errors)

@@ -22,6 +22,8 @@ from src.auth.user_store import Base, UserStore
 @pytest.fixture(autouse=True)
 def app_state(tmp_path):
     """Wire up app.state with in-memory store, cipher, and cache."""
+    import src.auth.url_guard as ug_module
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -38,7 +40,10 @@ def app_state(tmp_path):
     from src.api.app import limiter
 
     limiter._storage.reset()
-    yield
+    # Treat all tests as development so the SSL-mode requirement doesn't block
+    # clean test URLs. Production SSL enforcement is tested in test_url_guard.py.
+    with patch.object(ug_module.settings, "environment", "development"):
+        yield
     Base.metadata.drop_all(engine)
     engine.dispose()
 
@@ -66,7 +71,7 @@ def test_register_returns_201_with_api_key(client):
          patch("src.api.app._dry_run_connect"):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": _VALID_PG_URL, "llm_provider": "anthropic"},
+            json={"database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 201
     data = resp.json()
@@ -80,7 +85,7 @@ def test_register_stores_user(client):
          patch("src.api.app._dry_run_connect"):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": _VALID_PG_URL, "llm_provider": "groq"},
+            json={"database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 201
     # Verify the user can authenticate
@@ -88,7 +93,7 @@ def test_register_stores_user(client):
     store: UserStore = api_app.state.user_store
     config = store.get_user_by_api_key(api_key)
     assert config is not None
-    assert config.llm_provider == "groq"
+    assert config.database_url == _VALID_PG_URL
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +171,46 @@ def test_health_ready(client):
     resp = client.get("/health/ready")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Sanitization — dangerous query params must not survive registration/update
+# ---------------------------------------------------------------------------
+
+
+def test_register_sanitizes_dangerous_params_in_url(client):
+    """passfile and similar params must be stripped before persistence."""
+    dirty_url = "postgresql://user:pass@8.8.8.8/mydb?passfile=/etc/passwd"
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        resp = client.post("/v1/users/register", json={"database_url": dirty_url})
+    assert resp.status_code == 201
+    api_key = resp.json()["api_key"]
+    store: UserStore = api_app.state.user_store
+    config = store.get_user_by_api_key(api_key)
+    assert config is not None
+    assert "passfile" not in config.database_url
+
+
+def test_update_me_sanitizes_dangerous_params_in_url(client):
+    """sslkey and similar params must be stripped on URL update."""
+    # Register first
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        reg = client.post("/v1/users/register", json={"database_url": _VALID_PG_URL})
+    assert reg.status_code == 201
+    api_key = reg.json()["api_key"]
+
+    dirty_url = "postgresql://user:pass@8.8.8.8/mydb?sslkey=/etc/ssl/key.pem"
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        resp = client.put(
+            "/v1/users/me",
+            json={"database_url": dirty_url},
+            headers={"X-API-Key": api_key},
+        )
+    assert resp.status_code == 200
+    store: UserStore = api_app.state.user_store
+    config = store.get_user_by_api_key(api_key)
+    assert config is not None
+    assert "sslkey" not in config.database_url
