@@ -1,6 +1,7 @@
 """SQL execution layer — runs validated queries against the database."""
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -36,5 +37,29 @@ class SQLExecutor:
         with self._engine.connect() as conn:
             if exec_opts:
                 conn = conn.execution_options(**exec_opts)
-            result = conn.execute(text(sql))
-            return [dict(row) for row in result.mappings().all()]
+
+            if dialect_name == "postgresql":
+                # statement_timeout was removed from engine connect_args to support
+                # pooled providers (e.g. Neon) that reject startup options.
+                # Set it here, per connection, after checkout.
+                timeout_ms = int(float(self._timeout) * 1000)
+                conn.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
+
+            timer: threading.Timer | None = None
+            if dialect_name == "sqlite":
+                # PostgreSQL handles timeouts server-side via statement_timeout (set at
+                # engine creation in pipeline_factory). SQLite has no server-side mechanism,
+                # so we schedule interrupt() on the raw DBAPI connection instead.
+                # interrupt() causes any in-progress sqlite3 operation to raise
+                # OperationalError("interrupted"), which exits the thread cleanly.
+                raw_conn = conn.connection.driver_connection
+                timer = threading.Timer(float(self._timeout), raw_conn.interrupt)
+                timer.daemon = True
+                timer.start()
+
+            try:
+                result = conn.execute(text(sql))
+                return [dict(row) for row in result.mappings().all()]
+            finally:
+                if timer is not None:
+                    timer.cancel()

@@ -10,6 +10,7 @@ Skip: uv run pytest -m "not integration"
 import pytest
 from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.pool import StaticPool
 
 from src.config import settings
 from src.core.schema_inspector import SchemaInspector
@@ -47,7 +48,11 @@ class _Sale(_Base):
 
 @pytest.fixture(scope="module")
 def engine():
-    e = create_engine("sqlite:///:memory:")
+    e = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     _Base.metadata.create_all(e)
     with Session(e) as session:
         session.add_all(

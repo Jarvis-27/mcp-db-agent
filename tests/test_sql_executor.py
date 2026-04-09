@@ -1,23 +1,106 @@
-"""Tests for SQLExecutor — runs validated SQL against demo.db."""
+"""Tests for SQLExecutor — runs validated SQL against a self-contained in-memory DB.
+
+The fixture creates the minimal demo schema (users, products, orders) and seeds
+enough data for every assertion in this file, so the tests are independent of
+any operator .env or external DATABASE_URL.
+"""
 
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.pool import StaticPool
 
-from src.config import settings
 from src.core.sql_executor import SQLExecutor
+
+
+# ---------------------------------------------------------------------------
+# Minimal demo schema
+# ---------------------------------------------------------------------------
+
+
+class _Base(DeclarativeBase):
+    pass
+
+
+class _User(_Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+
+
+class _Product(_Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+
+
+class _Order(_Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+_STATUSES = ["pending", "shipped", "delivered", "cancelled"]
 
 
 @pytest.fixture(scope="module")
 def engine():
-    return create_engine(settings.database_url)
+    """Shared in-memory SQLite engine seeded with demo-like data.
+
+    StaticPool ensures every SQLAlchemy connection (including those opened by
+    the thread-pool executor) sees the same in-memory database.
+    """
+    e = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    _Base.metadata.create_all(e)
+    with Session(e) as session:
+        # 500 users — test_execute_aggregation_count asserts exactly 500
+        session.add_all(
+            [_User(id=i, name=f"User {i}", email=f"user{i}@example.com") for i in range(1, 501)]
+        )
+        session.flush()
+        # 14 products — test_execute_respects_limit uses LIMIT 10, so we need ≥10
+        session.add_all([_Product(id=i, name=f"Product {i}") for i in range(1, 15)])
+        # 20 orders covering all four statuses evenly
+        session.add_all(
+            [
+                _Order(
+                    id=i,
+                    user_id=((i - 1) % 500) + 1,
+                    status=_STATUSES[(i - 1) % 4],
+                )
+                for i in range(1, 21)
+            ]
+        )
+        session.commit()
+    return e
+
+
+def _make_settings(timeout: int = 30) -> MagicMock:
+    s = MagicMock()
+    s.query_timeout_seconds = timeout
+    return s
 
 
 @pytest.fixture(scope="module")
 def executor(engine):
     pool = ThreadPoolExecutor(max_workers=2)
-    return SQLExecutor(engine, settings, pool)
+    return SQLExecutor(engine, _make_settings(), pool)
 
 
 # ---------------------------------------------------------------------------

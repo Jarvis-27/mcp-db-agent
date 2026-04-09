@@ -103,7 +103,7 @@ class PipelineFactory:
             pool_timeout=10,
             pool_recycle=1800,
             pool_pre_ping=True,
-            connect_args=self._connect_args_for(validated_url),
+            connect_args=self._connect_args_for(validated_url, self._settings.query_timeout_seconds),
         )
         # Dry-run connect — fail fast at build time rather than at first query
         with engine.connect() as conn:
@@ -138,8 +138,11 @@ class PipelineFactory:
             engine=engine,
         )
 
-    def _connect_args_for(self, url: URL) -> dict:
+    def _connect_args_for(self, url: URL, timeout_seconds: int) -> dict:
         if url.drivername.startswith("postgresql"):
+            # Do NOT pass startup options (e.g. statement_timeout) here — pooled
+            # providers such as Neon reject unknown startup parameters.
+            # statement_timeout is applied per-connection in SQLExecutor._run_query.
             return {"connect_timeout": 10}
         return {}
 
@@ -214,8 +217,13 @@ class PipelineFactory:
             return self._cache[cache_key]
 
         from sqlalchemy import create_engine
+        from sqlalchemy.engine import make_url as _make_url
 
-        engine = create_engine(s.database_url)
+        _parsed_url = _make_url(s.database_url)
+        engine = create_engine(
+            s.database_url,
+            connect_args=self._connect_args_for(_parsed_url, s.query_timeout_seconds),
+        )
         inspector = SchemaInspector(engine, cache_ttl_seconds=s.schema_cache_ttl_seconds)
         user_settings = UserSettings(
             llm_provider=s.llm_provider or "anthropic",
