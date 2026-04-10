@@ -87,18 +87,31 @@ async def lifespan(app: Starlette):
 
             Base.metadata.create_all(auth_engine)
     else:
-        # Production: verify schema is at head
+        # Production: verify schema is at the Alembic head revision.
+        # expected_head is read from the script directory so this check
+        # never needs updating when new migrations are added.
         try:
+            from pathlib import Path as _Path
+            from alembic.config import Config as _AlembicConfig
             from alembic.runtime.migration import MigrationContext
+            from alembic.script import ScriptDirectory
+
+            _alembic_cfg = _AlembicConfig(str(_Path(__file__).parent.parent / "alembic.ini"))
+            _alembic_cfg.set_main_option(
+                "script_location", str(_Path(__file__).parent.parent / "alembic")
+            )
+            _script_dir = ScriptDirectory.from_config(_alembic_cfg)
+            expected_head = _script_dir.get_current_head()
 
             with auth_engine.connect() as conn:
                 ctx = MigrationContext.configure(conn)
                 current = ctx.get_current_revision()
-            if current != "0001":
+            if current != expected_head:
                 log.error(
-                    "Alembic schema is not at head (current=%s). "
+                    "Alembic schema is not at head (current=%s, expected=%s). "
                     "Run `alembic upgrade head` before starting production.",
                     current,
+                    expected_head,
                 )
                 raise RuntimeError("Database schema is not up to date")
         except Exception as exc:
@@ -207,5 +220,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=settings.port,
         proxy_headers=True,
-        forwarded_allow_ips="*",
+        forwarded_allow_ips=settings.trusted_proxy_ips or "127.0.0.1",
     )

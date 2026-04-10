@@ -11,8 +11,9 @@ from slowapi.util import get_remote_address
 from sqlalchemy import create_engine, text
 
 from src.api.schemas import (
+    OnboardingStatusResponse,
     RegisterRequest,
-    RegisterResponse,
+    RegistrationPendingResponse,
     RotateKeyResponse,
     UpdateRequest,
     UserMetaResponse,
@@ -104,10 +105,30 @@ def _dry_run_connect(database_url: str, timeout: int = 5) -> None:
 # ---------------------------------------------------------------------------
 
 
-@api_app.post("/v1/users/register", response_model=RegisterResponse, status_code=201)
+_ONBOARDING_NEXT_STEPS: dict[str, str] = {
+    "pending_email_verification": "Check your email and verify your address.",
+    "pending_billing": "Complete your subscription or trial setup.",
+    "pending_mfa": "Enroll a passkey or MFA device.",
+    "pending_db_connection": "Submit your database connection details.",
+    "pending_review": "Your account is under review. We will contact you.",
+    "active": "Your account is active. You may create API keys.",
+    "suspended": "Account suspended. Contact support.",
+    "closed": "Account closed.",
+}
+
+
+def _onboarding_next_step(status: str) -> str:
+    return _ONBOARDING_NEXT_STEPS.get(status, "Contact support for assistance.")
+
+
+@api_app.post("/v1/users/register", response_model=RegistrationPendingResponse, status_code=201)
 @limiter.limit(settings.register_rate_limit)
-async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
-    """Register a new user and return a one-time API key."""
+async def register(request: Request, body: RegisterRequest) -> RegistrationPendingResponse:
+    """Register a new account. Returns a pending user — no API key is issued yet.
+
+    The user must complete email verification (and later billing + MFA) before
+    an API key can be issued. Use GET /v1/onboarding/status to check progress.
+    """
     if not settings.registration_open:
         raise HTTPException(status_code=403, detail="Registration is currently closed.")
 
@@ -125,8 +146,26 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     user_store: UserStore = request.app.state.user_store
-    user_id, raw_key = user_store.create_user(database_url=sanitized_url_str)
-    return RegisterResponse(user_id=user_id, api_key=raw_key)
+    user_id = user_store.create_user(database_url=sanitized_url_str, email=body.email)
+    return RegistrationPendingResponse(
+        user_id=user_id,
+        status="pending_email_verification",
+        message="Account created. Check your email and verify your address to continue.",
+    )
+
+
+@api_app.get("/v1/onboarding/status", response_model=OnboardingStatusResponse)
+async def onboarding_status(user_id: str, request: Request) -> OnboardingStatusResponse:
+    """Return the current onboarding state for a pending or active user."""
+    user_store: UserStore = request.app.state.user_store
+    status = user_store.get_onboarding_status(user_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return OnboardingStatusResponse(
+        user_id=user_id,
+        status=status,
+        next_step=_onboarding_next_step(status),
+    )
 
 
 # ---------------------------------------------------------------------------

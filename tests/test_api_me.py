@@ -55,14 +55,19 @@ def client():
 
 @pytest.fixture
 def registered_user(client):
+    """Register a user and immediately activate them so they have an API key."""
     with patch("socket.getaddrinfo", return_value=_mock_resolve()), \
          patch("src.api.app._dry_run_connect"):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": _VALID_PG_URL},
+            json={"email": "test@example.com", "database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 201
-    return resp.json()  # {user_id, api_key, warning}
+    user_id = resp.json()["user_id"]
+    # Activate the pending user and issue the first key via UserStore directly
+    store: UserStore = api_app.state.user_store
+    api_key = store.issue_first_api_key(user_id)
+    return {"user_id": user_id, "api_key": api_key}
 
 
 # ---------------------------------------------------------------------------

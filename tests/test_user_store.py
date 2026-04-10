@@ -49,11 +49,17 @@ _MOCK_RESOLVE = [(2, 1, 0, "", (_PUBLIC_IP, 5432))]
 
 
 def _make_user(store, url=_VALID_URL):
+    """Create a pending user then immediately activate them with a key.
+
+    Returns (user_id, raw_key) matching the old API for minimal test churn.
+    """
     import src.auth.url_guard as ug_module
 
     with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
          patch.object(ug_module.settings, "environment", "development"):
-        return store.create_user(url)
+        user_id = store.create_user(url)
+    raw_key = store.issue_first_api_key(user_id)
+    return user_id, raw_key
 
 
 # ---------------------------------------------------------------------------
@@ -61,25 +67,45 @@ def _make_user(store, url=_VALID_URL):
 # ---------------------------------------------------------------------------
 
 
-def test_create_user_returns_ids(store):
-    user_id, raw_key = _make_user(store)
+def test_create_user_returns_pending_user_id(store):
+    """create_user returns only a user_id string (no API key)."""
+    import src.auth.url_guard as ug_module
+
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        user_id = store.create_user(_VALID_URL)
     assert isinstance(user_id, str) and len(user_id) == 36  # UUID4
-    assert raw_key.startswith("mdbk_")
-    assert len(raw_key) > 10
+    # User must start in pending state with no key
+    assert store.get_onboarding_status(user_id) == "pending_email_verification"
+    assert store.get_user_by_id(user_id) is not None
 
 
-def test_create_user_key_not_stored_plaintext(store, engine):
+def test_create_user_key_not_stored_until_issued(store, engine):
+    """api_key_hash must be NULL until issue_first_api_key is called."""
     from sqlalchemy import text
 
-    user_id, raw_key = _make_user(store)
+    import src.auth.url_guard as ug_module
+
+    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
+         patch.object(ug_module.settings, "environment", "development"):
+        user_id = store.create_user(_VALID_URL)
     with engine.connect() as conn:
-        rows = conn.execute(text("SELECT api_key_hash FROM users")).fetchall()
-    assert len(rows) == 1
-    stored_hash = rows[0][0]
-    # The raw key must NOT appear in the hash column
-    assert raw_key not in stored_hash
-    # It must be a 64-char hex string (SHA-256)
-    assert len(stored_hash) == 64
+        row = conn.execute(
+            text("SELECT api_key_hash FROM users WHERE id = :id"), {"id": user_id}
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None  # no key yet
+
+    # After issuing, the hash must be a 64-char hex string
+    raw_key = store.issue_first_api_key(user_id)
+    assert raw_key.startswith("mdbk_")
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT api_key_hash FROM users WHERE id = :id"), {"id": user_id}
+        ).fetchone()
+    stored_hash = row[0]
+    assert raw_key not in stored_hash          # raw key never stored
+    assert len(stored_hash) == 64              # SHA-256 hex digest
 
 
 def test_create_user_sanitizes_dangerous_params(store):
@@ -89,7 +115,8 @@ def test_create_user_sanitizes_dangerous_params(store):
     dirty_url = f"postgresql://user:pass@{_PUBLIC_IP}/db?passfile=/etc/passwd&sslmode=require"
     with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
          patch.object(ug_module.settings, "environment", "development"):
-        user_id, raw_key = store.create_user(dirty_url)
+        user_id = store.create_user(dirty_url)
+    raw_key = store.issue_first_api_key(user_id)
     config = store.get_user_by_api_key(raw_key)
     assert config is not None
     assert "passfile" not in config.database_url

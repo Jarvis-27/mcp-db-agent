@@ -92,8 +92,8 @@ class PipelineFactory:
             self._cache[cache_key] = components
             return components
 
-    def _build_key(self, uc: UserConfig) -> tuple[str]:
-        return (uc.database_url,)
+    def _build_key(self, uc: UserConfig) -> tuple[str, str]:
+        return (uc.user_id, uc.database_url)
 
     def _build_components(self, validated_url: URL, uc: UserConfig) -> PipelineComponents:
         engine = create_engine(
@@ -166,16 +166,16 @@ class PipelineFactory:
         )
 
     async def invalidate(self, user_id: str) -> None:
-        """Drop every cache entry whose PipelineComponents belongs to user_id.
+        """Drop all cache entries belonging to user_id.
 
         Called from PUT/DELETE /v1/users/me and POST /v1/users/me/rotate-key.
-        Note: the cache key doesn't include user_id directly, so we must check
-        by rebuilding and comparing — or we clear all entries for safety.
-        In practice, invalidation is infrequent and clearing the full cache is
-        acceptable.
+        Only entries whose cache key starts with user_id are evicted, so other
+        users' pipelines are not disturbed.
         """
         async with self._lock:
             for key in list(self._cache.keys()):
+                if key[0] != user_id:
+                    continue
                 components = self._cache.pop(key)
                 components.inspector.refresh()
                 try:
@@ -208,6 +208,8 @@ class PipelineFactory:
             user_id="__stdio__",
             database_url=s.database_url,
             is_active=True,
+            onboarding_status="active",
+            email=None,
         )
 
         # For stdio mode we skip the URL guard (localhost is fine in dev)

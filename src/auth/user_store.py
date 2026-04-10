@@ -31,16 +31,18 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True)
-    api_key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    api_key_hash = Column(String(64), unique=True, nullable=True, index=True)  # None until key issued
     database_url_enc = Column(Text, nullable=False)
     llm_provider = Column(String(20), nullable=False)
     anthropic_api_key_enc = Column(Text, nullable=True)
     groq_api_key_enc = Column(Text, nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
+    is_active = Column(Boolean, nullable=False, default=False)  # False until onboarding complete
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
     daily_query_count = Column(Integer, nullable=False, default=0)
     daily_quota_reset_at = Column(DateTime(timezone=True), nullable=False)
+    email = Column(String(254), nullable=True, index=True)
+    onboarding_status = Column(String(40), nullable=False, default="pending_email_verification")
 
 
 class QueryHistory(Base):
@@ -69,6 +71,8 @@ class UserConfig:
     user_id: str
     database_url: str  # decrypted, already passed url_guard
     is_active: bool
+    onboarding_status: str
+    email: str | None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -115,37 +119,65 @@ class UserStore:
     # Write operations
     # ------------------------------------------------------------------
 
-    def create_user(self, database_url: str) -> tuple[str, str]:
-        """Create a new user. Returns (user_id, raw_api_key).
+    def create_user(self, database_url: str, email: str | None = None) -> str:
+        """Create a new pending user. Returns user_id only — no API key is issued.
 
-        raw_api_key format: 'mdbk_' + secrets.token_urlsafe(32).
-        Stores SHA-256(raw_api_key) only — the raw key is never stored.
+        The user starts in 'pending_email_verification' state with is_active=False.
+        Call issue_first_api_key(user_id) to activate and issue the first key
+        after onboarding is complete.
         """
         # Validate URL and use the sanitized form before storing
         sanitized_url = validate_database_url(database_url)
         sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
 
-        raw_key = "mdbk_" + secrets.token_urlsafe(32)
         user_id = str(uuid.uuid4())
         now = _utcnow()
 
         user = User(
             id=user_id,
-            api_key_hash=_hash_key(raw_key),
+            api_key_hash=None,
             database_url_enc=self._cipher.encrypt(sanitized_url_str),
             llm_provider="server",
-            is_active=True,
+            is_active=False,
             created_at=now,
             updated_at=now,
             daily_query_count=0,
             daily_quota_reset_at=_next_midnight(now),
+            email=email,
+            onboarding_status="pending_email_verification",
         )
 
         with Session(self._engine) as session:
             session.add(user)
             session.commit()
 
-        return user_id, raw_key
+        return user_id
+
+    def issue_first_api_key(self, user_id: str) -> str:
+        """Activate a pending user and issue their first API key. Returns raw key.
+
+        Sets is_active=True and onboarding_status='active'. Raises ValueError
+        if user not found.
+        """
+        raw_key = "mdbk_" + secrets.token_urlsafe(32)
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                raise ValueError(f"User {user_id} not found")
+            user.api_key_hash = _hash_key(raw_key)  # type: ignore[assignment]
+            user.is_active = True  # type: ignore[assignment]
+            user.onboarding_status = "active"  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
+            session.commit()
+        return raw_key
+
+    def get_onboarding_status(self, user_id: str) -> str | None:
+        """Return onboarding_status for user_id, or None if user not found."""
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return None
+            return str(user.onboarding_status)
 
     def update_user(self, user_id: str, *, database_url: str | None = None) -> bool:
         """Update the database URL for a user. Refreshes updated_at. Returns False if not found."""
@@ -262,4 +294,6 @@ class UserStore:
             user_id=user.id,  # type: ignore[arg-type]
             database_url=self._cipher.decrypt(user.database_url_enc),  # type: ignore[arg-type]
             is_active=user.is_active,  # type: ignore[arg-type]
+            onboarding_status=user.onboarding_status or "pending_email_verification",  # type: ignore[arg-type]
+            email=user.email,  # type: ignore[arg-type]
         )

@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
     auth_database_url: str = "sqlite:///./auth.db"
     credential_encryption_keys: str = ""  # comma-separated; first is the encryption key
-    registration_open: bool = True
+    registration_open: bool | None = None  # None = not explicitly set → treated as False
     allow_sqlite_user_dbs: bool = False  # NEVER true in prod
     sqlite_user_db_dir: str = "/var/lib/mcp-db-agent/user-dbs"
     extra_blocked_cidrs: str = ""  # comma-separated; e.g. "10.20.30.0/24,..."
+    trusted_proxy_ips: str = "127.0.0.1"  # passed to uvicorn forwarded_allow_ips
     port: int = 8000
     cors_allow_origins: list[str] = []  # empty = closed
     max_request_bytes: int = 65536
@@ -63,6 +64,17 @@ class Settings(BaseSettings):
                 "CREDENTIAL_ENCRYPTION_KEYS is required in non-development mode. "
                 "Generate one with: python -c \"from cryptography.fernet import Fernet;"
                 " print(Fernet.generate_key().decode())\""
+            )
+        return v
+
+    @field_validator("registration_open")
+    @classmethod
+    def _check_registration_open(cls, v: bool | None, info) -> bool | None:
+        if v is None and info.data.get("environment") != "development":
+            raise ValueError(
+                "REGISTRATION_OPEN must be explicitly set (true or false) in "
+                "non-development environments. Set REGISTRATION_OPEN=false to "
+                "close public registration."
             )
         return v
 

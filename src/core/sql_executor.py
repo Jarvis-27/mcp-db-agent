@@ -47,8 +47,8 @@ class SQLExecutor:
 
             timer: threading.Timer | None = None
             if dialect_name == "sqlite":
-                # PostgreSQL handles timeouts server-side via statement_timeout (set at
-                # engine creation in pipeline_factory). SQLite has no server-side mechanism,
+                # PostgreSQL handles timeouts server-side via statement_timeout (set per
+                # connection above via SET LOCAL). SQLite has no server-side mechanism,
                 # so we schedule interrupt() on the raw DBAPI connection instead.
                 # interrupt() causes any in-progress sqlite3 operation to raise
                 # OperationalError("interrupted"), which exits the thread cleanly.

@@ -45,6 +45,8 @@ def _make_user(url: str = "sqlite:///./demo.db") -> UserConfig:
         user_id="test-user-1",
         database_url=url,
         is_active=True,
+        onboarding_status="active",
+        email=None,
     )
 
 
@@ -110,8 +112,8 @@ async def test_shutdown_disposes_all_engines(mock_settings, pool):
     engine2 = MagicMock()
     c1 = MagicMock(engine=engine1, inspector=MagicMock())
     c2 = MagicMock(engine=engine2, inspector=MagicMock())
-    factory._cache[("url1",)] = c1
-    factory._cache[("url2",)] = c2
+    factory._cache[("user-a", "url1")] = c1
+    factory._cache[("user-b", "url2")] = c2
 
     await factory.shutdown()
 
@@ -170,7 +172,70 @@ def test_get_from_settings_stdio_path_works(mock_settings, pool):
     factory = PipelineFactory(mock_settings, pool)
 
     expected = MagicMock()
-    factory._cache[("sqlite:///./demo.db",)] = expected
+    factory._cache[("__stdio__", "sqlite:///./demo.db")] = expected
 
     result = factory.get_from_settings(mock_settings)
     assert result is expected
+
+
+# ---------------------------------------------------------------------------
+# Targeted invalidation — only the specified user's entries are evicted
+# ---------------------------------------------------------------------------
+
+
+async def test_invalidate_only_removes_target_user(mock_settings, pool):
+    factory = PipelineFactory(mock_settings, pool)
+    engine_a = MagicMock()
+    engine_b = MagicMock()
+    c_a = MagicMock(engine=engine_a, inspector=MagicMock())
+    c_b = MagicMock(engine=engine_b, inspector=MagicMock())
+    factory._cache[("user-A", "postgres://db")] = c_a
+    factory._cache[("user-B", "postgres://db")] = c_b
+
+    await factory.invalidate("user-A")
+
+    assert ("user-A", "postgres://db") not in factory._cache
+    assert ("user-B", "postgres://db") in factory._cache
+    engine_a.dispose.assert_called_once()
+    engine_b.dispose.assert_not_called()
+
+
+async def test_invalidate_noop_for_unknown_user(mock_settings, pool):
+    factory = PipelineFactory(mock_settings, pool)
+    engine_a = MagicMock()
+    c_a = MagicMock(engine=engine_a, inspector=MagicMock())
+    factory._cache[("user-A", "postgres://db")] = c_a
+
+    await factory.invalidate("user-X")
+
+    assert ("user-A", "postgres://db") in factory._cache
+    engine_a.dispose.assert_not_called()
+
+
+async def test_invalidate_stdio_user_works(mock_settings, pool):
+    factory = PipelineFactory(mock_settings, pool)
+    engine = MagicMock()
+    c = MagicMock(engine=engine, inspector=MagicMock())
+    factory._cache[("__stdio__", "sqlite:///./demo.db")] = c
+
+    await factory.invalidate("__stdio__")
+
+    assert len(factory._cache) == 0
+    engine.dispose.assert_called_once()
+
+
+async def test_invalidate_evicts_all_entries_for_user(mock_settings, pool):
+    """A user with multiple registered URLs has all their entries evicted."""
+    factory = PipelineFactory(mock_settings, pool)
+    engine1 = MagicMock()
+    engine2 = MagicMock()
+    c1 = MagicMock(engine=engine1, inspector=MagicMock())
+    c2 = MagicMock(engine=engine2, inspector=MagicMock())
+    factory._cache[("user-A", "postgres://db1")] = c1
+    factory._cache[("user-A", "postgres://db2")] = c2
+
+    await factory.invalidate("user-A")
+
+    assert len(factory._cache) == 0
+    engine1.dispose.assert_called_once()
+    engine2.dispose.assert_called_once()

@@ -1,4 +1,4 @@
-"""Tests for POST /v1/users/register."""
+"""Tests for POST /v1/users/register and GET /v1/onboarding/status."""
 
 from unittest.mock import patch
 
@@ -54,6 +54,7 @@ def client():
 
 
 _VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
+_VALID_EMAIL = "user@example.com"
 
 
 def _mock_resolved():
@@ -61,39 +62,52 @@ def _mock_resolved():
     return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 5432))]
 
 
+def _register(client, email=_VALID_EMAIL, database_url=_VALID_PG_URL):
+    """Helper: POST /v1/users/register with mocked network calls."""
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        return client.post(
+            "/v1/users/register",
+            json={"email": email, "database_url": database_url},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
 
 
-def test_register_returns_201_with_api_key(client):
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"database_url": _VALID_PG_URL},
-        )
+def test_register_returns_201_pending(client):
+    resp = _register(client)
     assert resp.status_code == 201
     data = resp.json()
-    assert data["api_key"].startswith("mdbk_")
     assert "user_id" in data
-    assert "warning" in data
+    assert data["status"] == "pending_email_verification"
+    assert "message" in data
+    # No API key should be in the response
+    assert "api_key" not in data
 
 
-def test_register_stores_user(client):
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"database_url": _VALID_PG_URL},
-        )
+def test_register_stores_user_as_inactive(client):
+    resp = _register(client)
     assert resp.status_code == 201
-    # Verify the user can authenticate
-    api_key = resp.json()["api_key"]
+    user_id = resp.json()["user_id"]
     store: UserStore = api_app.state.user_store
-    config = store.get_user_by_api_key(api_key)
+    # The user exists but has no key and is inactive
+    status = store.get_onboarding_status(user_id)
+    assert status == "pending_email_verification"
+    # No key means get_user_by_api_key returns None for any key
+    assert store.get_user_by_api_key("mdbk_anything") is None
+
+
+def test_register_email_is_stored(client):
+    resp = _register(client, email="test@example.com")
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+    store: UserStore = api_app.state.user_store
+    config = store.get_user_by_id(user_id)
     assert config is not None
-    assert config.database_url == _VALID_PG_URL
+    assert config.email == "test@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +116,12 @@ def test_register_stores_user(client):
 
 
 def test_register_bad_url_returns_400(client):
-    resp = client.post(
-        "/v1/users/register",
-        json={"database_url": "sqlite:///./evil.db"},
-    )
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        resp = client.post(
+            "/v1/users/register",
+            json={"email": _VALID_EMAIL, "database_url": "sqlite:///./evil.db"},
+        )
     assert resp.status_code == 400
 
 
@@ -113,7 +129,7 @@ def test_register_ssrf_url_returns_400(client):
     with patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("169.254.169.254", 5432))]):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": "postgresql://x@metadata-host/y"},
+            json={"email": _VALID_EMAIL, "database_url": "postgresql://x@metadata-host/y"},
         )
     assert resp.status_code == 400
 
@@ -131,10 +147,21 @@ def test_register_dry_run_failure_returns_400(client):
          patch("src.api.app._dry_run_connect", side_effect=failing_connect):
         resp = client.post(
             "/v1/users/register",
-            json={"database_url": _VALID_PG_URL},
+            json={"email": _VALID_EMAIL, "database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 400
     assert "connect" in resp.json()["detail"].lower()
+
+
+def test_register_missing_email_returns_422(client):
+    """email field is now required."""
+    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
+         patch("src.api.app._dry_run_connect"):
+        resp = client.post(
+            "/v1/users/register",
+            json={"database_url": _VALID_PG_URL},
+        )
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +184,29 @@ def test_register_oversize_body_rejected(client):
 
 
 # ---------------------------------------------------------------------------
+# Onboarding status endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_onboarding_status_returns_pending(client):
+    resp = _register(client)
+    user_id = resp.json()["user_id"]
+
+    status_resp = client.get(f"/v1/onboarding/status?user_id={user_id}")
+    assert status_resp.status_code == 200
+    data = status_resp.json()
+    assert data["user_id"] == user_id
+    assert data["status"] == "pending_email_verification"
+    assert "next_step" in data
+    assert len(data["next_step"]) > 0
+
+
+def test_onboarding_status_unknown_user_returns_404(client):
+    resp = client.get("/v1/onboarding/status?user_id=does-not-exist")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
@@ -174,7 +224,7 @@ def test_health_ready(client):
 
 
 # ---------------------------------------------------------------------------
-# Sanitization — dangerous query params must not survive registration/update
+# Sanitization — dangerous query params must not survive registration
 # ---------------------------------------------------------------------------
 
 
@@ -183,23 +233,27 @@ def test_register_sanitizes_dangerous_params_in_url(client):
     dirty_url = "postgresql://user:pass@8.8.8.8/mydb?passfile=/etc/passwd"
     with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
          patch("src.api.app._dry_run_connect"):
-        resp = client.post("/v1/users/register", json={"database_url": dirty_url})
+        resp = client.post(
+            "/v1/users/register",
+            json={"email": _VALID_EMAIL, "database_url": dirty_url},
+        )
     assert resp.status_code == 201
-    api_key = resp.json()["api_key"]
+    user_id = resp.json()["user_id"]
     store: UserStore = api_app.state.user_store
-    config = store.get_user_by_api_key(api_key)
+    # Activate the user so we can look them up
+    raw_key = store.issue_first_api_key(user_id)
+    config = store.get_user_by_api_key(raw_key)
     assert config is not None
     assert "passfile" not in config.database_url
 
 
 def test_update_me_sanitizes_dangerous_params_in_url(client):
     """sslkey and similar params must be stripped on URL update."""
-    # Register first
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        reg = client.post("/v1/users/register", json={"database_url": _VALID_PG_URL})
-    assert reg.status_code == 201
-    api_key = reg.json()["api_key"]
+    resp = _register(client)
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+    store: UserStore = api_app.state.user_store
+    api_key = store.issue_first_api_key(user_id)
 
     dirty_url = "postgresql://user:pass@8.8.8.8/mydb?sslkey=/etc/ssl/key.pem"
     with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
@@ -210,7 +264,6 @@ def test_update_me_sanitizes_dangerous_params_in_url(client):
             headers={"X-API-Key": api_key},
         )
     assert resp.status_code == 200
-    store: UserStore = api_app.state.user_store
     config = store.get_user_by_api_key(api_key)
     assert config is not None
     assert "sslkey" not in config.database_url

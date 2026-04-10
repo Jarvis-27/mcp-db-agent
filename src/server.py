@@ -412,10 +412,11 @@ async def query_history(limit: int = 10) -> str:
     - ``timestamp``: UTC timestamp of the query
 
     Args:
-        limit: Number of recent queries to return (default 10).
+        limit: Number of recent queries to return (default 10, max 200).
     """
     user_id = _current_user_id()
     query_log = _get_query_log()
+    limit = max(1, min(limit, 200))
     return json.dumps(query_log.get_recent_queries(limit, user_id=user_id), indent=2)
 
 

@@ -19,6 +19,8 @@ def _make_user(user_id: str = "user-1") -> UserConfig:
         user_id=user_id,
         database_url="sqlite:///./demo.db",
         is_active=True,
+        onboarding_status="active",
+        email=None,
     )
 
 
