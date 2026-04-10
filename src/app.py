@@ -19,10 +19,12 @@ from starlette.routing import Mount
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
 from src.auth.middleware import ApiKeyMiddleware
+from src.auth.token_store import TokenStore
 from src.auth.user_store import UserStore
 from src.config import settings
 from src.core.pipeline_factory import PipelineFactory
 from src.core.query_log import QueryLog
+from src.email_sender import make_email_sender
 from src.middleware.body_size import BodySizeLimitMiddleware
 from src.middleware.request_id import RequestIDMiddleware
 
@@ -128,16 +130,27 @@ async def lifespan(app: Starlette):
     query_log = QueryLog(engine=auth_engine)
     factory = PipelineFactory(settings, executor_pool)
 
-    # 5. Stash on api_app.state for FastAPI dependency injection
+    # 5. Build TokenStore and EmailSender
+    token_store = TokenStore(
+        engine=auth_engine,
+        email_token_ttl_minutes=settings.email_verification_token_ttl_minutes,
+        setup_token_ttl_hours=settings.setup_token_ttl_hours,
+    )
+    email_sender = make_email_sender(settings)
+
+    # 6. Stash on api_app.state for FastAPI dependency injection
     api_app.state.user_store = user_store
     api_app.state.auth_key_cache = auth_key_cache
     api_app.state.factory = factory
+    api_app.state.token_store = token_store
+    api_app.state.email_sender = email_sender
+    api_app.state.cipher = cipher
 
     # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
     app.state.user_store = user_store
     app.state.auth_key_cache = auth_key_cache
 
-    # 6. Stash factory and query_log on server module for MCP tool handlers
+    # 7. Stash factory and query_log on server module for MCP tool handlers
     server_module = importlib.import_module("src.server")
     server_module._factory = factory  # type: ignore[attr-defined]
     server_module._query_log = query_log  # type: ignore[attr-defined]

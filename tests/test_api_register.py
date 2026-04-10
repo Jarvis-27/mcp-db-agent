@@ -11,7 +11,9 @@ from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
+from src.auth.token_store import TokenStore
 from src.auth.user_store import Base, UserStore
+from src.email_sender import LogEmailSender
 
 
 # ---------------------------------------------------------------------------
@@ -30,20 +32,39 @@ def app_state(tmp_path):
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
+
+    from src.auth.token_store import VerificationToken
+    VerificationToken.__table__.create(bind=engine, checkfirst=True)
+
     key = Fernet.generate_key().decode()
     cipher = CredentialCipher([key])
     store = UserStore(engine, cipher)
+    token_store = TokenStore(engine)
+
     api_app.state.user_store = store
+    api_app.state.token_store = token_store
+    api_app.state.email_sender = LogEmailSender()
+    api_app.state.cipher = cipher
     api_app.state.auth_key_cache = TTLCache(maxsize=100, ttl=60)
     api_app.state.factory = None
+
     # Reset slowapi limiter storage between tests
     from src.api.app import limiter
-
     limiter._storage.reset()
+
     # Treat all tests as development so the SSL-mode requirement doesn't block
     # clean test URLs. Production SSL enforcement is tested in test_url_guard.py.
-    with patch.object(ug_module.settings, "environment", "development"):
+    with patch.object(ug_module.settings, "environment", "development"), \
+         patch("src.api.app.settings") as mock_settings:
+        mock_settings.registration_open = True
+        mock_settings.allow_sqlite_user_dbs = False
+        mock_settings.billing_gate_enabled = False
+        mock_settings.mfa_gate_enabled = False
+        mock_settings.admin_api_key = "test-admin-key"
+        mock_settings.register_rate_limit = "100/minute"
+        mock_settings.app_base_url = "http://localhost:8000"
         yield
+
     Base.metadata.drop_all(engine)
     engine.dispose()
 
@@ -53,23 +74,15 @@ def client():
     return TestClient(api_app, raise_server_exceptions=True)
 
 
-_VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
 _VALID_EMAIL = "user@example.com"
 
 
-def _mock_resolved():
-    import socket
-    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 5432))]
-
-
-def _register(client, email=_VALID_EMAIL, database_url=_VALID_PG_URL):
-    """Helper: POST /v1/users/register with mocked network calls."""
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        return client.post(
-            "/v1/users/register",
-            json={"email": email, "database_url": database_url},
-        )
+def _register(client, email=_VALID_EMAIL):
+    """Helper: POST /v1/users/register with email only."""
+    return client.post(
+        "/v1/users/register",
+        json={"email": email},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,57 +124,41 @@ def test_register_email_is_stored(client):
 
 
 # ---------------------------------------------------------------------------
-# Bad URL → 400
+# Bad / missing fields → 422 or 400
 # ---------------------------------------------------------------------------
 
 
-def test_register_bad_url_returns_400(client):
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"email": _VALID_EMAIL, "database_url": "sqlite:///./evil.db"},
-        )
-    assert resp.status_code == 400
-
-
-def test_register_ssrf_url_returns_400(client):
-    with patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("169.254.169.254", 5432))]):
-        resp = client.post(
-            "/v1/users/register",
-            json={"email": _VALID_EMAIL, "database_url": "postgresql://x@metadata-host/y"},
-        )
-    assert resp.status_code == 400
-
-
-def test_register_dry_run_failure_returns_400(client):
-    from fastapi import HTTPException
-
-    def failing_connect(url, timeout=5):
-        raise HTTPException(
-            status_code=400,
-            detail="Could not connect to the provided database.",
-        )
-
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect", side_effect=failing_connect):
-        resp = client.post(
-            "/v1/users/register",
-            json={"email": _VALID_EMAIL, "database_url": _VALID_PG_URL},
-        )
-    assert resp.status_code == 400
-    assert "connect" in resp.json()["detail"].lower()
-
-
 def test_register_missing_email_returns_422(client):
-    """email field is now required."""
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"database_url": _VALID_PG_URL},
-        )
+    resp = client.post("/v1/users/register", json={})
     assert resp.status_code == 422
+
+
+def test_register_extra_field_database_url_rejected(client):
+    """database_url is no longer accepted at registration (extra='forbid')."""
+    resp = client.post(
+        "/v1/users/register",
+        json={"email": _VALID_EMAIL, "database_url": "postgresql://x/y"},
+    )
+    assert resp.status_code == 422
+
+
+def test_register_duplicate_email_returns_409(client):
+    _register(client, email="dup@example.com")
+    resp = _register(client, email="dup@example.com")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Closed registration
+# ---------------------------------------------------------------------------
+
+
+def test_register_closed_returns_403(client):
+    with patch("src.api.app.settings") as mock_settings:
+        mock_settings.registration_open = False
+        mock_settings.register_rate_limit = "100/minute"
+        resp = client.post("/v1/users/register", json={"email": _VALID_EMAIL})
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -224,40 +221,32 @@ def test_health_ready(client):
 
 
 # ---------------------------------------------------------------------------
-# Sanitization — dangerous query params must not survive registration
+# Self-service endpoints (active users): PUT /v1/users/me
 # ---------------------------------------------------------------------------
 
 
-def test_register_sanitizes_dangerous_params_in_url(client):
-    """passfile and similar params must be stripped before persistence."""
-    dirty_url = "postgresql://user:pass@8.8.8.8/mydb?passfile=/etc/passwd"
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"email": _VALID_EMAIL, "database_url": dirty_url},
-        )
-    assert resp.status_code == 201
-    user_id = resp.json()["user_id"]
-    store: UserStore = api_app.state.user_store
-    # Activate the user so we can look them up
-    raw_key = store.issue_first_api_key(user_id)
-    config = store.get_user_by_api_key(raw_key)
-    assert config is not None
-    assert "passfile" not in config.database_url
+def _make_active_user_with_key(store: UserStore, email: str) -> str:
+    """Create a user and fast-path to active state. Returns raw API key."""
+    # Use the cipher already wired into app.state so decryption works later
+    cipher = api_app.state.cipher
+    user_id = store.create_user(email=email)
+    store.transition_state(user_id, "pending_db_connection")
+    store.set_database_url(user_id, cipher.encrypt("postgresql://user:pass@8.8.8.8/mydb"))
+    store.transition_state(user_id, "pending_review")
+    return store.issue_first_api_key(user_id)
 
 
 def test_update_me_sanitizes_dangerous_params_in_url(client):
     """sslkey and similar params must be stripped on URL update."""
-    resp = _register(client)
-    assert resp.status_code == 201
-    user_id = resp.json()["user_id"]
+    import src.auth.url_guard as ug_module
     store: UserStore = api_app.state.user_store
-    api_key = store.issue_first_api_key(user_id)
+    # Use the store's cipher for proper encryption
+    api_key = _make_active_user_with_key(store, "update@example.com")
 
     dirty_url = "postgresql://user:pass@8.8.8.8/mydb?sslkey=/etc/ssl/key.pem"
-    with patch("socket.getaddrinfo", return_value=_mock_resolved()), \
-         patch("src.api.app._dry_run_connect"):
+    with patch.object(ug_module.settings, "environment", "development"), \
+         patch("src.api.app._dry_run_connect"), \
+         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]):
         resp = client.put(
             "/v1/users/me",
             json={"database_url": dirty_url},
@@ -266,4 +255,4 @@ def test_update_me_sanitizes_dangerous_params_in_url(client):
     assert resp.status_code == 200
     config = store.get_user_by_api_key(api_key)
     assert config is not None
-    assert "sslkey" not in config.database_url
+    assert "sslkey" not in (config.database_url or "")

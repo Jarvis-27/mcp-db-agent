@@ -78,6 +78,8 @@ class PipelineFactory:
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
+            if not user_config.database_url:
+                raise ValueError(f"User {user_config.user_id} has no database URL configured.")
             # Defense in depth: re-validate URL right before binding (T9)
             validated_url = url_guard.validate_database_url(
                 user_config.database_url,
@@ -92,7 +94,7 @@ class PipelineFactory:
             self._cache[cache_key] = components
             return components
 
-    def _build_key(self, uc: UserConfig) -> tuple[str, str]:
+    def _build_key(self, uc: UserConfig) -> tuple[str, str | None]:
         return (uc.user_id, uc.database_url)
 
     def _build_components(self, validated_url: URL, uc: UserConfig) -> PipelineComponents:

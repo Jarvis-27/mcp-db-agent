@@ -1,11 +1,12 @@
 """Pydantic v2 request/response models for the REST API."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: str = Field(..., min_length=1, max_length=254)
-    database_url: str = Field(..., min_length=1, max_length=2048)
 
 
 class RegistrationPendingResponse(BaseModel):
@@ -14,12 +15,43 @@ class RegistrationPendingResponse(BaseModel):
     message: str  # human-readable next step
 
 
-class RegisterResponse(BaseModel):
-    """Kept for backward compatibility with existing tests."""
-
+class VerifyEmailResponse(BaseModel):
     user_id: str
-    api_key: str  # 'mdbk_...' — shown ONCE, never again
+    status: str
+    next_step: str
+    setup_token: str  # mdbks_... — use for subsequent onboarding steps
+
+
+class SubmitDatabaseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    setup_token: str = Field(..., min_length=1)
+    database_url: str = Field(..., min_length=1, max_length=2048)
+
+
+class OnboardingDatabaseResponse(BaseModel):
+    user_id: str
+    status: str
+    next_step: str
+
+
+class AdminApproveResponse(BaseModel):
+    user_id: str
+    status: str
+    api_key: str
     warning: str = "Store this key now. We cannot show it to you again."
+
+
+class AdminStatusResponse(BaseModel):
+    user_id: str
+    status: str
+
+
+class PendingUserItem(BaseModel):
+    user_id: str
+    email: str | None
+    created_at: str
+    onboarding_status: str
 
 
 class UserMetaResponse(BaseModel):

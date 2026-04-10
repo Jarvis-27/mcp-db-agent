@@ -48,16 +48,18 @@ _VALID_URL = f"postgresql://user:pass@{_PUBLIC_IP}/db"
 _MOCK_RESOLVE = [(2, 1, 0, "", (_PUBLIC_IP, 5432))]
 
 
-def _make_user(store, url=_VALID_URL):
+def _make_user(store, url=_VALID_URL, email="test@example.com"):
     """Create a pending user then immediately activate them with a key.
 
     Returns (user_id, raw_key) matching the old API for minimal test churn.
+    Advances through the state machine: pending_email_verification →
+    pending_db_connection → pending_review → active.
     """
-    import src.auth.url_guard as ug_module
-
-    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
-         patch.object(ug_module.settings, "environment", "development"):
-        user_id = store.create_user(url)
+    user_id = store.create_user(email=email)
+    store.transition_state(user_id, "pending_db_connection")
+    # Store the encrypted URL directly (validation is tested separately)
+    store.set_database_url(user_id, store._cipher.encrypt(url))
+    store.transition_state(user_id, "pending_review")
     raw_key = store.issue_first_api_key(user_id)
     return user_id, raw_key
 
@@ -69,11 +71,7 @@ def _make_user(store, url=_VALID_URL):
 
 def test_create_user_returns_pending_user_id(store):
     """create_user returns only a user_id string (no API key)."""
-    import src.auth.url_guard as ug_module
-
-    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
-         patch.object(ug_module.settings, "environment", "development"):
-        user_id = store.create_user(_VALID_URL)
+    user_id = store.create_user(email="pending@example.com")
     assert isinstance(user_id, str) and len(user_id) == 36  # UUID4
     # User must start in pending state with no key
     assert store.get_onboarding_status(user_id) == "pending_email_verification"
@@ -84,17 +82,18 @@ def test_create_user_key_not_stored_until_issued(store, engine):
     """api_key_hash must be NULL until issue_first_api_key is called."""
     from sqlalchemy import text
 
-    import src.auth.url_guard as ug_module
-
-    with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
-         patch.object(ug_module.settings, "environment", "development"):
-        user_id = store.create_user(_VALID_URL)
+    user_id = store.create_user(email="pending2@example.com")
     with engine.connect() as conn:
         row = conn.execute(
             text("SELECT api_key_hash FROM users WHERE id = :id"), {"id": user_id}
         ).fetchone()
     assert row is not None
     assert row[0] is None  # no key yet
+
+    # Advance to pending_review so issue_first_api_key is allowed
+    store.transition_state(user_id, "pending_db_connection")
+    store.set_database_url(user_id, store._cipher.encrypt(_VALID_URL))
+    store.transition_state(user_id, "pending_review")
 
     # After issuing, the hash must be a 64-char hex string
     raw_key = store.issue_first_api_key(user_id)
@@ -109,14 +108,19 @@ def test_create_user_key_not_stored_until_issued(store, engine):
 
 
 def test_create_user_sanitizes_dangerous_params(store):
-    """Dangerous query params must not survive persistence."""
+    """Dangerous query params must not survive a URL update via update_user.
+
+    URL sanitization now happens at the update_user step (the DB URL is no
+    longer accepted at create_user time). update_user calls validate_database_url
+    which strips dangerous params.
+    """
     import src.auth.url_guard as ug_module
 
+    user_id, raw_key = _make_user(store)
     dirty_url = f"postgresql://user:pass@{_PUBLIC_IP}/db?passfile=/etc/passwd&sslmode=require"
     with patch("socket.getaddrinfo", return_value=_MOCK_RESOLVE), \
          patch.object(ug_module.settings, "environment", "development"):
-        user_id = store.create_user(dirty_url)
-    raw_key = store.issue_first_api_key(user_id)
+        store.update_user(user_id, database_url=dirty_url)
     config = store.get_user_by_api_key(raw_key)
     assert config is not None
     assert "passfile" not in config.database_url

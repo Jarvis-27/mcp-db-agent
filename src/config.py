@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     ask_database_quota_per_day: int = 200  # only enforced when on fallback LLM keys
     schema_cache_ttl_seconds: int = 600
 
+    # ── Onboarding gates (disabled by default; enable when Auth0/Stripe integrated) ──
+    billing_gate_enabled: bool = False
+    mfa_gate_enabled: bool = False
+
+    # ── Admin key (required in non-development) ────────────────────────
+    admin_api_key: str | None = None
+
+    # ── Verification token TTLs ────────────────────────────────────────
+    email_verification_token_ttl_minutes: int = 60
+    setup_token_ttl_hours: int = 24
+
+    # ── SMTP settings (optional; if smtp_host is unset, LogEmailSender is used) ──
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str | None = None
+
+    # ── Application base URL (used to build email verification links) ──
+    app_base_url: str = "http://localhost:8000"
+
     @field_validator("credential_encryption_keys")
     @classmethod
     def _check_keys(cls, v: str, info) -> str:
@@ -77,6 +98,15 @@ class Settings(BaseSettings):
                 "close public registration."
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_admin_api_key(self) -> "Settings":
+        if self.environment != "development" and not self.admin_api_key:
+            raise ValueError(
+                "ADMIN_API_KEY must be set in non-development environments. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+        return self
 
     def credential_encryption_keys_list(self) -> list[str]:
         return [k.strip() for k in self.credential_encryption_keys.split(",") if k.strip()]

@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session
 
 from src.auth.crypto import CredentialCipher
+from src.auth.onboarding import ACTIVE, PENDING_REVIEW, SUSPENDED, CLOSED
 from src.auth.url_guard import validate_database_url
 
 
@@ -32,7 +33,7 @@ class User(Base):
 
     id = Column(String(36), primary_key=True)
     api_key_hash = Column(String(64), unique=True, nullable=True, index=True)  # None until key issued
-    database_url_enc = Column(Text, nullable=False)
+    database_url_enc = Column(Text, nullable=True)   # None until onboarding/database step
     llm_provider = Column(String(20), nullable=False)
     anthropic_api_key_enc = Column(Text, nullable=True)
     groq_api_key_enc = Column(Text, nullable=True)
@@ -43,6 +44,7 @@ class User(Base):
     daily_quota_reset_at = Column(DateTime(timezone=True), nullable=False)
     email = Column(String(254), nullable=True, index=True)
     onboarding_status = Column(String(40), nullable=False, default="pending_email_verification")
+    email_verified_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class QueryHistory(Base):
@@ -69,10 +71,14 @@ class UserConfig:
     """In-memory user data — never persisted, returned from UserStore."""
 
     user_id: str
-    database_url: str  # decrypted, already passed url_guard
+    database_url: str | None  # decrypted; None until onboarding/database step
     is_active: bool
     onboarding_status: str
     email: str | None
+
+
+class StateTransitionError(Exception):
+    """Raised when an operation requires a specific onboarding state that is not met."""
 
 
 def _hash_key(raw_key: str) -> str:
@@ -119,24 +125,20 @@ class UserStore:
     # Write operations
     # ------------------------------------------------------------------
 
-    def create_user(self, database_url: str, email: str | None = None) -> str:
-        """Create a new pending user. Returns user_id only — no API key is issued.
+    def create_user(self, email: str) -> str:
+        """Create a new pending user with email only. Returns user_id.
 
-        The user starts in 'pending_email_verification' state with is_active=False.
-        Call issue_first_api_key(user_id) to activate and issue the first key
-        after onboarding is complete.
+        The user starts in 'pending_email_verification' with is_active=False
+        and no database_url. The database URL is submitted in the separate
+        POST /v1/onboarding/database step after email verification.
         """
-        # Validate URL and use the sanitized form before storing
-        sanitized_url = validate_database_url(database_url)
-        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
-
         user_id = str(uuid.uuid4())
         now = _utcnow()
 
         user = User(
             id=user_id,
             api_key_hash=None,
-            database_url_enc=self._cipher.encrypt(sanitized_url_str),
+            database_url_enc=None,
             llm_provider="server",
             is_active=False,
             created_at=now,
@@ -145,6 +147,7 @@ class UserStore:
             daily_quota_reset_at=_next_midnight(now),
             email=email,
             onboarding_status="pending_email_verification",
+            email_verified_at=None,
         )
 
         with Session(self._engine) as session:
@@ -153,20 +156,70 @@ class UserStore:
 
         return user_id
 
-    def issue_first_api_key(self, user_id: str) -> str:
-        """Activate a pending user and issue their first API key. Returns raw key.
+    def set_email_verified(self, user_id: str) -> bool:
+        """Record that the user's email has been verified. Returns False if not found."""
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.email_verified_at = _utcnow()  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
+            session.commit()
+        return True
 
-        Sets is_active=True and onboarding_status='active'. Raises ValueError
-        if user not found.
+    def transition_state(self, user_id: str, new_state: str) -> bool:
+        """Set onboarding_status to new_state and update is_active accordingly.
+
+        - is_active=True when new_state == 'active'
+        - is_active=False when new_state in {'suspended', 'closed'}
+        - is_active unchanged for intermediate states
+
+        Returns False if user not found.
+        """
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.onboarding_status = new_state  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
+            if new_state == ACTIVE:
+                user.is_active = True  # type: ignore[assignment]
+            elif new_state in (SUSPENDED, CLOSED):
+                user.is_active = False  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def set_database_url(self, user_id: str, database_url_enc: str) -> bool:
+        """Store the encrypted database URL for the user. Returns False if not found."""
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.database_url_enc = database_url_enc  # type: ignore[assignment]
+            user.updated_at = _utcnow()  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def issue_first_api_key(self, user_id: str) -> str:
+        """Activate a user and issue their first API key. Returns raw key.
+
+        Requires the user to be in 'pending_review' state.
+        Raises StateTransitionError if the precondition is not met.
+        Raises ValueError if the user is not found.
         """
         raw_key = "mdbk_" + secrets.token_urlsafe(32)
         with Session(self._engine) as session:
             user = session.get(User, user_id)
             if user is None:
                 raise ValueError(f"User {user_id} not found")
+            if user.onboarding_status != PENDING_REVIEW:
+                raise StateTransitionError(
+                    f"Cannot issue API key: user is in '{user.onboarding_status}' state, "
+                    f"expected '{PENDING_REVIEW}'."
+                )
             user.api_key_hash = _hash_key(raw_key)  # type: ignore[assignment]
             user.is_active = True  # type: ignore[assignment]
-            user.onboarding_status = "active"  # type: ignore[assignment]
+            user.onboarding_status = ACTIVE  # type: ignore[assignment]
             user.updated_at = _utcnow()  # type: ignore[assignment]
             session.commit()
         return raw_key
@@ -178,6 +231,29 @@ class UserStore:
             if user is None:
                 return None
             return str(user.onboarding_status)
+
+    def get_user_by_email(self, email: str) -> User | None:
+        """Look up a user by email address. Returns the ORM row or None."""
+        with Session(self._engine) as session:
+            user = session.query(User).filter_by(email=email).first()
+            if user is None:
+                return None
+            # Expunge so the row can be used outside the session
+            session.expunge(user)
+            return user
+
+    def list_users_by_status(self, status: str) -> list[User]:
+        """Return all users with the given onboarding_status, oldest first."""
+        with Session(self._engine) as session:
+            rows = (
+                session.query(User)
+                .filter_by(onboarding_status=status)
+                .order_by(User.created_at)
+                .all()
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
 
     def update_user(self, user_id: str, *, database_url: str | None = None) -> bool:
         """Update the database URL for a user. Refreshes updated_at. Returns False if not found."""
@@ -290,9 +366,12 @@ class UserStore:
     # ------------------------------------------------------------------
 
     def _to_config(self, user: User) -> UserConfig:
+        database_url: str | None = None
+        if user.database_url_enc:
+            database_url = self._cipher.decrypt(user.database_url_enc)  # type: ignore[arg-type]
         return UserConfig(
             user_id=user.id,  # type: ignore[arg-type]
-            database_url=self._cipher.decrypt(user.database_url_enc),  # type: ignore[arg-type]
+            database_url=database_url,
             is_active=user.is_active,  # type: ignore[arg-type]
             onboarding_status=user.onboarding_status or "pending_email_verification",  # type: ignore[arg-type]
             email=user.email,  # type: ignore[arg-type]

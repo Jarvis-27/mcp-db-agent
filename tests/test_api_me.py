@@ -12,7 +12,9 @@ from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
+from src.auth.token_store import TokenStore
 from src.auth.user_store import Base, UserStore
+from src.email_sender import LogEmailSender
 
 _VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
 
@@ -33,7 +35,15 @@ def app_state():
     key = Fernet.generate_key().decode()
     cipher = CredentialCipher([key])
     store = UserStore(engine, cipher)
+
+    from src.auth.token_store import VerificationToken
+    VerificationToken.__table__.create(bind=engine, checkfirst=True)
+    token_store = TokenStore(engine)
+
     api_app.state.user_store = store
+    api_app.state.cipher = cipher
+    api_app.state.token_store = token_store
+    api_app.state.email_sender = LogEmailSender()
     api_app.state.auth_key_cache = TTLCache(maxsize=100, ttl=60)
     api_app.state.factory = None
     # Reset slowapi limiter storage so tests don't interfere with each other
@@ -42,7 +52,15 @@ def app_state():
     limiter._storage.reset()
     # Treat all tests as development so the SSL-mode requirement doesn't block
     # clean test URLs. Production SSL enforcement is tested in test_url_guard.py.
-    with patch.object(ug_module.settings, "environment", "development"):
+    with patch.object(ug_module.settings, "environment", "development"), \
+         patch("src.api.app.settings") as mock_settings:
+        mock_settings.registration_open = True
+        mock_settings.allow_sqlite_user_dbs = False
+        mock_settings.billing_gate_enabled = False
+        mock_settings.mfa_gate_enabled = False
+        mock_settings.admin_api_key = "test-admin-key"
+        mock_settings.register_rate_limit = "100/minute"
+        mock_settings.app_base_url = "http://localhost:8000"
         yield
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -55,17 +73,16 @@ def client():
 
 @pytest.fixture
 def registered_user(client):
-    """Register a user and immediately activate them so they have an API key."""
-    with patch("socket.getaddrinfo", return_value=_mock_resolve()), \
-         patch("src.api.app._dry_run_connect"):
-        resp = client.post(
-            "/v1/users/register",
-            json={"email": "test@example.com", "database_url": _VALID_PG_URL},
-        )
+    """Register a user and fast-path them to active so they have an API key."""
+    resp = client.post("/v1/users/register", json={"email": "test@example.com"})
     assert resp.status_code == 201
     user_id = resp.json()["user_id"]
-    # Activate the pending user and issue the first key via UserStore directly
+    # Fast-path to active: advance state machine, set DB URL, issue key
     store: UserStore = api_app.state.user_store
+    cipher: CredentialCipher = api_app.state.cipher
+    store.transition_state(user_id, "pending_db_connection")
+    store.set_database_url(user_id, cipher.encrypt(_VALID_PG_URL))
+    store.transition_state(user_id, "pending_review")
     api_key = store.issue_first_api_key(user_id)
     return {"user_id": user_id, "api_key": api_key}
 
