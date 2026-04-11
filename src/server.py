@@ -103,6 +103,11 @@ def _current_user_id() -> str:
     return uc.user_id if uc is not None else "__stdio__"
 
 
+def _current_api_key_id() -> str | None:
+    uc = user_config_var.get()
+    return uc.api_key_id if uc is not None else None
+
+
 def _get_query_log():
     """Return the query log instance.
 
@@ -134,16 +139,25 @@ def _get_query_log():
             db_path = str(Path(__file__).parent.parent / "query_log.db")
             log_engine = create_engine(f"sqlite:///{db_path}")
             Base.metadata.create_all(log_engine)
-            # Schema guard: add user_id if the file predates this column.
+            # Schema guard: ensure tenant_id exists if the file predates the
+            # tenant-scoped query history model.
             with log_engine.connect() as conn:
                 insp = _inspect(log_engine)
                 if "query_history" in insp.get_table_names():
                     col_names = {c["name"] for c in insp.get_columns("query_history")}
-                    if "user_id" not in col_names:
+                    if "tenant_id" not in col_names:
                         conn.execute(
                             text(
                                 "ALTER TABLE query_history "
-                                "ADD COLUMN user_id TEXT NOT NULL DEFAULT '__stdio__'"
+                                "ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '__stdio__'"
+                            )
+                        )
+                        conn.commit()
+                    if "api_key_id" not in col_names:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE query_history "
+                                "ADD COLUMN api_key_id TEXT NULL"
                             )
                         )
                         conn.commit()
@@ -252,6 +266,7 @@ async def ask_database(question: str) -> str:
     # Resolve user identity and cache key before any I/O so we can short-circuit
     # cheaply for cache hits and enforce quota BEFORE cold-path DB work.
     user_id = _current_user_id()
+    api_key_id = _current_api_key_id()
     query_log = _get_query_log()
 
     cache_key = (user_id, question.lower().strip())
@@ -342,7 +357,8 @@ async def ask_database(question: str) -> str:
             attempts=attempts,
             duration_ms=duration_ms,
             error=None,
-            user_id=user_id,
+            tenant_id=user_id,
+            api_key_id=api_key_id,
         )
         _cache[cache_key] = (formatted, time.monotonic())
         log_level = logging.WARNING if attempts > 1 else logging.INFO
@@ -375,7 +391,8 @@ async def ask_database(question: str) -> str:
         attempts=attempts,
         duration_ms=duration_ms,
         error=last_error,
-        user_id=user_id,
+        tenant_id=user_id,
+        api_key_id=api_key_id,
     )
     _log.error(
         "ask_database",
@@ -417,7 +434,7 @@ async def query_history(limit: int = 10) -> str:
     user_id = _current_user_id()
     query_log = _get_query_log()
     limit = max(1, min(limit, 200))
-    return json.dumps(query_log.get_recent_queries(limit, user_id=user_id), indent=2)
+    return json.dumps(query_log.get_recent_queries(limit, tenant_id=user_id), indent=2)
 
 
 # ---------------------------------------------------------------------------

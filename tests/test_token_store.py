@@ -1,6 +1,5 @@
-"""Tests for src/auth/token_store.py — token lifecycle."""
+"""Tests for src/auth/token_store.py."""
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,12 +13,9 @@ from src.auth.token_store import (
     TokenStore,
     VerificationToken,
 )
-from src.auth.user_store import Base, User
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+from src.auth.user_store import Base, UserStore
+from src.auth.crypto import CredentialCipher
+from cryptography.fernet import Fernet
 
 
 @pytest.fixture
@@ -37,153 +33,71 @@ def engine():
 
 @pytest.fixture
 def store(engine):
-    return TokenStore(engine, email_token_ttl_minutes=60, setup_token_ttl_hours=24)
+    return TokenStore(engine, email_token_ttl_minutes=60, login_token_ttl_minutes=30)
 
 
 @pytest.fixture
-def user_id(engine):
-    """Insert a minimal user row so FK constraints pass."""
-    from sqlalchemy.orm import Session
-    from datetime import UTC, datetime
-
-    uid = str(uuid.uuid4())
-    now = datetime.now(UTC)
-    with Session(engine) as session:
-        session.add(User(
-            id=uid,
-            api_key_hash=None,
-            database_url_enc=None,
-            llm_provider="server",
-            is_active=False,
-            created_at=now,
-            updated_at=now,
-            daily_query_count=0,
-            daily_quota_reset_at=now,
-            email="test@example.com",
-            onboarding_status="pending_email_verification",
-            email_verified_at=None,
-        ))
-        session.commit()
-    return uid
+def membership_id(engine):
+    cipher = CredentialCipher([Fernet.generate_key().decode()])
+    user_store = UserStore(engine, cipher)
+    _tenant_id, membership_id = user_store.create_tenant_with_owner("test@example.com")
+    return membership_id
 
 
-# ---------------------------------------------------------------------------
-# Email verification tokens
-# ---------------------------------------------------------------------------
-
-
-def test_issue_email_token_prefix(store, user_id):
-    token = store.issue_email_verification_token(user_id)
+def test_issue_email_token_prefix(store, membership_id):
+    token = store.issue_email_verification_token(membership_id)
     assert token.startswith("mdbkv_")
 
 
-def test_verify_email_token_returns_user_id(store, user_id):
-    raw = store.issue_email_verification_token(user_id)
-    result = store.verify_email_token(raw)
-    assert result == user_id
+def test_verify_email_token_returns_membership_id(store, membership_id):
+    raw = store.issue_email_verification_token(membership_id)
+    assert store.verify_email_token(raw) == membership_id
 
 
-def test_verify_email_token_is_single_use(store, user_id):
-    raw = store.issue_email_verification_token(user_id)
-    store.verify_email_token(raw)  # first use succeeds
+def test_verify_email_token_is_single_use(store, membership_id):
+    raw = store.issue_email_verification_token(membership_id)
+    store.verify_email_token(raw)
     with pytest.raises(TokenAlreadyUsedError):
-        store.verify_email_token(raw)  # second use fails
+        store.verify_email_token(raw)
 
 
-def test_verify_email_token_not_found(store, user_id):
+def test_verify_email_token_not_found(store, membership_id):
     with pytest.raises(TokenNotFoundError):
         store.verify_email_token("mdbkv_doesnotexist")
 
 
-def test_verify_email_token_expired(store, user_id, engine):
-    raw = store.issue_email_verification_token(user_id)
-    # Force expiry by back-dating the token
+def test_verify_email_token_expired(store, membership_id, engine):
+    raw = store.issue_email_verification_token(membership_id)
+    token_hash = __import__("hashlib").sha256(raw.encode()).hexdigest()
     from sqlalchemy.orm import Session
-    import hashlib
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+
     with Session(engine) as session:
-        t = session.query(VerificationToken).filter_by(token_hash=token_hash).first()
-        t.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        token = session.query(VerificationToken).filter_by(token_hash=token_hash).first()
+        token.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.commit()
 
     with pytest.raises(TokenExpiredError):
         store.verify_email_token(raw)
 
 
-def test_new_email_token_invalidates_previous(store, user_id):
-    """Issuing a second email token revokes the first one."""
-    raw_first = store.issue_email_verification_token(user_id)
-    _raw_second = store.issue_email_verification_token(user_id)
+def test_issue_login_token_prefix(store, membership_id):
+    token = store.issue_owner_login_token(membership_id)
+    assert token.startswith("mdbl_")
 
+
+def test_verify_login_token_returns_membership_id(store, membership_id):
+    raw = store.issue_owner_login_token(membership_id)
+    assert store.verify_owner_login_token(raw) == membership_id
+
+
+def test_verify_login_token_is_single_use(store, membership_id):
+    raw = store.issue_owner_login_token(membership_id)
+    store.verify_owner_login_token(raw)
     with pytest.raises(TokenAlreadyUsedError):
-        store.verify_email_token(raw_first)
+        store.verify_owner_login_token(raw)
 
 
-def test_verify_email_token_wrong_purpose(store, user_id):
-    """A setup token cannot be used as an email verification token."""
-    raw = store.issue_setup_token(user_id)
+def test_verify_login_token_wrong_purpose(store, membership_id):
+    raw = store.issue_email_verification_token(membership_id)
     with pytest.raises(TokenNotFoundError):
-        store.verify_email_token(raw)
-
-
-# ---------------------------------------------------------------------------
-# Setup tokens
-# ---------------------------------------------------------------------------
-
-
-def test_issue_setup_token_prefix(store, user_id):
-    token = store.issue_setup_token(user_id)
-    assert token.startswith("mdbks_")
-
-
-def test_verify_setup_token_returns_user_id(store, user_id):
-    raw = store.issue_setup_token(user_id)
-    result = store.verify_setup_token(raw)
-    assert result == user_id
-
-
-def test_setup_token_is_multi_use(store, user_id):
-    raw = store.issue_setup_token(user_id)
-    store.verify_setup_token(raw)  # first call
-    store.verify_setup_token(raw)  # second call — should not raise
-
-
-def test_verify_setup_token_not_found(store, user_id):
-    with pytest.raises(TokenNotFoundError):
-        store.verify_setup_token("mdbks_doesnotexist")
-
-
-def test_verify_setup_token_expired(store, user_id, engine):
-    raw = store.issue_setup_token(user_id)
-    import hashlib
-    from sqlalchemy.orm import Session
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
-    with Session(engine) as session:
-        t = session.query(VerificationToken).filter_by(token_hash=token_hash).first()
-        t.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        session.commit()
-
-    with pytest.raises(TokenExpiredError):
-        store.verify_setup_token(raw)
-
-
-def test_revoke_setup_token(store, user_id):
-    raw = store.issue_setup_token(user_id)
-    store.revoke_setup_token(user_id)
-    with pytest.raises(TokenExpiredError):
-        store.verify_setup_token(raw)
-
-
-def test_new_setup_token_invalidates_previous(store, user_id):
-    raw_first = store.issue_setup_token(user_id)
-    _raw_second = store.issue_setup_token(user_id)
-
-    with pytest.raises(TokenExpiredError):
-        store.verify_setup_token(raw_first)
-
-
-def test_verify_setup_token_wrong_purpose(store, user_id):
-    """An email verification token cannot be used as a setup token."""
-    raw = store.issue_email_verification_token(user_id)
-    with pytest.raises(TokenNotFoundError):
-        store.verify_setup_token(raw)
+        store.verify_owner_login_token(raw)

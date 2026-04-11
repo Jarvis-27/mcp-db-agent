@@ -65,7 +65,8 @@ class Settings(BaseSettings):
 
     # ── Verification token TTLs ────────────────────────────────────────
     email_verification_token_ttl_minutes: int = 60
-    setup_token_ttl_hours: int = 24
+    login_link_token_ttl_minutes: int = 30
+    owner_session_ttl_hours: int = 24
 
     # ── SMTP settings (optional; if smtp_host is unset, LogEmailSender is used) ──
     smtp_host: str | None = None

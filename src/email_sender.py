@@ -1,11 +1,4 @@
-"""Email sender abstraction.
-
-Provides a Protocol (interface) and two concrete implementations:
-- LogEmailSender: dev/test default — logs messages instead of sending.
-- SMTPEmailSender: production — uses smtplib with STARTTLS.
-
-Use make_email_sender(settings) to get the right implementation at runtime.
-"""
+"""Email sender abstraction for verification and owner login links."""
 
 import logging
 import smtplib
@@ -16,52 +9,23 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Protocol
-# ---------------------------------------------------------------------------
-
-
 class EmailSender(Protocol):
     def send_verification_email(self, to_address: str, verification_url: str) -> None:
-        """Send an email verification link to the user."""
         ...
 
-    def send_api_key_email(self, to_address: str, api_key: str) -> None:
-        """Send the newly issued API key to the user."""
+    def send_login_email(self, to_address: str, login_url: str) -> None:
         ...
-
-
-# ---------------------------------------------------------------------------
-# Log implementation (development / no SMTP configured)
-# ---------------------------------------------------------------------------
 
 
 class LogEmailSender:
-    """Logs email content instead of sending. Safe for dev and tests."""
-
     def send_verification_email(self, to_address: str, verification_url: str) -> None:
-        logger.info(
-            "[DEV EMAIL] Verification URL for %s:\n  %s",
-            to_address,
-            verification_url,
-        )
+        logger.info("[DEV EMAIL] Verification URL for %s:\n  %s", to_address, verification_url)
 
-    def send_api_key_email(self, to_address: str, api_key: str) -> None:
-        logger.info(
-            "[DEV EMAIL] API Key for %s:\n  %s\n  Store this key now — it will not be shown again.",
-            to_address,
-            api_key,
-        )
-
-
-# ---------------------------------------------------------------------------
-# SMTP implementation (production)
-# ---------------------------------------------------------------------------
+    def send_login_email(self, to_address: str, login_url: str) -> None:
+        logger.info("[DEV EMAIL] Login URL for %s:\n  %s", to_address, login_url)
 
 
 class SMTPEmailSender:
-    """Sends real emails via SMTP with STARTTLS."""
-
     def __init__(
         self,
         host: str,
@@ -97,26 +61,16 @@ class SMTPEmailSender:
         )
         self._send(to_address, "Verify your email address", body)
 
-    def send_api_key_email(self, to_address: str, api_key: str) -> None:
+    def send_login_email(self, to_address: str, login_url: str) -> None:
         body = (
-            "<p>Your account has been approved. Here is your API key:</p>"
-            f"<pre>{api_key}</pre>"
-            "<p><strong>Store this key now — it will not be shown again.</strong></p>"
+            "<p>Use the link below to sign in to your tenant owner session:</p>"
+            f'<p><a href="{login_url}">{login_url}</a></p>'
+            "<p>This link expires shortly. If you did not request it, you can ignore this email.</p>"
         )
-        self._send(to_address, "Your API key is ready", body)
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
+        self._send(to_address, "Your sign-in link", body)
 
 
 def make_email_sender(settings) -> EmailSender:  # type: ignore[type-arg]
-    """Return the appropriate EmailSender based on settings.
-
-    Uses SMTPEmailSender when smtp_host is configured; falls back to
-    LogEmailSender (no-op + log) for local development.
-    """
     if getattr(settings, "smtp_host", None):
         return SMTPEmailSender(
             host=settings.smtp_host,

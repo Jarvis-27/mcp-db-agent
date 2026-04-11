@@ -84,6 +84,9 @@ class ApiKeyMiddleware:
             if user_config is None:
                 await _send_401(send, "Invalid or inactive API key")
                 return
+            if "mcp_read" not in user_config.scopes:
+                await _send_401(send, "API key is not permitted for MCP access")
+                return
             self._cache[cache_key] = user_config
 
         token = user_config_var.set(user_config)

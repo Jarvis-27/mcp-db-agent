@@ -1,16 +1,17 @@
-"""User model and data-access layer for multi-tenant auth."""
+"""Tenant-backed auth and persistence layer for hosted multi-tenant mode."""
 
 import hashlib
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
     Engine,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -20,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session
 
 from src.auth.crypto import CredentialCipher
-from src.auth.onboarding import ACTIVE, PENDING_REVIEW, SUSPENDED, CLOSED
+from src.auth.onboarding import ACTIVE, CLOSED, PENDING_REVIEW, SUSPENDED
 from src.auth.url_guard import validate_database_url
 
 
@@ -28,33 +29,94 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(Base):
-    __tablename__ = "users"
+class Tenant(Base):
+    __tablename__ = "tenants"
 
     id = Column(String(36), primary_key=True)
-    api_key_hash = Column(String(64), unique=True, nullable=True, index=True)  # None until key issued
-    database_url_enc = Column(Text, nullable=True)   # None until onboarding/database step
-    llm_provider = Column(String(20), nullable=False)
-    anthropic_api_key_enc = Column(Text, nullable=True)
-    groq_api_key_enc = Column(Text, nullable=True)
-    is_active = Column(Boolean, nullable=False, default=False)  # False until onboarding complete
-    created_at = Column(DateTime(timezone=True), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=False)
+    name = Column(String(200), nullable=False)
+    status = Column(String(40), nullable=False, default="pending_email_verification", index=True)
+    trust_level = Column(String(40), nullable=False, default="unverified")
+    billing_status = Column(String(40), nullable=False, default="not_started")
+    plan_code = Column(String(40), nullable=False, default="new_trial")
     daily_query_count = Column(Integer, nullable=False, default=0)
     daily_quota_reset_at = Column(DateTime(timezone=True), nullable=False)
-    email = Column(String(254), nullable=True, index=True)
-    onboarding_status = Column(String(40), nullable=False, default="pending_email_verification")
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class TenantMembership(Base):
+    __tablename__ = "tenant_memberships"
+
+    id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(254), nullable=False, index=True)
+    role = Column(String(30), nullable=False, default="owner")
     email_verified_at = Column(DateTime(timezone=True), nullable=True)
+    mfa_verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    prefix = Column(String(16), nullable=False, index=True)
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    scope = Column(String(200), nullable=False, default="mcp_read")
+    created_by_membership_id = Column(
+        String(36),
+        ForeignKey("tenant_memberships.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class TenantDatabase(Base):
+    __tablename__ = "tenant_databases"
+
+    id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False, default="primary")
+    database_url_enc = Column(Text, nullable=False)
+    validation_status = Column(String(40), nullable=False, default="validated")
+    last_validation_at = Column(DateTime(timezone=True), nullable=True)
+    last_validation_error = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class OwnerSession(Base):
+    __tablename__ = "owner_sessions"
+
+    id = Column(String(36), primary_key=True)
+    tenant_membership_id = Column(
+        String(36),
+        ForeignKey("tenant_memberships.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    session_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
 
 
 class QueryHistory(Base):
-    """Query history table — managed via Alembic, defined here for autogenerate."""
-
     __tablename__ = "query_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime(timezone=True), nullable=False)
-    user_id = Column(String(36), nullable=False)
+    tenant_id = Column(String(36), nullable=False)
+    api_key_id = Column(String(36), nullable=True)
     question = Column(Text, nullable=False)
     sql = Column(Text, nullable=False)
     success = Column(Boolean, nullable=False)
@@ -63,26 +125,49 @@ class QueryHistory(Base):
     duration_ms = Column(Integer, nullable=False)
     error = Column(Text, nullable=True)
 
-    __table_args__ = (Index("ix_query_history_user_id_desc", "user_id", "id"),)
+    __table_args__ = (Index("ix_query_history_tenant_id_desc", "tenant_id", "id"),)
 
 
 @dataclass(frozen=True)
 class UserConfig:
-    """In-memory user data — never persisted, returned from UserStore."""
+    """Machine-auth context returned from API key lookup."""
 
     user_id: str
-    database_url: str | None  # decrypted; None until onboarding/database step
+    database_url: str | None
     is_active: bool
     onboarding_status: str
     email: str | None
+    api_key_id: str | None = None
+    database_id: str | None = None
+    scopes: frozenset[str] = frozenset({"mcp_read"})
+    key_name: str | None = None
+
+    @property
+    def tenant_id(self) -> str:
+        return self.user_id
+
+
+@dataclass(frozen=True)
+class OwnerSessionContext:
+    tenant_id: str
+    membership_id: str
+    email: str
+    role: str
+    onboarding_status: str
+    is_active: bool
+    created_at: datetime
 
 
 class StateTransitionError(Exception):
-    """Raised when an operation requires a specific onboarding state that is not met."""
+    """Raised when a state-gated operation is not allowed."""
 
 
 def _hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def _hash_session(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
 def _utcnow() -> datetime:
@@ -90,224 +175,483 @@ def _utcnow() -> datetime:
 
 
 def _ensure_utc(dt: datetime) -> datetime:
-    """SQLite returns naive datetimes. Treat them as UTC for comparison."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
 
 
-def _midnight_tomorrow() -> datetime:
-    now = datetime.now(UTC)
-    return now.replace(hour=0, minute=0, second=0, microsecond=0).replace(
-        day=now.day + 1
-    ) if now.day < 28 else _next_midnight(now)
-
-
 def _next_midnight(now: datetime) -> datetime:
-    """Return UTC midnight of the next calendar day."""
-    from datetime import timedelta
-
     return (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
 
 
-class UserStore:
-    """Data-access object for the users table.
+def _default_tenant_name(email: str) -> str:
+    local = email.split("@", 1)[0].strip() or "workspace"
+    return f"{local[:60]}'s workspace"
 
-    Schema is managed by Alembic — this class does NOT call create_all.
-    The engine is injected so tests can use in-memory SQLite.
-    """
+
+def _normalize_scopes(scopes: str | list[str] | tuple[str, ...] | set[str] | frozenset[str]) -> tuple[str, frozenset[str]]:
+    if isinstance(scopes, str):
+        parts = [part.strip() for part in scopes.split(",") if part.strip()]
+    else:
+        parts = [str(part).strip() for part in scopes if str(part).strip()]
+    if not parts:
+        parts = ["mcp_read"]
+    unique = tuple(dict.fromkeys(parts))
+    return ",".join(unique), frozenset(unique)
+
+
+class UserStore:
+    """Tenant-backed DAO used by the API layer and MCP auth path."""
 
     def __init__(self, engine: Engine, cipher: CredentialCipher) -> None:
         self._engine = engine
         self._cipher = cipher
 
     # ------------------------------------------------------------------
-    # Write operations
+    # Tenant + owner lifecycle
     # ------------------------------------------------------------------
 
-    def create_user(self, email: str) -> str:
-        """Create a new pending user with email only. Returns user_id.
-
-        The user starts in 'pending_email_verification' with is_active=False
-        and no database_url. The database URL is submitted in the separate
-        POST /v1/onboarding/database step after email verification.
-        """
-        user_id = str(uuid.uuid4())
+    def create_tenant_with_owner(self, email: str, tenant_name: str | None = None) -> tuple[str, str]:
+        tenant_id = str(uuid.uuid4())
+        membership_id = str(uuid.uuid4())
         now = _utcnow()
 
-        user = User(
-            id=user_id,
-            api_key_hash=None,
-            database_url_enc=None,
-            llm_provider="server",
-            is_active=False,
-            created_at=now,
-            updated_at=now,
+        tenant = Tenant(
+            id=tenant_id,
+            name=(tenant_name or _default_tenant_name(email)).strip() or _default_tenant_name(email),
+            status="pending_email_verification",
+            trust_level="unverified",
+            billing_status="not_started",
+            plan_code="new_trial",
             daily_query_count=0,
             daily_quota_reset_at=_next_midnight(now),
+            created_at=now,
+            updated_at=now,
+            suspended_at=None,
+            closed_at=None,
+        )
+        membership = TenantMembership(
+            id=membership_id,
+            tenant_id=tenant_id,
             email=email,
-            onboarding_status="pending_email_verification",
+            role="owner",
             email_verified_at=None,
+            mfa_verified_at=None,
+            created_at=now,
+            updated_at=now,
         )
 
         with Session(self._engine) as session:
-            session.add(user)
+            session.add(tenant)
+            session.add(membership)
             session.commit()
 
-        return user_id
+        return tenant_id, membership_id
 
-    def set_email_verified(self, user_id: str) -> bool:
-        """Record that the user's email has been verified. Returns False if not found."""
+    def get_owner_membership_by_email(self, email: str) -> OwnerSessionContext | None:
         with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return False
-            user.email_verified_at = _utcnow()  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
-            session.commit()
-        return True
-
-    def transition_state(self, user_id: str, new_state: str) -> bool:
-        """Set onboarding_status to new_state and update is_active accordingly.
-
-        - is_active=True when new_state == 'active'
-        - is_active=False when new_state in {'suspended', 'closed'}
-        - is_active unchanged for intermediate states
-
-        Returns False if user not found.
-        """
-        with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return False
-            user.onboarding_status = new_state  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
-            if new_state == ACTIVE:
-                user.is_active = True  # type: ignore[assignment]
-            elif new_state in (SUSPENDED, CLOSED):
-                user.is_active = False  # type: ignore[assignment]
-            session.commit()
-        return True
-
-    def set_database_url(self, user_id: str, database_url_enc: str) -> bool:
-        """Store the encrypted database URL for the user. Returns False if not found."""
-        with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return False
-            user.database_url_enc = database_url_enc  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
-            session.commit()
-        return True
-
-    def issue_first_api_key(self, user_id: str) -> str:
-        """Activate a user and issue their first API key. Returns raw key.
-
-        Requires the user to be in 'pending_review' state.
-        Raises StateTransitionError if the precondition is not met.
-        Raises ValueError if the user is not found.
-        """
-        raw_key = "mdbk_" + secrets.token_urlsafe(32)
-        with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                raise ValueError(f"User {user_id} not found")
-            if user.onboarding_status != PENDING_REVIEW:
-                raise StateTransitionError(
-                    f"Cannot issue API key: user is in '{user.onboarding_status}' state, "
-                    f"expected '{PENDING_REVIEW}'."
-                )
-            user.api_key_hash = _hash_key(raw_key)  # type: ignore[assignment]
-            user.is_active = True  # type: ignore[assignment]
-            user.onboarding_status = ACTIVE  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
-            session.commit()
-        return raw_key
-
-    def get_onboarding_status(self, user_id: str) -> str | None:
-        """Return onboarding_status for user_id, or None if user not found."""
-        with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
+            row = (
+                session.query(TenantMembership, Tenant)
+                .join(Tenant, TenantMembership.tenant_id == Tenant.id)
+                .filter(TenantMembership.email == email)
+                .filter(Tenant.status != CLOSED)
+                .order_by(Tenant.created_at.desc())
+                .first()
+            )
+            if row is None:
                 return None
-            return str(user.onboarding_status)
+            membership, tenant = row
+            return self._owner_context_from_rows(membership, tenant)
 
-    def get_user_by_email(self, email: str) -> User | None:
-        """Look up a user by email address. Returns the ORM row or None."""
+    def get_owner_membership_by_id(self, membership_id: str) -> OwnerSessionContext | None:
         with Session(self._engine) as session:
-            user = session.query(User).filter_by(email=email).first()
-            if user is None:
+            row = (
+                session.query(TenantMembership, Tenant)
+                .join(Tenant, TenantMembership.tenant_id == Tenant.id)
+                .filter(TenantMembership.id == membership_id)
+                .first()
+            )
+            if row is None:
                 return None
-            # Expunge so the row can be used outside the session
-            session.expunge(user)
-            return user
+            membership, tenant = row
+            return self._owner_context_from_rows(membership, tenant)
 
-    def list_users_by_status(self, status: str) -> list[User]:
-        """Return all users with the given onboarding_status, oldest first."""
+    def set_email_verified(self, membership_id: str) -> bool:
+        now = _utcnow()
+        with Session(self._engine) as session:
+            membership = session.get(TenantMembership, membership_id)
+            if membership is None:
+                return False
+            tenant = session.get(Tenant, membership.tenant_id)
+            membership.email_verified_at = now  # type: ignore[assignment]
+            membership.updated_at = now  # type: ignore[assignment]
+            if tenant is not None:
+                tenant.trust_level = "email_verified"  # type: ignore[assignment]
+                tenant.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def issue_owner_session(self, membership_id: str, ttl_hours: int = 24) -> str:
+        raw_token = "mdbo_" + secrets.token_urlsafe(32)
+        now = _utcnow()
+        session_hash = _hash_session(raw_token)
+
+        with Session(self._engine) as session:
+            owner_session = OwnerSession(
+                id=str(uuid.uuid4()),
+                tenant_membership_id=membership_id,
+                session_hash=session_hash,
+                expires_at=now + timedelta(hours=ttl_hours),
+                last_used_at=now,
+                revoked_at=None,
+                created_at=now,
+            )
+            session.add(owner_session)
+            session.commit()
+
+        return raw_token
+
+    def get_owner_by_session(self, raw_token: str) -> OwnerSessionContext | None:
+        token_hash = _hash_session(raw_token)
+        now = _utcnow()
+        with Session(self._engine) as session:
+            row = (
+                session.query(OwnerSession, TenantMembership, Tenant)
+                .join(TenantMembership, OwnerSession.tenant_membership_id == TenantMembership.id)
+                .join(Tenant, TenantMembership.tenant_id == Tenant.id)
+                .filter(OwnerSession.session_hash == token_hash)
+                .first()
+            )
+            if row is None:
+                return None
+            owner_session, membership, tenant = row
+            if owner_session.revoked_at is not None:
+                return None
+            if _ensure_utc(owner_session.expires_at) < now:
+                return None
+            if tenant.status in (SUSPENDED, CLOSED):
+                return None
+            owner_session.last_used_at = now  # type: ignore[assignment]
+            session.commit()
+            return self._owner_context_from_rows(membership, tenant)
+
+    def revoke_owner_session(self, raw_token: str) -> bool:
+        token_hash = _hash_session(raw_token)
+        now = _utcnow()
+        with Session(self._engine) as session:
+            owner_session = session.query(OwnerSession).filter_by(session_hash=token_hash).first()
+            if owner_session is None or owner_session.revoked_at is not None:
+                return False
+            owner_session.revoked_at = now  # type: ignore[assignment]
+            session.commit()
+            return True
+
+    def get_tenant_status(self, tenant_id: str) -> str | None:
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return None
+            return str(tenant.status)
+
+    def transition_tenant_state(self, tenant_id: str, new_state: str) -> bool:
+        now = _utcnow()
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return False
+            tenant.status = new_state  # type: ignore[assignment]
+            tenant.updated_at = now  # type: ignore[assignment]
+            if new_state == SUSPENDED:
+                tenant.suspended_at = now  # type: ignore[assignment]
+            if new_state == CLOSED:
+                tenant.closed_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def list_tenants_by_status(self, status: str) -> list[tuple[Tenant, TenantMembership | None]]:
         with Session(self._engine) as session:
             rows = (
-                session.query(User)
-                .filter_by(onboarding_status=status)
-                .order_by(User.created_at)
+                session.query(Tenant, TenantMembership)
+                .outerjoin(
+                    TenantMembership,
+                    (TenantMembership.tenant_id == Tenant.id) & (TenantMembership.role == "owner"),
+                )
+                .filter(Tenant.status == status)
+                .order_by(Tenant.created_at)
+                .all()
+            )
+            result: list[tuple[Tenant, TenantMembership | None]] = []
+            for tenant, membership in rows:
+                session.expunge(tenant)
+                if membership is not None:
+                    session.expunge(membership)
+                result.append((tenant, membership))
+            return result
+
+    def get_tenant(self, tenant_id: str) -> Tenant | None:
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return None
+            session.expunge(tenant)
+            return tenant
+
+    def owner_can_issue_api_keys(self, tenant_id: str) -> bool:
+        status = self.get_tenant_status(tenant_id)
+        if status != ACTIVE:
+            return False
+        return self.get_active_database(tenant_id) is not None
+
+    # ------------------------------------------------------------------
+    # Database registration
+    # ------------------------------------------------------------------
+
+    def upsert_active_database(self, tenant_id: str, database_url_enc: str, name: str = "primary") -> str:
+        now = _utcnow()
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                raise ValueError(f"Tenant {tenant_id} not found")
+            current = (
+                session.query(TenantDatabase)
+                .filter_by(tenant_id=tenant_id, is_active=True)
+                .order_by(TenantDatabase.created_at.desc())
+                .first()
+            )
+            if current is None:
+                current = TenantDatabase(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    name=name,
+                    database_url_enc=database_url_enc,
+                    validation_status="validated",
+                    last_validation_at=now,
+                    last_validation_error=None,
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(current)
+            else:
+                current.name = name  # type: ignore[assignment]
+                current.database_url_enc = database_url_enc  # type: ignore[assignment]
+                current.validation_status = "validated"  # type: ignore[assignment]
+                current.last_validation_at = now  # type: ignore[assignment]
+                current.last_validation_error = None  # type: ignore[assignment]
+                current.is_active = True  # type: ignore[assignment]
+                current.updated_at = now  # type: ignore[assignment]
+            tenant.updated_at = now  # type: ignore[assignment]
+            session.commit()
+            return str(current.id)
+
+    def get_active_database(self, tenant_id: str) -> TenantDatabase | None:
+        with Session(self._engine) as session:
+            db = (
+                session.query(TenantDatabase)
+                .filter_by(tenant_id=tenant_id, is_active=True)
+                .order_by(TenantDatabase.created_at.desc())
+                .first()
+            )
+            if db is None:
+                return None
+            session.expunge(db)
+            return db
+
+    # ------------------------------------------------------------------
+    # Machine API key lifecycle
+    # ------------------------------------------------------------------
+
+    def create_api_key(
+        self,
+        tenant_id: str,
+        name: str,
+        scopes: str | list[str] | tuple[str, ...] | set[str] | frozenset[str],
+        created_by_membership_id: str | None,
+    ) -> tuple[str, ApiKey]:
+        if not self.owner_can_issue_api_keys(tenant_id):
+            raise StateTransitionError("Tenant is not eligible to issue API keys.")
+
+        raw_key = "mdbk_" + secrets.token_urlsafe(32)
+        now = _utcnow()
+        scope_text, _ = _normalize_scopes(scopes)
+        api_key = ApiKey(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            name=name.strip() or "default",
+            prefix=raw_key[:12],
+            key_hash=_hash_key(raw_key),
+            scope=scope_text,
+            created_by_membership_id=created_by_membership_id,
+            last_used_at=None,
+            revoked_at=None,
+            created_at=now,
+        )
+        with Session(self._engine) as session:
+            session.add(api_key)
+            session.commit()
+            session.refresh(api_key)
+            session.expunge(api_key)
+        return raw_key, api_key
+
+    def list_api_keys(self, tenant_id: str) -> list[ApiKey]:
+        with Session(self._engine) as session:
+            rows = (
+                session.query(ApiKey)
+                .filter(ApiKey.tenant_id == tenant_id)
+                .order_by(ApiKey.created_at.desc())
                 .all()
             )
             for row in rows:
                 session.expunge(row)
             return rows
 
-    def update_user(self, user_id: str, *, database_url: str | None = None) -> bool:
-        """Update the database URL for a user. Refreshes updated_at. Returns False if not found."""
+    def revoke_api_key(self, tenant_id: str, api_key_id: str) -> bool:
+        now = _utcnow()
         with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
+            api_key = session.get(ApiKey, api_key_id)
+            if api_key is None or str(api_key.tenant_id) != tenant_id:
                 return False
-
-            if database_url is not None:
-                sanitized_url = validate_database_url(database_url)
-                sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
-                user.database_url_enc = self._cipher.encrypt(sanitized_url_str)  # type: ignore[assignment]
-
-            user.updated_at = _utcnow()  # type: ignore[assignment]
+            if api_key.revoked_at is not None:
+                return False
+            api_key.revoked_at = now  # type: ignore[assignment]
             session.commit()
+            return True
 
-        return True
-
-    def rotate_api_key(self, user_id: str) -> str:
-        """Generate a new raw key, replace api_key_hash, return new raw key.
-
-        Caller is responsible for invalidating auth-key cache and cached pipelines.
-        """
-        raw_key = "mdbk_" + secrets.token_urlsafe(32)
+    def rotate_api_key(self, tenant_id: str, api_key_id: str) -> str:
         with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                raise ValueError(f"User {user_id} not found")
-            user.api_key_hash = _hash_key(raw_key)  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
+            current = session.get(ApiKey, api_key_id)
+            if current is None or str(current.tenant_id) != tenant_id:
+                raise ValueError(f"API key {api_key_id} not found")
+            if current.revoked_at is not None:
+                raise StateTransitionError("Cannot rotate a revoked API key.")
+            raw_key = "mdbk_" + secrets.token_urlsafe(32)
+            now = _utcnow()
+            replacement = ApiKey(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                name=str(current.name),
+                prefix=raw_key[:12],
+                key_hash=_hash_key(raw_key),
+                scope=str(current.scope),
+                created_by_membership_id=current.created_by_membership_id,
+                last_used_at=None,
+                revoked_at=None,
+                created_at=now,
+            )
+            current.revoked_at = now  # type: ignore[assignment]
+            session.add(replacement)
             session.commit()
+            return raw_key
+
+    def get_user_by_api_key(self, raw_key: str) -> UserConfig | None:
+        key_hash = _hash_key(raw_key)
+        now = _utcnow()
+        with Session(self._engine) as session:
+            row = (
+                session.query(ApiKey, Tenant, TenantDatabase, TenantMembership)
+                .join(Tenant, ApiKey.tenant_id == Tenant.id)
+                .outerjoin(
+                    TenantDatabase,
+                    (TenantDatabase.tenant_id == Tenant.id) & (TenantDatabase.is_active.is_(True)),
+                )
+                .outerjoin(
+                    TenantMembership,
+                    (TenantMembership.tenant_id == Tenant.id) & (TenantMembership.role == "owner"),
+                )
+                .filter(ApiKey.key_hash == key_hash)
+                .first()
+            )
+            if row is None:
+                return None
+            api_key, tenant, tenant_db, membership = row
+            if api_key.revoked_at is not None:
+                return None
+            if tenant.status != ACTIVE:
+                return None
+            api_key.last_used_at = now  # type: ignore[assignment]
+            session.commit()
+            return self._api_context_from_rows(api_key, tenant, tenant_db, membership)
+
+    def get_api_key_metadata(self, api_key_id: str) -> ApiKey | None:
+        with Session(self._engine) as session:
+            api_key = session.get(ApiKey, api_key_id)
+            if api_key is None:
+                return None
+            session.expunge(api_key)
+            return api_key
+
+    # ------------------------------------------------------------------
+    # Legacy compatibility helpers used by the bridge release
+    # ------------------------------------------------------------------
+
+    def create_user(self, email: str) -> str:
+        tenant_id, _membership_id = self.create_tenant_with_owner(email=email)
+        return tenant_id
+
+    def get_onboarding_status(self, user_id: str) -> str | None:
+        return self.get_tenant_status(user_id)
+
+    def transition_state(self, user_id: str, new_state: str) -> bool:
+        return self.transition_tenant_state(user_id, new_state)
+
+    def set_database_url(self, user_id: str, database_url_enc: str) -> bool:
+        try:
+            self.upsert_active_database(user_id, database_url_enc)
+            return True
+        except ValueError:
+            return False
+
+    def issue_first_api_key(self, user_id: str) -> str:
+        status = self.get_tenant_status(user_id)
+        if status != PENDING_REVIEW:
+            raise StateTransitionError(
+                f"Cannot issue API key: tenant is in '{status}' state, expected '{PENDING_REVIEW}'."
+            )
+        self.transition_tenant_state(user_id, ACTIVE)
+        raw_key, _api_key = self.create_api_key(
+            tenant_id=user_id,
+            name="default",
+            scopes=["mcp_read"],
+            created_by_membership_id=None,
+        )
         return raw_key
 
-    def deactivate_user(self, user_id: str) -> bool:
-        """Deactivate a user. Returns False if not found."""
+    def update_user(self, user_id: str, *, database_url: str | None = None) -> bool:
+        if database_url is None:
+            return self.get_tenant(user_id) is not None
+        sanitized_url = validate_database_url(database_url)
+        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
+        encrypted = self._cipher.encrypt(sanitized_url_str)
+        try:
+            self.upsert_active_database(user_id, encrypted)
+            return True
+        except ValueError:
+            return False
+
+    def get_user_by_id(self, user_id: str) -> UserConfig | None:
         with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return False
-            user.is_active = False  # type: ignore[assignment]
-            user.updated_at = _utcnow()  # type: ignore[assignment]
-            session.commit()
-        return True
+            row = (
+                session.query(Tenant, TenantDatabase, TenantMembership)
+                .outerjoin(
+                    TenantDatabase,
+                    (TenantDatabase.tenant_id == Tenant.id) & (TenantDatabase.is_active.is_(True)),
+                )
+                .outerjoin(
+                    TenantMembership,
+                    (TenantMembership.tenant_id == Tenant.id) & (TenantMembership.role == "owner"),
+                )
+                .filter(Tenant.id == user_id)
+                .first()
+            )
+            if row is None:
+                return None
+            tenant, tenant_db, membership = row
+            return self._tenant_context_from_rows(tenant, tenant_db, membership)
+
+    def deactivate_user(self, user_id: str) -> bool:
+        return self.transition_tenant_state(user_id, CLOSED)
 
     def increment_daily_quota(self, user_id: str) -> int:
-        """Atomic counter increment with daily reset. Returns new count.
-
-        Uses a single SQL UPDATE … RETURNING so the read/modify/write is
-        evaluated atomically at the database level.  Both PostgreSQL and
-        SQLite ≥ 3.35 (Python 3.10+ ships 3.37+) support RETURNING.
-
-        Concurrent requests for the same user serialize on the row lock
-        (PostgreSQL) or the write lock (SQLite), so no increment can be lost.
-        """
         now = _utcnow()
         next_reset = _next_midnight(now)
 
@@ -315,7 +659,7 @@ class UserStore:
             row = session.execute(
                 text(
                     """
-                    UPDATE users
+                    UPDATE tenants
                     SET
                         daily_query_count = CASE
                             WHEN :now >= daily_quota_reset_at THEN 1
@@ -324,55 +668,77 @@ class UserStore:
                         daily_quota_reset_at = CASE
                             WHEN :now >= daily_quota_reset_at THEN :next_reset
                             ELSE daily_quota_reset_at
-                        END
-                    WHERE id = :user_id
+                        END,
+                        updated_at = :now
+                    WHERE id = :tenant_id
                     RETURNING daily_query_count
                     """
                 ),
-                {"now": now, "next_reset": next_reset, "user_id": user_id},
+                {"now": now, "next_reset": next_reset, "tenant_id": user_id},
             ).fetchone()
             session.commit()
 
         if row is None:
-            raise ValueError(f"User {user_id} not found")
+            raise ValueError(f"Tenant {user_id} not found")
         return int(row[0])
-
-    # ------------------------------------------------------------------
-    # Read operations
-    # ------------------------------------------------------------------
-
-    def get_user_by_api_key(self, raw_key: str) -> UserConfig | None:
-        """Hash → DB lookup → decrypt → return UserConfig.
-
-        Returns None if key not found or user is inactive.
-        """
-        key_hash = _hash_key(raw_key)
-        with Session(self._engine) as session:
-            user = session.query(User).filter_by(api_key_hash=key_hash).first()
-            if user is None or not user.is_active:
-                return None
-            return self._to_config(user)
-
-    def get_user_by_id(self, user_id: str) -> UserConfig | None:
-        """Look up user by ID. Returns None if not found."""
-        with Session(self._engine) as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return None
-            return self._to_config(user)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _to_config(self, user: User) -> UserConfig:
-        database_url: str | None = None
-        if user.database_url_enc:
-            database_url = self._cipher.decrypt(user.database_url_enc)  # type: ignore[arg-type]
+    def _owner_context_from_rows(self, membership: TenantMembership, tenant: Tenant) -> OwnerSessionContext:
+        return OwnerSessionContext(
+            tenant_id=str(tenant.id),
+            membership_id=str(membership.id),
+            email=str(membership.email),
+            role=str(membership.role),
+            onboarding_status=str(tenant.status),
+            is_active=str(tenant.status) == ACTIVE,
+            created_at=_ensure_utc(tenant.created_at),
+        )
+
+    def _tenant_context_from_rows(
+        self,
+        tenant: Tenant,
+        tenant_db: TenantDatabase | None,
+        membership: TenantMembership | None,
+    ) -> UserConfig:
+        database_url = None
+        if tenant_db is not None:
+            database_url = self._cipher.decrypt(str(tenant_db.database_url_enc))
         return UserConfig(
-            user_id=user.id,  # type: ignore[arg-type]
+            user_id=str(tenant.id),
             database_url=database_url,
-            is_active=user.is_active,  # type: ignore[arg-type]
-            onboarding_status=user.onboarding_status or "pending_email_verification",  # type: ignore[arg-type]
-            email=user.email,  # type: ignore[arg-type]
+            is_active=str(tenant.status) == ACTIVE,
+            onboarding_status=str(tenant.status),
+            email=None if membership is None else str(membership.email),
+            api_key_id=None,
+            database_id=None if tenant_db is None else str(tenant_db.id),
+            scopes=frozenset({"mcp_read"}),
+            key_name=None,
+        )
+
+    def _api_context_from_rows(
+        self,
+        api_key: ApiKey,
+        tenant: Tenant,
+        tenant_db: TenantDatabase | None,
+        membership: TenantMembership | None,
+    ) -> UserConfig:
+        database_url = None
+        database_id = None
+        if tenant_db is not None:
+            database_url = self._cipher.decrypt(str(tenant_db.database_url_enc))
+            database_id = str(tenant_db.id)
+        _scope_text, scopes = _normalize_scopes(str(api_key.scope))
+        return UserConfig(
+            user_id=str(tenant.id),
+            database_url=database_url,
+            is_active=True,
+            onboarding_status=str(tenant.status),
+            email=None if membership is None else str(membership.email),
+            api_key_id=str(api_key.id),
+            database_id=database_id,
+            scopes=scopes,
+            key_name=str(api_key.name),
         )

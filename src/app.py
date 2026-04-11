@@ -124,6 +124,7 @@ async def lifespan(app: Starlette):
     # 4. Build UserStore, auth-key cache, executor pool, query log, pipeline factory
     user_store = UserStore(auth_engine, cipher)
     auth_key_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)
+    owner_session_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)
     executor_pool = ThreadPoolExecutor(
         max_workers=settings.query_pool_size, thread_name_prefix="sql-exec"
     )
@@ -134,13 +135,14 @@ async def lifespan(app: Starlette):
     token_store = TokenStore(
         engine=auth_engine,
         email_token_ttl_minutes=settings.email_verification_token_ttl_minutes,
-        setup_token_ttl_hours=settings.setup_token_ttl_hours,
+        login_token_ttl_minutes=settings.login_link_token_ttl_minutes,
     )
     email_sender = make_email_sender(settings)
 
     # 6. Stash on api_app.state for FastAPI dependency injection
     api_app.state.user_store = user_store
     api_app.state.auth_key_cache = auth_key_cache
+    api_app.state.owner_session_cache = owner_session_cache
     api_app.state.factory = factory
     api_app.state.token_store = token_store
     api_app.state.email_sender = email_sender
@@ -149,6 +151,7 @@ async def lifespan(app: Starlette):
     # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
     app.state.user_store = user_store
     app.state.auth_key_cache = auth_key_cache
+    app.state.owner_session_cache = owner_session_cache
 
     # 7. Stash factory and query_log on server module for MCP tool handlers
     server_module = importlib.import_module("src.server")
