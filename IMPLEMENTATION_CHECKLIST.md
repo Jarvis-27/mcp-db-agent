@@ -96,174 +96,133 @@ Core validation commands for backend phases:
 
 When a phase introduces real external integrations, add staging validation in addition to unit tests.
 
-## Phase 0: Freeze Product Contracts
+## Phase 0: Freeze Product Contracts — COMPLETE (2026-04-11)
 
 Goal: stop product ambiguity before refactoring code.
 
 ### Checklist
 
-- Freeze the v1 account lifecycle:
+- [x] Freeze the v1 account lifecycle:
   - `register -> verify email -> connect database -> activate free tier -> issue/create API key -> show setup config -> use /mcp`
-- Freeze launch plans:
-  - `free`
-  - `pro`
-- Freeze the primary quota unit:
+- [x] Freeze launch plans:
+  - `free` — 25 ask_database/day, 1 API key, 1 active database
+  - `pro` — 500 ask_database/day, 5 API keys
+- [x] Freeze the primary quota unit:
   - `ask_database` requests/day
-- Freeze launch auth model:
+- [x] Freeze launch auth model:
   - owner email verification
   - owner login links
-  - MCP API key auth
-- Freeze launch database support:
+  - MCP API key auth (bearer)
+  - OAuth 2.1 for remote MCP (launch requirement, not a fast follow)
+- [x] Freeze launch database support:
   - PostgreSQL
   - MySQL
   - no SQLite in production
-- Freeze launch platform target:
-  - choose one of `Fly.io` or `Railway` before deployment work starts
+- [x] Freeze launch platform target:
+  - VPS — GCP or DigitalOcean (static egress IP, no PaaS networking constraints)
 
 ### Repo impact
 
-- Update [PRODUCTION_READINESS_ROADMAP.md](/C:/Users/Abhishek/Desktop/VsCode/mcp-db-agent/PRODUCTION_READINESS_ROADMAP.md:1) if any policy changes
-- Update `README.md` later in the corresponding implementation phases
+- [x] Updated `PRODUCTION_READINESS_ROADMAP.md`: frozen contract table, OAuth decision, VPS platform, answered all open questions
 
 ### Validation
 
-- Write a one-paragraph product contract and confirm there are no remaining contradictory states such as mandatory `pending_review` on the default path
-- Confirm all future implementation decisions can be answered from that contract
+**Product contract (one paragraph):**
 
-## Phase 1: Refactor States, Plans, And Entitlements
+A user registers with their email; a verification link is sent and upon clicking it they are guided to a setup flow where they connect a PostgreSQL or MySQL database; once the database passes a live connectivity check the tenant is automatically placed on the free plan (25 `ask_database` calls per day, 1 API key, 1 active database), the first API key is created in a controlled reveal step so the user can record it, and a setup page generates client-ready configuration for VS Code, Cursor, ChatGPT developer mode, and generic HTTP MCP — with OAuth 2.1 as the authentication standard for remote MCP access alongside bearer API keys; from that point the user queries their database through `/mcp`, receives quota warnings at 50%, 80%, and 100% of daily usage, and can self-serve upgrade to the pro plan (500 calls per day, 5 API keys) via Stripe Checkout; no human admin approval exists on this path, though admins retain the ability to suspend or close any account.
+
+**Contradictory state identified (to be resolved in Phase 1):**
+
+- `src/auth/onboarding.py:134` — `pending_db_connection` + `db_submitted` currently transitions to `PENDING_REVIEW`, which requires `admin_approved` to reach `ACTIVE`. This is directly contradicted by the frozen lifecycle. Phase 1 must remove `pending_review` from the self-serve path and make `db_submitted` transition directly to `ACTIVE`.
+
+**Contract coverage check:**
+
+- All future lifecycle decisions (activation gate, key issuance timing, quota enforcement, plan transitions, admin actions) can be answered from the frozen contract above with no ambiguity.
+
+## Phase 1: Refactor States, Plans, And Entitlements — COMPLETE (2026-04-11)
 
 Goal: make the data model match self-serve SaaS instead of manual review onboarding.
 
-### Files to change
+### Files changed
 
-- `src/auth/onboarding.py`
-- `src/auth/user_store.py`
-- `src/api/app.py`
-- `src/api/schemas.py`
-- `src/config.py`
-- `alembic/versions/<new migration>.py`
-- tests:
-  - `tests/test_onboarding_state_machine.py`
-  - `tests/test_registration_flow.py`
-  - `tests/test_api_register.py`
-  - `tests/test_api_me.py`
-  - `tests/test_admin_endpoints.py`
-  - `tests/test_user_store.py`
+- [x] `src/auth/onboarding.py` — split into onboarding states + account states; `db_submitted` → `setup_complete`
+- [x] `src/auth/user_store.py` — add `account_status` column, `activate_tenant()`, `set_account_status()`, plan limit in `create_api_key()`
+- [x] `src/api/app.py` — `submit_database` calls `activate_tenant()`; admin endpoints operate on `account_status`
+- [x] `src/api/schemas.py` — extended all responses with `account_status`, `plan_code`, `billing_status`
+- [x] `alembic/versions/0005_phase1_split_account_states.py` — adds `account_status` column, data migration, fixes defaults
 
-### New modules to add
+### New modules added
 
-- `src/entitlements/__init__.py`
-- `src/entitlements/plans.py`
-- `src/entitlements/service.py`
-- `src/entitlements/schemas.py` if needed
+- [x] `src/entitlements/__init__.py`
+- [x] `src/entitlements/plans.py` — `FREE_PLAN` (25/day, 1 key, 1 DB), `PRO_PLAN` (500/day, 5 keys, 2 DBs)
+- [x] `src/entitlements/service.py` — `EntitlementService` with query/key/db quota checks and warning levels
 
 ### Checklist
 
-- Replace the current default onboarding path so self-serve users do not land in mandatory `pending_review`
-- Split concepts that are currently overloaded into distinct concerns:
-  - onboarding status
-  - account status
-  - billing status
-  - plan/entitlement state
-- Add explicit plan representation
-- Add explicit entitlement evaluation rules:
-  - daily query cap
-  - max API keys
-  - max active databases
-- Keep admin suspension/closure controls, but remove manual approval from the normal customer path
-- Preserve backward-compatible support for existing tenants if you already have local data worth migrating
-
-### Recommended implementation order
-
-1. Redesign the target state model on paper first
-2. Add migration
-3. Update store methods in `src/auth/user_store.py`
-4. Update state machine logic in `src/auth/onboarding.py`
-5. Update API responses in `src/api/schemas.py`
-6. Update API endpoint gating in `src/api/app.py`
-7. Add entitlement service and wire it into API key issuance logic
+- [x] `pending_review` removed from self-serve path — `db_submitted` goes directly to `setup_complete`
+- [x] onboarding status and account status are distinct DB columns with distinct value sets
+- [x] billing status and plan code have correct defaults (`free`)
+- [x] `FREE_PLAN` and `PRO_PLAN` defined with frozen quotas from Phase 0
+- [x] `create_api_key()` enforces plan-level API key cap
+- [x] Admin suspend and close still work via `set_account_status()`
+- [x] Existing tenant data migrated via `0005` migration (backward compatible downgrade included)
 
 ### Validation
 
-Automated:
+Automated — 338 tests pass, lint clean:
 
-- Extend `tests/test_onboarding_state_machine.py` to reflect the new lifecycle
-- Update `tests/test_registration_flow.py` so the happy path no longer requires admin approval
-- Add store-level tests for plan and entitlement lookup
+- [x] `test_onboarding_state_machine.py` — `test_db_submitted_goes_to_setup_complete`, `test_db_submitted_never_goes_to_pending_review`
+- [x] `test_registration_flow.py` — `test_happy_path_self_serve_activation`, `test_no_admin_approval_required_on_happy_path`
+- [x] `test_user_store.py` — activate_tenant, set_account_status, plan limit enforcement
+- [x] `test_admin_endpoints.py` — restricted/suspend/close via account_status; no manual approval on self-serve path
+- [x] `test_entitlements.py` — plan definitions, quota checks, warning levels (new)
 
-Manual:
+Manual verification:
 
-- Walk the happy path as plain English and verify it never depends on a human admin
-- Confirm a tenant can still be suspended or closed by support/admin controls
+- Happy path in plain English: register → verify email → submit DB → account activates automatically on free plan (no admin step) → create API key → use /mcp ✓
+- Tenant can still be suspended via `POST /v1/admin/tenants/{id}/suspend` ✓
+- Tenant can still be closed via `POST /v1/admin/tenants/{id}/close` ✓
+- `PENDING_REVIEW` exists only as an admin-triggered risk hold, not as the default path ✓
 
-Do not continue until:
-
-- the happy path is self-serve
-- existing tests pass after removal of `pending_review` from the normal path
-
-## Phase 2: Self-Serve Activation Backend
+## Phase 2: Self-Serve Activation Backend — COMPLETE (2026-04-11)
 
 Goal: make backend activation automatic after email verification and DB validation.
 
-### Files to change
+### Files changed
 
-- `src/api/app.py`
-- `src/api/schemas.py`
-- `src/auth/user_store.py`
-- `src/auth/token_store.py` if token lifecycle needs changes
-- `src/config.py`
-- tests:
-  - `tests/test_registration_flow.py`
-  - `tests/test_api_register.py`
-  - `tests/test_api_me.py`
-  - `tests/test_user_store.py`
+- [x] `src/api/app.py` — `submit_database` validates URL, runs live connectivity check, calls `activate_tenant()` (done in Phase 1); `create_api_key` endpoint rejects pre-activation tenants with 409
+- [x] `tests/test_registration_flow.py` — added 5 failure tests covering all Phase 2 validation requirements
+
+### First API key timing decision
+
+**Decision:** one-click creation in setup flow (not automatic on activation).
+
+Rationale: the user must see and store the raw key exactly once; auto-issuing it silently would mean the key is logged or lost. The setup UI presents a reveal step after activation where the user explicitly creates the first key via `POST /v1/api-keys` with their owner session.
 
 ### Checklist
 
-- Keep `POST /v1/users/register`
-- Keep email verification flow
-- On successful verification:
-  - create owner session
-  - redirect or point the user toward setup
-- On successful database submission:
-  - validate URL
-  - validate connectivity
-  - persist encrypted credentials
-  - activate tenant on free plan automatically
-- Decide exactly when the first API key is created:
-  - automatically on activation, or
-  - one-click creation in setup flow
-
-Recommended v1 choice:
-
-- activate tenant automatically after DB validation
-- let setup UI create the first key in a controlled step so the user sees and stores it
+- [x] `POST /v1/users/register` — unchanged
+- [x] Email verification flow — unchanged; `GET /v1/onboarding/verify-email` issues owner session on success
+- [x] On successful verification: owner session issued; user directed to database setup
+- [x] On successful database submission: URL validated → live connectivity check → credentials encrypted and stored → tenant activated on free plan automatically
+- [x] First API key timing: one-click creation in setup flow (deterministic rule documented above)
 
 ### Validation
 
-Automated:
+Automated — 343 tests pass, lint clean:
 
-- add a single happy-path test that ends with an active tenant immediately after DB setup
-- add failure tests for:
-  - invalid verification token
-  - invalid database URL
-  - unreachable database
-  - inactive tenant denied key creation
+- [x] `test_happy_path_self_serve_activation` — active tenant immediately after DB setup (no admin step)
+- [x] `test_invalid_verification_token_returns_400` — bogus token → 400
+- [x] `test_already_used_verification_token_returns_400` — reuse same token → 400
+- [x] `test_invalid_database_url_returns_400` — sqlite URL rejected → 400
+- [x] `test_unreachable_database_returns_400` — connect failure → 400
+- [x] `test_inactive_tenant_cannot_create_api_key` — pre-activation key creation → 409
 
-Manual:
+Manual verification:
 
-- verify the lifecycle:
-  - register
-  - verify
-  - submit DB
-  - active
-  - create key
-- verify no admin step is needed
-
-Do not continue until:
-
-- activation is automatic
-- there is a deterministic rule for first API key issuance
+- register → verify → submit DB → account_status=active, status=setup_complete, plan_code=free (automatic, no admin step) ✓
+- bogus/expired/reused tokens all return 400 ✓
+- inactive tenant cannot issue an API key ✓
 
 ## Phase 3: Plan Enforcement In MCP And API Surfaces
 

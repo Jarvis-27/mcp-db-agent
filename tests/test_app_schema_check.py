@@ -79,6 +79,7 @@ def test_schema_check_fails_when_migration_pending():
 def test_schema_check_warning_on_alembic_error():
     """Non-schema exceptions are swallowed (server starts with a warning)."""
     from alembic.script import ScriptDirectory
+
     with patch(
         "alembic.script.ScriptDirectory.from_config",
         side_effect=FileNotFoundError("alembic.ini not found"),
@@ -86,6 +87,7 @@ def test_schema_check_warning_on_alembic_error():
         # Should not raise — the outer except swallows non-schema errors
         try:
             from alembic.config import Config as _AlembicConfig
+
             _alembic_cfg = _AlembicConfig.__new__(_AlembicConfig)
             _script_dir = ScriptDirectory.from_config(_alembic_cfg)
         except FileNotFoundError:

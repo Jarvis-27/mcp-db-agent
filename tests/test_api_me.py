@@ -42,8 +42,10 @@ def app_state():
     from src.api.app import limiter
 
     limiter._storage.reset()
-    with patch.object(ug_module.settings, "environment", "development"), \
-         patch("src.api.app.settings") as mock_settings:
+    with (
+        patch.object(ug_module.settings, "environment", "development"),
+        patch("src.api.app.settings") as mock_settings,
+    ):
         mock_settings.registration_open = True
         mock_settings.allow_sqlite_user_dbs = False
         mock_settings.billing_gate_enabled = False
@@ -64,14 +66,14 @@ def client():
 
 @pytest.fixture
 def registered_user():
+    """Create an active tenant via the self-serve path (no pending_review)."""
     store: UserStore = api_app.state.user_store
     cipher: CredentialCipher = api_app.state.cipher
     tenant_id, membership_id = store.create_tenant_with_owner(email="test@example.com")
     store.set_email_verified(membership_id)
     store.transition_tenant_state(tenant_id, "pending_db_connection")
     store.upsert_active_database(tenant_id, cipher.encrypt(_VALID_PG_URL))
-    store.transition_tenant_state(tenant_id, "pending_review")
-    store.transition_tenant_state(tenant_id, "active")
+    store.activate_tenant(tenant_id)  # setup_complete + active + free plan
     api_key, key_row = store.create_api_key(
         tenant_id=tenant_id,
         name="default",
@@ -87,6 +89,10 @@ def test_get_me_returns_200(client, registered_user):
     data = resp.json()
     assert data["tenant_id"] == registered_user["tenant_id"]
     assert data["is_active"] is True
+    assert data["status"] == "setup_complete"
+    assert data["account_status"] == "active"
+    assert data["plan_code"] == "free"
+    assert data["billing_status"] == "free"
 
 
 def test_get_me_missing_key_returns_401(client):
@@ -129,7 +135,5 @@ def test_delete_me_returns_410(client, registered_user):
 
 def test_bearer_token_accepted_on_me(client, registered_user):
     key = registered_user["api_key"]
-    resp = client.get(
-        "/v1/users/me", headers={"authorization": f"Bearer {key}"}
-    )
+    resp = client.get("/v1/users/me", headers={"authorization": f"Bearer {key}"})
     assert resp.status_code == 200

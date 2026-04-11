@@ -17,6 +17,28 @@ This roadmap is for the product you chose:
 
 This document is intentionally product- and implementation-oriented. It avoids code and focuses on the end-to-end system you need to ship.
 
+## Frozen Product Contract (Phase 0 — 2026-04-11)
+
+A user registers with their email; a verification link is sent and upon clicking it they are guided to a setup flow where they connect a PostgreSQL or MySQL database; once the database passes a live connectivity check the tenant is automatically placed on the free plan (25 `ask_database` calls per day, 1 API key, 1 active database), the first API key is created in a controlled reveal step so the user can record it, and a setup page generates client-ready configuration for VS Code, Cursor, ChatGPT developer mode, and generic HTTP MCP — with OAuth 2.1 as the authentication standard for remote MCP access alongside bearer API keys; from that point the user queries their database through `/mcp`, receives quota warnings at 50%, 80%, and 100% of daily usage, and can self-serve upgrade to the pro plan (500 calls per day, 5 API keys) via Stripe Checkout; no human admin approval exists on this path, though admins retain the ability to suspend or close any account.
+
+### Frozen decisions
+
+| Decision | Frozen value |
+|---|---|
+| Account lifecycle | `register → verify email → connect database → activate free tier → issue API key → show setup config → use /mcp` |
+| Plans | `free`, `pro` |
+| Primary quota unit | `ask_database` requests/day |
+| Free plan quota | 25 requests/day, 1 API key, 1 active database |
+| Pro plan quota | 500 requests/day, 5 API keys |
+| Auth model | owner email verification + login links + MCP API keys + OAuth 2.1 for remote MCP |
+| OAuth scope | launch requirement (not a fast follow) |
+| Supported customer databases | PostgreSQL, MySQL — SQLite disallowed in production |
+| Free tier card requirement | none at signup — usage pressure drives upgrade |
+| API key gate | API keys issued only after email verified AND database connected AND tenant activated |
+| Deployment platform | VPS — GCP or DigitalOcean |
+
+---
+
 ## Executive Summary
 
 Your biggest gap is no longer the MCP query engine. The core MCP server and tenant/auth foundations already exist. The biggest gap is that the product flow is still halfway between:
@@ -428,24 +450,15 @@ This matters because:
 - ChatGPT developer mode supports OAuth and no-auth for remote MCP
 - the MCP specification recommends OAuth-based authorization for HTTP transports
 
-### Recommendation
+### Decision (frozen 2026-04-11)
 
-Treat API keys as your v1 credential for your own dashboard and for clients that can directly send bearer tokens.
+OAuth 2.1 is a **launch requirement**. API keys remain supported for service-to-service integrations and the owner dashboard, but remote MCP client auth must support OAuth 2.1 at launch because all major clients (Cursor, VS Code, ChatGPT developer mode) converge on OAuth for remote HTTP MCP.
 
-But if "all major clients" is a launch requirement, plan OAuth support early instead of bolting it on later.
+### Auth surface
 
-### Practical rollout recommendation
-
-Phase A:
-
-- launch with bearer API keys where supported
-- generate client-specific config templates
-- make setup page the primary UX
-
-Phase B:
-
-- add OAuth 2.1 support for remote MCP
-- keep API keys for service-to-service and owner-level automation
+- OAuth 2.1 authorization server backed by owner sessions — for remote MCP client auth
+- Bearer API keys — for dashboard, setup flows, and service-to-service
+- Owner login links — for session creation (not used directly for `/mcp`)
 
 ### Design principle
 
@@ -688,63 +701,36 @@ Good v1 path:
 - add tenant ID and request ID to every relevant event
 - never log raw DB credentials or raw API keys
 
-## Deployment Platform Recommendation
+## Deployment Platform
 
-Your candidate platforms are:
+**Decision (frozen 2026-04-11): VPS — GCP or DigitalOcean.**
 
-- VPS
-- Render
-- Fly.io
-- Railway
+### Why VPS
 
-### The real decision criterion
+- Full control over outbound IPs, which matters when customers must allowlist the service IP in their database firewall rules.
+- Static, dedicated egress IPs are trivially available (assign an elastic/reserved IP to the instance).
+- No SMTP or outbound networking restrictions imposed by a PaaS.
+- Standard Docker-based deployment works without platform-specific abstractions.
 
-For this product, the most important infrastructure question is not "which platform is easiest?"
+### Ops burden accepted
 
-It is:
+Choosing a plain VPS means owning more of the operational stack:
 
-- how reliable is outbound connectivity to arbitrary customer databases?
-- can customers allowlist your outbound IPs?
-- how quickly can you operate backups, health checks, and secrets?
+- manual or scripted secret rotation
+- own backup schedule and restore testing
+- own health check configuration
+- own deploy pipeline (GitHub Actions → SSH or container registry)
 
-### Platform recommendation
+This is an explicit, accepted trade-off for outbound IP reliability.
 
-If customer DB IP allowlisting is likely to matter early, prefer Fly.io first.
+### Recommended VPS setup
 
-Why:
-
-- official support for egress IP allocation
-- strong fit for Dockerized apps
-- good control over networking
-
-If speed of shipping matters more than network rigor, Railway is a strong second choice.
-
-Why:
-
-- very fast path to deploy a FastAPI app
-- static outbound IPs available on Pro
-- simple operational model
-
-Important caveat:
-
-- Railway docs note static outbound IPs may be shared
-- Railway also recommends transactional email over HTTPS APIs, with SMTP constraints on lower plans
-
-Render is also workable, but it is weaker if customers need dedicated allowlistable outbound IPs.
-
-Why:
-
-- outbound traffic uses region-specific shared ranges
-- dedicated static outbound IP generally requires extra measures such as QuotaGuard
-
-### My recommendation
-
-Choose one of these:
-
-1. `Fly.io` if networking and allowlisting are important from day one
-2. `Railway` if speed to first production is more important and you can tolerate some networking constraints
-
-I would not start on a plain VPS unless you explicitly want to own more of the ops burden yourself.
+- 1 production VM (GCP e2-standard-2 or DigitalOcean 2 vCPU Droplet)
+- 1 staging VM (smaller)
+- 1 managed PostgreSQL instance per environment (Cloud SQL or DigitalOcean Managed Postgres)
+- reserved/static external IP assigned to each VM
+- Nginx reverse proxy with TLS termination (Let's Encrypt)
+- GitHub Actions deploy pipeline
 
 ## Production Infrastructure Minimum
 
@@ -983,29 +969,15 @@ Do not call the product production-ready until all of these are true.
 - staging environment exists
 - docs match actual behavior
 
-## Open Questions You Still Need To Answer
+## Open Questions — All Answered (2026-04-11)
 
-These do not block planning, but they do need product decisions before implementation is complete.
-
-### 1. Should free tier require a connected database before API key issuance?
-
-I recommend yes.
-
-### 2. Will free tier require a card after a period of time?
-
-I recommend no for the initial launch. Let usage pressure drive upgrade instead.
-
-### 3. Is OAuth for remote MCP a launch requirement or a fast follow?
-
-If "all major clients" is literal for launch, treat it as launch scope.
-
-### 4. What exact daily quota and monthly price will you launch with?
-
-You need this before implementing Stripe products and plan entitlements.
-
-### 5. Which single hosting platform will you commit to first?
-
-Do not build platform-specific assumptions for three providers at once.
+| # | Question | Decision |
+|---|---|---|
+| 1 | Should free tier require a connected database before API key issuance? | **Yes.** API keys are issued only after email verified + DB connected + tenant activated. |
+| 2 | Will free tier require a card after a period of time? | **No.** No card required on free tier. Usage pressure drives upgrade. |
+| 3 | Is OAuth for remote MCP a launch requirement or a fast follow? | **Launch requirement.** OAuth 2.1 ships with v1. |
+| 4 | What exact daily quota? | **Free: 25/day. Pro: 500/day.** Adjust after observing cost and conversion. |
+| 5 | Which single hosting platform? | **VPS — GCP or DigitalOcean.** See Deployment Platform section. |
 
 ## Final Recommendation
 
@@ -1015,7 +987,7 @@ If you want the highest-probability path to a real launch, do this:
 2. Make the setup dashboard and generated client configs a first-class product feature.
 3. Add Stripe billing with free-to-paid plan transitions.
 4. Harden outbound database connectivity, MySQL support, and security controls.
-5. Choose a hosting platform based primarily on outbound IP strategy, not just developer convenience.
+5. Deploy on a VPS (GCP or DigitalOcean) for full outbound IP control and customer DB allowlisting.
 6. Ship with a narrow but polished support tier for remote MCP clients.
 
 That sequence gets you to a real SaaS.

@@ -73,9 +73,20 @@ async def test_query_history_at_max_passes_through():
 
 
 async def test_query_history_returns_json():
-    rows = [{"id": 1, "question": "test", "sql": "SELECT 1", "success": True,
-             "row_count": 1, "attempts": 1, "duration_ms": 5, "error": None,
-             "timestamp": "2026-01-01T00:00:00+00:00", "tenant_id": "user-1"}]
+    rows = [
+        {
+            "id": 1,
+            "question": "test",
+            "sql": "SELECT 1",
+            "success": True,
+            "row_count": 1,
+            "attempts": 1,
+            "duration_ms": 5,
+            "error": None,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tenant_id": "user-1",
+        }
+    ]
     mock_log = _make_mock_log(rows=rows)
     with (
         patch("src.server._current_user_id", return_value="user-1"),

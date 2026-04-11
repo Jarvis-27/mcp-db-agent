@@ -49,7 +49,6 @@ def test_cache_expires_after_ttl(mock_engine):
     inspector, mock_inspector = _make_inspector(mock_engine, ttl=1)
     inspector.get_full_schema()
 
-
     # Manually expire the cache timestamp
     cached_text, _ = inspector._schema_cache
     inspector._schema_cache = (cached_text, 0.0)  # Force TTL expiry

@@ -120,8 +120,12 @@ def upgrade() -> None:
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_owner_sessions_tenant_membership_id", "owner_sessions", ["tenant_membership_id"])
-    op.create_index("ix_owner_sessions_session_hash", "owner_sessions", ["session_hash"], unique=True)
+    op.create_index(
+        "ix_owner_sessions_tenant_membership_id", "owner_sessions", ["tenant_membership_id"]
+    )
+    op.create_index(
+        "ix_owner_sessions_session_hash", "owner_sessions", ["session_hash"], unique=True
+    )
 
     op.create_table(
         "verification_tokens",
@@ -137,8 +141,12 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_verification_tokens_membership_id", "verification_tokens", ["membership_id"])
-    op.create_index("ix_verification_tokens_token_hash", "verification_tokens", ["token_hash"], unique=True)
+    op.create_index(
+        "ix_verification_tokens_membership_id", "verification_tokens", ["membership_id"]
+    )
+    op.create_index(
+        "ix_verification_tokens_token_hash", "verification_tokens", ["token_hash"], unique=True
+    )
 
     op.create_table(
         "query_history",
@@ -201,14 +209,18 @@ def downgrade() -> None:
     op.create_table(
         "verification_tokens",
         sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("token_hash", sa.String(64), unique=True, nullable=False),
         sa.Column("purpose", sa.String(30), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_verification_tokens_user_id", "verification_tokens", ["user_id"])
-    op.create_index("ix_verification_tokens_token_hash", "verification_tokens", ["token_hash"], unique=True)
+    op.create_index(
+        "ix_verification_tokens_token_hash", "verification_tokens", ["token_hash"], unique=True
+    )
 
     op.create_table(
         "query_history",

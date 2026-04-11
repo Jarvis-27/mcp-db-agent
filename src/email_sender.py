@@ -10,11 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 class EmailSender(Protocol):
-    def send_verification_email(self, to_address: str, verification_url: str) -> None:
-        ...
+    def send_verification_email(self, to_address: str, verification_url: str) -> None: ...
 
-    def send_login_email(self, to_address: str, login_url: str) -> None:
-        ...
+    def send_login_email(self, to_address: str, login_url: str) -> None: ...
 
 
 class LogEmailSender:

@@ -3,17 +3,18 @@
 import pytest
 
 from src.auth.onboarding import (
-    ACTIVE,
-    CLOSED,
+    ACCOUNT_ACTIVE,
+    ACCOUNT_CLOSED,
+    ACCOUNT_RESTRICTED,
+    ACCOUNT_SUSPENDED,
     PENDING_BILLING,
     PENDING_DB_CONNECTION,
     PENDING_EMAIL_VERIFICATION,
     PENDING_MFA,
     PENDING_REVIEW,
-    SUSPENDED,
+    SETUP_COMPLETE,
     TRIGGER_ADMIN_APPROVED,
-    TRIGGER_ADMIN_CLOSED,
-    TRIGGER_ADMIN_SUSPENDED,
+    TRIGGER_BILLING_BYPASSED,
     TRIGGER_BILLING_PAID,
     TRIGGER_DB_SUBMITTED,
     TRIGGER_EMAIL_VERIFIED,
@@ -94,7 +95,6 @@ def test_billing_paid_mfa_gate_off_goes_to_pending_db_connection():
 
 
 def test_billing_bypassed_same_as_billing_paid():
-    from src.auth.onboarding import TRIGGER_BILLING_BYPASSED
     result = resolve_next_state(PENDING_BILLING, TRIGGER_BILLING_BYPASSED)
     assert result == PENDING_DB_CONNECTION
 
@@ -111,53 +111,36 @@ def test_mfa_enrolled_goes_to_pending_db_connection():
 
 def test_mfa_bypassed_goes_to_pending_db_connection():
     from src.auth.onboarding import TRIGGER_MFA_BYPASSED
+
     result = resolve_next_state(PENDING_MFA, TRIGGER_MFA_BYPASSED)
     assert result == PENDING_DB_CONNECTION
 
 
 # ---------------------------------------------------------------------------
-# db_submitted → pending_review
+# db_submitted → setup_complete  (self-serve activation, no pending_review)
 # ---------------------------------------------------------------------------
 
 
-def test_db_submitted_goes_to_pending_review():
+def test_db_submitted_goes_to_setup_complete():
+    """Core Phase 1 invariant: DB submission activates directly, no admin review."""
     result = resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_DB_SUBMITTED)
-    assert result == PENDING_REVIEW
+    assert result == SETUP_COMPLETE
+
+
+def test_db_submitted_never_goes_to_pending_review():
+    result = resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_DB_SUBMITTED)
+    assert result != PENDING_REVIEW
 
 
 # ---------------------------------------------------------------------------
-# Admin transitions
+# pending_review (admin risk hold) → setup_complete on admin approval
 # ---------------------------------------------------------------------------
 
 
-def test_admin_approved_on_pending_review_goes_to_active():
+def test_admin_approved_on_pending_review_goes_to_setup_complete():
+    """Admin clears a risk hold by approving; tenant returns to setup_complete."""
     result = resolve_next_state(PENDING_REVIEW, TRIGGER_ADMIN_APPROVED)
-    assert result == ACTIVE
-
-
-def test_admin_suspended_on_active_goes_to_suspended():
-    result = resolve_next_state(ACTIVE, TRIGGER_ADMIN_SUSPENDED)
-    assert result == SUSPENDED
-
-
-def test_admin_closed_on_active_goes_to_closed():
-    result = resolve_next_state(ACTIVE, TRIGGER_ADMIN_CLOSED)
-    assert result == CLOSED
-
-
-def test_admin_closed_on_suspended_goes_to_closed():
-    result = resolve_next_state(SUSPENDED, TRIGGER_ADMIN_CLOSED)
-    assert result == CLOSED
-
-
-def test_admin_approved_on_suspended_reinstates_active():
-    result = resolve_next_state(SUSPENDED, TRIGGER_ADMIN_APPROVED)
-    assert result == ACTIVE
-
-
-def test_admin_closed_on_pending_review():
-    result = resolve_next_state(PENDING_REVIEW, TRIGGER_ADMIN_CLOSED)
-    assert result == CLOSED
+    assert result == SETUP_COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -170,24 +153,30 @@ def test_invalid_trigger_from_pending_db_connection_raises():
         resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_EMAIL_VERIFIED)
 
 
-def test_invalid_trigger_from_active_raises():
+def test_invalid_trigger_from_setup_complete_raises():
     with pytest.raises(InvalidTransitionError):
-        resolve_next_state(ACTIVE, TRIGGER_EMAIL_VERIFIED)
-
-
-def test_transition_from_closed_raises():
-    with pytest.raises(InvalidTransitionError):
-        resolve_next_state(CLOSED, TRIGGER_ADMIN_APPROVED)
-
-
-def test_transition_from_closed_any_trigger_raises():
-    with pytest.raises(InvalidTransitionError):
-        resolve_next_state(CLOSED, TRIGGER_ADMIN_CLOSED)
+        resolve_next_state(SETUP_COMPLETE, TRIGGER_EMAIL_VERIFIED)
 
 
 def test_unknown_trigger_raises():
     with pytest.raises(InvalidTransitionError):
         resolve_next_state(PENDING_REVIEW, "unknown_trigger")
+
+
+# ---------------------------------------------------------------------------
+# Account state constants are distinct from onboarding states
+# ---------------------------------------------------------------------------
+
+
+def test_account_state_constants_are_correct():
+    assert ACCOUNT_ACTIVE == "active"
+    assert ACCOUNT_RESTRICTED == "restricted"
+    assert ACCOUNT_SUSPENDED == "suspended"
+    assert ACCOUNT_CLOSED == "closed"
+
+
+def test_setup_complete_constant_is_correct():
+    assert SETUP_COMPLETE == "setup_complete"
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +186,16 @@ def test_unknown_trigger_raises():
 
 def test_get_next_step_description_known_states():
     for state in [
-        PENDING_EMAIL_VERIFICATION, PENDING_BILLING, PENDING_MFA,
-        PENDING_DB_CONNECTION, PENDING_REVIEW, ACTIVE, SUSPENDED, CLOSED,
+        PENDING_EMAIL_VERIFICATION,
+        PENDING_BILLING,
+        PENDING_MFA,
+        PENDING_DB_CONNECTION,
+        SETUP_COMPLETE,
+        PENDING_REVIEW,
+        ACCOUNT_ACTIVE,
+        ACCOUNT_RESTRICTED,
+        ACCOUNT_SUSPENDED,
+        ACCOUNT_CLOSED,
     ]:
         desc = get_next_step_description(state)
         assert isinstance(desc, str)

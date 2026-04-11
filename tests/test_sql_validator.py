@@ -4,7 +4,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.sql_validator import SQLValidator, ValidationResult, _first_sql_keyword, _has_top_level_limit
+from src.core.sql_validator import (
+    SQLValidator,
+    ValidationResult,
+    _first_sql_keyword,
+    _has_top_level_limit,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +268,7 @@ def test_cte_select_allowed_by_allowlist():
 def test_writable_cte_rejected_by_dml_check():
     """WITH … DELETE … SELECT must be rejected even though it starts with WITH."""
     v = _validator()
-    result = v.validate(
-        "WITH d AS (DELETE FROM users WHERE id = 1 RETURNING *) SELECT * FROM d"
-    )
+    result = v.validate("WITH d AS (DELETE FROM users WHERE id = 1 RETURNING *) SELECT * FROM d")
     assert result.is_valid is False
 
 

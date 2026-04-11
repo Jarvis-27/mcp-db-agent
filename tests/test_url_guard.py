@@ -219,9 +219,7 @@ def test_sqlite_allowed_inside_dir(tmp_path):
 
     with patch.object(ug_module.settings, "sqlite_user_db_dir", str(tmp_path)):
         with patch.object(ug_module.settings, "auth_database_url", "sqlite:///./auth.db"):
-            url = validate_database_url(
-                f"sqlite:///{tmp_path}/user_db.sqlite", allow_sqlite=True
-            )
+            url = validate_database_url(f"sqlite:///{tmp_path}/user_db.sqlite", allow_sqlite=True)
     assert url is not None
 
 

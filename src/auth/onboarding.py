@@ -1,47 +1,75 @@
 """Onboarding state machine — pure logic, no database dependencies.
 
-All state transitions and trigger constants are defined here so that the
-UserStore, API layer, and tests share a single authoritative definition.
+PHASE 1 REFACTOR: The status model is now split into two independent dimensions:
+
+  onboarding_status  (tenants.status column):
+      pending_email_verification → pending_db_connection → setup_complete
+      pending_review is an optional admin-triggered risk hold, NOT the default path.
+
+  account_status  (tenants.account_status column):
+      active | restricted | suspended | closed
+      Managed directly by UserStore — not by this state machine.
 """
 
 # ---------------------------------------------------------------------------
-# States
+# Onboarding progress states  (tenants.status)
 # ---------------------------------------------------------------------------
 
 PENDING_EMAIL_VERIFICATION = "pending_email_verification"
+PENDING_DB_CONNECTION = "pending_db_connection"
+SETUP_COMPLETE = "setup_complete"
+
+# Optional gate states — only reached when billing_gate_enabled / mfa_gate_enabled
 PENDING_BILLING = "pending_billing"
 PENDING_MFA = "pending_mfa"
-PENDING_DB_CONNECTION = "pending_db_connection"
+
+# Admin-triggered risk hold.  NOT on the self-serve path.
 PENDING_REVIEW = "pending_review"
-ACTIVE = "active"
-SUSPENDED = "suspended"
-CLOSED = "closed"
 
-ALL_STATES: frozenset[str] = frozenset(
-    {
-        PENDING_EMAIL_VERIFICATION,
-        PENDING_BILLING,
-        PENDING_MFA,
-        PENDING_DB_CONNECTION,
-        PENDING_REVIEW,
-        ACTIVE,
-        SUSPENDED,
-        CLOSED,
-    }
+# ---------------------------------------------------------------------------
+# Account states  (tenants.account_status)
+# ---------------------------------------------------------------------------
+
+ACCOUNT_ACTIVE = "active"
+ACCOUNT_RESTRICTED = "restricted"
+ACCOUNT_SUSPENDED = "suspended"
+ACCOUNT_CLOSED = "closed"
+
+ACCOUNT_STATES: frozenset[str] = frozenset(
+    {ACCOUNT_ACTIVE, ACCOUNT_RESTRICTED, ACCOUNT_SUSPENDED, ACCOUNT_CLOSED}
 )
+TERMINAL_ACCOUNT_STATES: frozenset[str] = frozenset({ACCOUNT_CLOSED})
 
-TERMINAL_STATES: frozenset[str] = frozenset({CLOSED})
+# ---------------------------------------------------------------------------
+# Billing states  (tenants.billing_status)
+# ---------------------------------------------------------------------------
+
+BILLING_FREE = "free"
+BILLING_TRIALING = "trialing"
+BILLING_ACTIVE_PAID = "active_paid"
+BILLING_PAST_DUE = "past_due"
+BILLING_CANCELED = "canceled"
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases — prefer ACCOUNT_* in new code
+# ---------------------------------------------------------------------------
+
+ACTIVE = ACCOUNT_ACTIVE
+SUSPENDED = ACCOUNT_SUSPENDED
+CLOSED = ACCOUNT_CLOSED
 
 # ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
 
 TRIGGER_EMAIL_VERIFIED = "email_verified"
-TRIGGER_BILLING_PAID = "billing_paid"         # Phase 1 (Stripe webhook)
-TRIGGER_MFA_ENROLLED = "mfa_enrolled"         # Phase 1 (Auth0)
-TRIGGER_BILLING_BYPASSED = "billing_bypassed" # auto-advance when gate disabled
-TRIGGER_MFA_BYPASSED = "mfa_bypassed"         # auto-advance when gate disabled
 TRIGGER_DB_SUBMITTED = "db_submitted"
+TRIGGER_BILLING_PAID = "billing_paid"
+TRIGGER_BILLING_BYPASSED = "billing_bypassed"
+TRIGGER_MFA_ENROLLED = "mfa_enrolled"
+TRIGGER_MFA_BYPASSED = "mfa_bypassed"
+
+# Informational — account-level changes go through UserStore, not this machine
 TRIGGER_ADMIN_APPROVED = "admin_approved"
 TRIGGER_ADMIN_SUSPENDED = "admin_suspended"
 TRIGGER_ADMIN_CLOSED = "admin_closed"
@@ -56,7 +84,7 @@ class InvalidTransitionError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Next-step descriptions (replaces inline dict in app.py)
+# Next-step descriptions
 # ---------------------------------------------------------------------------
 
 _NEXT_STEP_DESCRIPTIONS: dict[str, str] = {
@@ -64,20 +92,22 @@ _NEXT_STEP_DESCRIPTIONS: dict[str, str] = {
     PENDING_BILLING: "Complete your subscription or free trial setup.",
     PENDING_MFA: "Enroll a passkey or MFA device.",
     PENDING_DB_CONNECTION: "Submit your database connection details.",
+    SETUP_COMPLETE: "Setup complete. Create an API key to start querying.",
     PENDING_REVIEW: "Your account is under review. We will contact you shortly.",
-    ACTIVE: "Your account is active. You may use your API key.",
-    SUSPENDED: "Account suspended. Contact support.",
-    CLOSED: "Account closed.",
+    ACCOUNT_ACTIVE: "Your account is active. You may use your API key.",
+    ACCOUNT_RESTRICTED: "Your account is restricted. Contact support.",
+    ACCOUNT_SUSPENDED: "Account suspended. Contact support.",
+    ACCOUNT_CLOSED: "Account closed.",
 }
 
 
 def get_next_step_description(status: str) -> str:
-    """Return a human-readable instruction for the given onboarding status."""
+    """Return a human-readable instruction for the given onboarding or account status."""
     return _NEXT_STEP_DESCRIPTIONS.get(status, "Contact support for assistance.")
 
 
 # ---------------------------------------------------------------------------
-# State machine
+# State machine  (onboarding progress only)
 # ---------------------------------------------------------------------------
 
 
@@ -87,19 +117,13 @@ def resolve_next_state(
     billing_gate_enabled: bool = False,
     mfa_gate_enabled: bool = False,
 ) -> str:
-    """Return the destination state for (current_state, trigger).
+    """Return the destination onboarding state for (current_state, trigger).
 
-    Gate flags control whether billing and MFA steps are required:
-    - billing_gate_enabled: if False, billing step is auto-skipped
-    - mfa_gate_enabled: if False, MFA step is auto-skipped
+    Only handles onboarding progress transitions.  Account-level state changes
+    (suspend, restrict, close) are managed directly through UserStore.
 
     Raises InvalidTransitionError when the transition is not allowed.
     """
-    if current_state in TERMINAL_STATES:
-        raise InvalidTransitionError(
-            f"State '{current_state}' is terminal — no further transitions allowed."
-        )
-
     # ------------------------------------------------------------------
     # pending_email_verification
     # ------------------------------------------------------------------
@@ -112,7 +136,7 @@ def resolve_next_state(
             return PENDING_DB_CONNECTION
 
     # ------------------------------------------------------------------
-    # pending_billing
+    # pending_billing  (optional gate)
     # ------------------------------------------------------------------
     if current_state == PENDING_BILLING:
         if trigger in (TRIGGER_BILLING_PAID, TRIGGER_BILLING_BYPASSED):
@@ -121,7 +145,7 @@ def resolve_next_state(
             return PENDING_DB_CONNECTION
 
     # ------------------------------------------------------------------
-    # pending_mfa
+    # pending_mfa  (optional gate)
     # ------------------------------------------------------------------
     if current_state == PENDING_MFA:
         if trigger in (TRIGGER_MFA_ENROLLED, TRIGGER_MFA_BYPASSED):
@@ -129,38 +153,18 @@ def resolve_next_state(
 
     # ------------------------------------------------------------------
     # pending_db_connection
+    # Self-serve path: go directly to setup_complete — no admin review required.
     # ------------------------------------------------------------------
     if current_state == PENDING_DB_CONNECTION:
         if trigger == TRIGGER_DB_SUBMITTED:
-            return PENDING_REVIEW
+            return SETUP_COMPLETE
 
     # ------------------------------------------------------------------
-    # pending_review
+    # pending_review  (admin risk hold only)
+    # Admin can clear the hold by approving.
     # ------------------------------------------------------------------
     if current_state == PENDING_REVIEW:
         if trigger == TRIGGER_ADMIN_APPROVED:
-            return ACTIVE
-        if trigger == TRIGGER_ADMIN_CLOSED:
-            return CLOSED
+            return SETUP_COMPLETE
 
-    # ------------------------------------------------------------------
-    # active
-    # ------------------------------------------------------------------
-    if current_state == ACTIVE:
-        if trigger == TRIGGER_ADMIN_SUSPENDED:
-            return SUSPENDED
-        if trigger == TRIGGER_ADMIN_CLOSED:
-            return CLOSED
-
-    # ------------------------------------------------------------------
-    # suspended
-    # ------------------------------------------------------------------
-    if current_state == SUSPENDED:
-        if trigger == TRIGGER_ADMIN_APPROVED:
-            return ACTIVE
-        if trigger == TRIGGER_ADMIN_CLOSED:
-            return CLOSED
-
-    raise InvalidTransitionError(
-        f"No transition from '{current_state}' on trigger '{trigger}'."
-    )
+    raise InvalidTransitionError(f"No transition from '{current_state}' on trigger '{trigger}'.")

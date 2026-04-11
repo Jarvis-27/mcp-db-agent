@@ -21,8 +21,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session
 
 from src.auth.crypto import CredentialCipher
-from src.auth.onboarding import ACTIVE, CLOSED, PENDING_REVIEW, SUSPENDED
+from src.auth.onboarding import (
+    ACCOUNT_ACTIVE,
+    ACCOUNT_CLOSED,
+    ACCOUNT_SUSPENDED,
+    BILLING_FREE,
+    PENDING_REVIEW,
+    SETUP_COMPLETE,
+)
 from src.auth.url_guard import validate_database_url
+from src.entitlements.plans import get_plan
 
 
 class Base(DeclarativeBase):
@@ -34,10 +42,14 @@ class Tenant(Base):
 
     id = Column(String(36), primary_key=True)
     name = Column(String(200), nullable=False)
+    # Onboarding progress: pending_email_verification | pending_db_connection |
+    #                      setup_complete | pending_review
     status = Column(String(40), nullable=False, default="pending_email_verification", index=True)
+    # Account health: active | restricted | suspended | closed
+    account_status = Column(String(40), nullable=False, default="active", index=True)
     trust_level = Column(String(40), nullable=False, default="unverified")
-    billing_status = Column(String(40), nullable=False, default="not_started")
-    plan_code = Column(String(40), nullable=False, default="new_trial")
+    billing_status = Column(String(40), nullable=False, default="free")
+    plan_code = Column(String(40), nullable=False, default="free")
     daily_query_count = Column(Integer, nullable=False, default=0)
     daily_quota_reset_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
@@ -50,7 +62,9 @@ class TenantMembership(Base):
     __tablename__ = "tenant_memberships"
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     email = Column(String(254), nullable=False, index=True)
     role = Column(String(30), nullable=False, default="owner")
     email_verified_at = Column(DateTime(timezone=True), nullable=True)
@@ -63,7 +77,9 @@ class ApiKey(Base):
     __tablename__ = "api_keys"
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     name = Column(String(100), nullable=False)
     prefix = Column(String(16), nullable=False, index=True)
     key_hash = Column(String(64), nullable=False, unique=True, index=True)
@@ -82,7 +98,9 @@ class TenantDatabase(Base):
     __tablename__ = "tenant_databases"
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     name = Column(String(100), nullable=False, default="primary")
     database_url_enc = Column(Text, nullable=False)
     validation_status = Column(String(40), nullable=False, default="validated")
@@ -141,6 +159,9 @@ class UserConfig:
     database_id: str | None = None
     scopes: frozenset[str] = frozenset({"mcp_read"})
     key_name: str | None = None
+    account_status: str = ACCOUNT_ACTIVE
+    plan_code: str = "free"
+    billing_status: str = BILLING_FREE
 
     @property
     def tenant_id(self) -> str:
@@ -156,6 +177,9 @@ class OwnerSessionContext:
     onboarding_status: str
     is_active: bool
     created_at: datetime
+    account_status: str = ACCOUNT_ACTIVE
+    plan_code: str = "free"
+    billing_status: str = BILLING_FREE
 
 
 class StateTransitionError(Exception):
@@ -181,7 +205,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 
 def _next_midnight(now: datetime) -> datetime:
-    return (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+    return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
 def _default_tenant_name(email: str) -> str:
@@ -189,7 +213,9 @@ def _default_tenant_name(email: str) -> str:
     return f"{local[:60]}'s workspace"
 
 
-def _normalize_scopes(scopes: str | list[str] | tuple[str, ...] | set[str] | frozenset[str]) -> tuple[str, frozenset[str]]:
+def _normalize_scopes(
+    scopes: str | list[str] | tuple[str, ...] | set[str] | frozenset[str],
+) -> tuple[str, frozenset[str]]:
     if isinstance(scopes, str):
         parts = [part.strip() for part in scopes.split(",") if part.strip()]
     else:
@@ -211,18 +237,22 @@ class UserStore:
     # Tenant + owner lifecycle
     # ------------------------------------------------------------------
 
-    def create_tenant_with_owner(self, email: str, tenant_name: str | None = None) -> tuple[str, str]:
+    def create_tenant_with_owner(
+        self, email: str, tenant_name: str | None = None
+    ) -> tuple[str, str]:
         tenant_id = str(uuid.uuid4())
         membership_id = str(uuid.uuid4())
         now = _utcnow()
 
         tenant = Tenant(
             id=tenant_id,
-            name=(tenant_name or _default_tenant_name(email)).strip() or _default_tenant_name(email),
+            name=(tenant_name or _default_tenant_name(email)).strip()
+            or _default_tenant_name(email),
             status="pending_email_verification",
+            account_status=ACCOUNT_ACTIVE,
             trust_level="unverified",
-            billing_status="not_started",
-            plan_code="new_trial",
+            billing_status=BILLING_FREE,
+            plan_code="free",
             daily_query_count=0,
             daily_quota_reset_at=_next_midnight(now),
             created_at=now,
@@ -254,7 +284,7 @@ class UserStore:
                 session.query(TenantMembership, Tenant)
                 .join(Tenant, TenantMembership.tenant_id == Tenant.id)
                 .filter(TenantMembership.email == email)
-                .filter(Tenant.status != CLOSED)
+                .filter(Tenant.account_status != ACCOUNT_CLOSED)
                 .order_by(Tenant.created_at.desc())
                 .first()
             )
@@ -329,7 +359,7 @@ class UserStore:
                 return None
             if _ensure_utc(owner_session.expires_at) < now:
                 return None
-            if tenant.status in (SUSPENDED, CLOSED):
+            if str(tenant.account_status) in (ACCOUNT_SUSPENDED, ACCOUNT_CLOSED):
                 return None
             owner_session.last_used_at = now  # type: ignore[assignment]
             session.commit()
@@ -347,28 +377,76 @@ class UserStore:
             return True
 
     def get_tenant_status(self, tenant_id: str) -> str | None:
+        """Return the onboarding status (tenants.status) for the given tenant."""
         with Session(self._engine) as session:
             tenant = session.get(Tenant, tenant_id)
             if tenant is None:
                 return None
             return str(tenant.status)
 
-    def transition_tenant_state(self, tenant_id: str, new_state: str) -> bool:
+    def get_tenant_account_status(self, tenant_id: str) -> str | None:
+        """Return the account status (tenants.account_status) for the given tenant."""
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return None
+            return str(tenant.account_status)
+
+    def transition_tenant_state(self, tenant_id: str, new_onboarding_state: str) -> bool:
+        """Update the onboarding progress state (tenants.status)."""
         now = _utcnow()
         with Session(self._engine) as session:
             tenant = session.get(Tenant, tenant_id)
             if tenant is None:
                 return False
-            tenant.status = new_state  # type: ignore[assignment]
+            tenant.status = new_onboarding_state  # type: ignore[assignment]
             tenant.updated_at = now  # type: ignore[assignment]
-            if new_state == SUSPENDED:
+            session.commit()
+        return True
+
+    def set_account_status(self, tenant_id: str, new_status: str) -> bool:
+        """Update the account health state (tenants.account_status).
+
+        Returns False if the tenant is already closed (terminal) or not found.
+        """
+        now = _utcnow()
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return False
+            if str(tenant.account_status) == ACCOUNT_CLOSED:
+                return False
+            tenant.account_status = new_status  # type: ignore[assignment]
+            tenant.updated_at = now  # type: ignore[assignment]
+            if new_status == ACCOUNT_SUSPENDED:
                 tenant.suspended_at = now  # type: ignore[assignment]
-            if new_state == CLOSED:
+            if new_status == ACCOUNT_CLOSED:
                 tenant.closed_at = now  # type: ignore[assignment]
             session.commit()
         return True
 
+    def activate_tenant(self, tenant_id: str) -> bool:
+        """Mark onboarding complete and activate the free plan.
+
+        Called automatically after successful database submission.
+        Sets: onboarding_status=setup_complete, account_status=active,
+              billing_status=free, plan_code=free.
+        """
+        now = _utcnow()
+        with Session(self._engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is None:
+                return False
+            tenant.status = SETUP_COMPLETE  # type: ignore[assignment]
+            tenant.account_status = ACCOUNT_ACTIVE  # type: ignore[assignment]
+            tenant.billing_status = BILLING_FREE  # type: ignore[assignment]
+            tenant.plan_code = "free"  # type: ignore[assignment]
+            tenant.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
     def list_tenants_by_status(self, status: str) -> list[tuple[Tenant, TenantMembership | None]]:
+        """List tenants by onboarding status."""
         with Session(self._engine) as session:
             rows = (
                 session.query(Tenant, TenantMembership)
@@ -388,6 +466,29 @@ class UserStore:
                 result.append((tenant, membership))
             return result
 
+    def list_tenants_by_account_status(
+        self, account_status: str
+    ) -> list[tuple[Tenant, TenantMembership | None]]:
+        """List tenants by account status (active/restricted/suspended/closed)."""
+        with Session(self._engine) as session:
+            rows = (
+                session.query(Tenant, TenantMembership)
+                .outerjoin(
+                    TenantMembership,
+                    (TenantMembership.tenant_id == Tenant.id) & (TenantMembership.role == "owner"),
+                )
+                .filter(Tenant.account_status == account_status)
+                .order_by(Tenant.created_at)
+                .all()
+            )
+            result: list[tuple[Tenant, TenantMembership | None]] = []
+            for tenant, membership in rows:
+                session.expunge(tenant)
+                if membership is not None:
+                    session.expunge(membership)
+                result.append((tenant, membership))
+            return result
+
     def get_tenant(self, tenant_id: str) -> Tenant | None:
         with Session(self._engine) as session:
             tenant = session.get(Tenant, tenant_id)
@@ -396,9 +497,23 @@ class UserStore:
             session.expunge(tenant)
             return tenant
 
+    def count_active_api_keys(self, tenant_id: str) -> int:
+        """Return the number of non-revoked API keys for the tenant."""
+        with Session(self._engine) as session:
+            return (
+                session.query(ApiKey)
+                .filter(ApiKey.tenant_id == tenant_id, ApiKey.revoked_at.is_(None))
+                .count()
+            )
+
     def owner_can_issue_api_keys(self, tenant_id: str) -> bool:
-        status = self.get_tenant_status(tenant_id)
-        if status != ACTIVE:
+        """True if the tenant has completed setup, account is active, and has a DB."""
+        tenant = self.get_tenant(tenant_id)
+        if tenant is None:
+            return False
+        if str(tenant.account_status) != ACCOUNT_ACTIVE:
+            return False
+        if str(tenant.status) != SETUP_COMPLETE:
             return False
         return self.get_active_database(tenant_id) is not None
 
@@ -406,7 +521,9 @@ class UserStore:
     # Database registration
     # ------------------------------------------------------------------
 
-    def upsert_active_database(self, tenant_id: str, database_url_enc: str, name: str = "primary") -> str:
+    def upsert_active_database(
+        self, tenant_id: str, database_url_enc: str, name: str = "primary"
+    ) -> str:
         now = _utcnow()
         with Session(self._engine) as session:
             tenant = session.get(Tenant, tenant_id)
@@ -470,6 +587,17 @@ class UserStore:
     ) -> tuple[str, ApiKey]:
         if not self.owner_can_issue_api_keys(tenant_id):
             raise StateTransitionError("Tenant is not eligible to issue API keys.")
+
+        # Enforce plan-level API key cap.
+        tenant = self.get_tenant(tenant_id)
+        if tenant is not None:
+            plan = get_plan(str(tenant.plan_code))
+            active_count = self.count_active_api_keys(tenant_id)
+            if active_count >= plan.max_api_keys:
+                raise StateTransitionError(
+                    f"API key limit reached for your plan "
+                    f"({plan.max_api_keys} key(s) allowed on the {plan.display_name} plan)."
+                )
 
         raw_key = "mdbk_" + secrets.token_urlsafe(32)
         now = _utcnow()
@@ -566,7 +694,10 @@ class UserStore:
             api_key, tenant, tenant_db, membership = row
             if api_key.revoked_at is not None:
                 return None
-            if tenant.status != ACTIVE:
+            # Require both account active AND setup complete.
+            if str(tenant.account_status) != ACCOUNT_ACTIVE:
+                return None
+            if str(tenant.status) != SETUP_COMPLETE:
                 return None
             api_key.last_used_at = now  # type: ignore[assignment]
             session.commit()
@@ -602,12 +733,18 @@ class UserStore:
             return False
 
     def issue_first_api_key(self, user_id: str) -> str:
+        """Legacy helper: activate tenant and issue the first API key.
+
+        Accepts tenants in setup_complete or pending_review onboarding state.
+        """
         status = self.get_tenant_status(user_id)
-        if status != PENDING_REVIEW:
+        if status not in (SETUP_COMPLETE, PENDING_REVIEW):
             raise StateTransitionError(
-                f"Cannot issue API key: tenant is in '{status}' state, expected '{PENDING_REVIEW}'."
+                f"Cannot issue API key: tenant onboarding state is '{status}'."
             )
-        self.transition_tenant_state(user_id, ACTIVE)
+        if status == PENDING_REVIEW:
+            self.transition_tenant_state(user_id, SETUP_COMPLETE)
+        self.set_account_status(user_id, ACCOUNT_ACTIVE)
         raw_key, _api_key = self.create_api_key(
             tenant_id=user_id,
             name="default",
@@ -649,7 +786,7 @@ class UserStore:
             return self._tenant_context_from_rows(tenant, tenant_db, membership)
 
     def deactivate_user(self, user_id: str) -> bool:
-        return self.transition_tenant_state(user_id, CLOSED)
+        return self.set_account_status(user_id, ACCOUNT_CLOSED)
 
     def increment_daily_quota(self, user_id: str) -> int:
         now = _utcnow()
@@ -686,15 +823,23 @@ class UserStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _owner_context_from_rows(self, membership: TenantMembership, tenant: Tenant) -> OwnerSessionContext:
+    def _owner_context_from_rows(
+        self, membership: TenantMembership, tenant: Tenant
+    ) -> OwnerSessionContext:
+        onboarding_status = str(tenant.status)
+        account_status = str(tenant.account_status)
+        is_active = account_status == ACCOUNT_ACTIVE and onboarding_status == SETUP_COMPLETE
         return OwnerSessionContext(
             tenant_id=str(tenant.id),
             membership_id=str(membership.id),
             email=str(membership.email),
             role=str(membership.role),
-            onboarding_status=str(tenant.status),
-            is_active=str(tenant.status) == ACTIVE,
+            onboarding_status=onboarding_status,
+            account_status=account_status,
+            is_active=is_active,
             created_at=_ensure_utc(tenant.created_at),
+            plan_code=str(tenant.plan_code),
+            billing_status=str(tenant.billing_status),
         )
 
     def _tenant_context_from_rows(
@@ -706,11 +851,17 @@ class UserStore:
         database_url = None
         if tenant_db is not None:
             database_url = self._cipher.decrypt(str(tenant_db.database_url_enc))
+        onboarding_status = str(tenant.status)
+        account_status = str(tenant.account_status)
+        is_active = account_status == ACCOUNT_ACTIVE and onboarding_status == SETUP_COMPLETE
         return UserConfig(
             user_id=str(tenant.id),
             database_url=database_url,
-            is_active=str(tenant.status) == ACTIVE,
-            onboarding_status=str(tenant.status),
+            is_active=is_active,
+            onboarding_status=onboarding_status,
+            account_status=account_status,
+            plan_code=str(tenant.plan_code),
+            billing_status=str(tenant.billing_status),
             email=None if membership is None else str(membership.email),
             api_key_id=None,
             database_id=None if tenant_db is None else str(tenant_db.id),
@@ -734,8 +885,11 @@ class UserStore:
         return UserConfig(
             user_id=str(tenant.id),
             database_url=database_url,
-            is_active=True,
+            is_active=True,  # already verified account_status==active AND status==setup_complete
             onboarding_status=str(tenant.status),
+            account_status=str(tenant.account_status),
+            plan_code=str(tenant.plan_code),
+            billing_status=str(tenant.billing_status),
             email=None if membership is None else str(membership.email),
             api_key_id=str(api_key.id),
             database_id=database_id,

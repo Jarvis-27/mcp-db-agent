@@ -91,8 +91,10 @@ async def test_different_url_creates_new_pipeline(mock_settings, pool):
         uc2 = _make_user("sqlite:///./db2.db")
         # Reset mock between calls to track each
         factory._build_components = MagicMock(
-            side_effect=[MagicMock(engine=MagicMock(), inspector=MagicMock()),
-                         MagicMock(engine=MagicMock(), inspector=MagicMock())]
+            side_effect=[
+                MagicMock(engine=MagicMock(), inspector=MagicMock()),
+                MagicMock(engine=MagicMock(), inspector=MagicMock()),
+            ]
         )
         p1 = await factory.get(uc1)
         p2 = await factory.get(uc2)

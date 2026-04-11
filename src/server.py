@@ -127,6 +127,7 @@ def _get_query_log():
             # Create only the query_history table if it doesn't exist yet;
             # we never touch other tables in the database.
             from src.auth.user_store import QueryHistory
+
             connect_args = {"connect_timeout": 10} if auth_url.startswith("postgresql") else {}
             log_engine = create_engine(auth_url, connect_args=connect_args)
             QueryHistory.__table__.create(log_engine, checkfirst=True)
@@ -155,10 +156,7 @@ def _get_query_log():
                         conn.commit()
                     if "api_key_id" not in col_names:
                         conn.execute(
-                            text(
-                                "ALTER TABLE query_history "
-                                "ADD COLUMN api_key_id TEXT NULL"
-                            )
+                            text("ALTER TABLE query_history ADD COLUMN api_key_id TEXT NULL")
                         )
                         conn.commit()
 

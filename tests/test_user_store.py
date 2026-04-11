@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from src.auth.crypto import CredentialCipher
+from src.auth.onboarding import ACCOUNT_ACTIVE, ACCOUNT_CLOSED, ACCOUNT_SUSPENDED, SETUP_COMPLETE
 from src.auth.user_store import Base, UserStore
 
 
@@ -41,12 +42,12 @@ _VALID_URL = f"postgresql://user:pass@{_PUBLIC_IP}/db"
 
 
 def _make_active_tenant(store, email="owner@example.com"):
+    """Create a fully activated tenant via the self-serve path (no pending_review)."""
     tenant_id, membership_id = store.create_tenant_with_owner(email=email)
     store.set_email_verified(membership_id)
     store.transition_tenant_state(tenant_id, "pending_db_connection")
     store.upsert_active_database(tenant_id, store._cipher.encrypt(_VALID_URL))
-    store.transition_tenant_state(tenant_id, "pending_review")
-    store.transition_tenant_state(tenant_id, "active")
+    store.activate_tenant(tenant_id)  # sets setup_complete + active + free plan
     raw_key, api_key = store.create_api_key(
         tenant_id=tenant_id,
         name="default",
@@ -74,6 +75,15 @@ def test_create_tenant_with_owner_returns_membership(store):
     assert owner.onboarding_status == "pending_email_verification"
 
 
+def test_new_tenant_has_correct_defaults(store):
+    tenant_id, _ = store.create_tenant_with_owner("new@example.com")
+    tenant = store.get_tenant(tenant_id)
+    assert tenant is not None
+    assert str(tenant.account_status) == ACCOUNT_ACTIVE
+    assert str(tenant.billing_status) == "free"
+    assert str(tenant.plan_code) == "free"
+
+
 def test_issue_owner_session_returns_authenticated_owner(store):
     tenant_id, membership_id = store.create_tenant_with_owner("owner@example.com")
     raw = store.issue_owner_session(membership_id, ttl_hours=24)
@@ -92,6 +102,8 @@ def test_get_user_by_api_key_returns_tenant_context(store):
     assert config.database_url == _VALID_URL
     assert config.is_active is True
     assert "mcp_read" in config.scopes
+    assert config.account_status == ACCOUNT_ACTIVE
+    assert config.plan_code == "free"
 
 
 def test_revoked_key_returns_none(store):
@@ -102,8 +114,39 @@ def test_revoked_key_returns_none(store):
 
 def test_suspended_tenant_key_returns_none(store):
     tenant_id, _membership_id, raw_key, _api_key_id = _make_active_tenant(store)
-    store.transition_tenant_state(tenant_id, "suspended")
+    store.set_account_status(tenant_id, ACCOUNT_SUSPENDED)
     assert store.get_user_by_api_key(raw_key) is None
+
+
+def test_activate_tenant_sets_correct_state(store):
+    tenant_id, membership_id = store.create_tenant_with_owner("a@example.com")
+    store.set_email_verified(membership_id)
+    store.transition_tenant_state(tenant_id, "pending_db_connection")
+    store.upsert_active_database(tenant_id, store._cipher.encrypt(_VALID_URL))
+    store.activate_tenant(tenant_id)
+
+    tenant = store.get_tenant(tenant_id)
+    assert tenant is not None
+    assert str(tenant.status) == SETUP_COMPLETE
+    assert str(tenant.account_status) == ACCOUNT_ACTIVE
+    assert str(tenant.billing_status) == "free"
+    assert str(tenant.plan_code) == "free"
+
+
+def test_set_account_status_suspends_tenant(store):
+    tenant_id, _, _, _ = _make_active_tenant(store)
+    ok = store.set_account_status(tenant_id, ACCOUNT_SUSPENDED)
+    assert ok is True
+    assert store.get_tenant_account_status(tenant_id) == ACCOUNT_SUSPENDED
+
+
+def test_set_account_status_closed_is_terminal(store):
+    tenant_id, _, _, _ = _make_active_tenant(store)
+    store.set_account_status(tenant_id, ACCOUNT_CLOSED)
+    # Cannot change from closed
+    ok = store.set_account_status(tenant_id, ACCOUNT_ACTIVE)
+    assert ok is False
+    assert store.get_tenant_account_status(tenant_id) == ACCOUNT_CLOSED
 
 
 def test_update_user_database_url_updates_active_database(store):
@@ -111,8 +154,10 @@ def test_update_user_database_url_updates_active_database(store):
 
     tenant_id, _membership_id, raw_key, _api_key_id = _make_active_tenant(store)
     new_url = f"postgresql://newuser:newpass@{_PUBLIC_IP}/newdb"
-    with patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", (_PUBLIC_IP, 5432))]), \
-         patch.object(ug_module.settings, "environment", "development"):
+    with (
+        patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", (_PUBLIC_IP, 5432))]),
+        patch.object(ug_module.settings, "environment", "development"),
+    ):
         assert store.update_user(tenant_id, database_url=new_url) is True
     config = store.get_user_by_api_key(raw_key)
     assert config is not None
@@ -127,6 +172,38 @@ def test_rotate_api_key_invalidates_old_key(store):
     config = store.get_user_by_api_key(new_key)
     assert config is not None
     assert config.user_id == tenant_id
+
+
+def test_count_active_api_keys(store):
+    tenant_id, _, _, key_id = _make_active_tenant(store)
+    assert store.count_active_api_keys(tenant_id) == 1
+    store.revoke_api_key(tenant_id, str(key_id))
+    assert store.count_active_api_keys(tenant_id) == 0
+
+
+def test_create_api_key_respects_plan_limit(store):
+    """Free plan allows only 1 API key."""
+    from src.auth.user_store import StateTransitionError
+
+    tenant_id, _, _, _ = _make_active_tenant(store)
+    # Already has 1 key from _make_active_tenant; free plan limit is 1.
+    with pytest.raises(StateTransitionError, match="API key limit"):
+        store.create_api_key(
+            tenant_id=tenant_id,
+            name="second-key",
+            scopes=["mcp_read"],
+            created_by_membership_id=None,
+        )
+
+
+def test_list_tenants_by_account_status(store):
+    tid1, _, _, _ = _make_active_tenant(store, email="a@example.com")
+    tid2, _, _, _ = _make_active_tenant(store, email="b@example.com")
+    store.set_account_status(tid1, ACCOUNT_SUSPENDED)
+
+    suspended = [t.id for t, _ in store.list_tenants_by_account_status(ACCOUNT_SUSPENDED)]
+    assert tid1 in suspended
+    assert tid2 not in suspended
 
 
 def test_increment_daily_quota_counts_up(store):

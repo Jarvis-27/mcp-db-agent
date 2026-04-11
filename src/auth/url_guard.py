@@ -147,8 +147,7 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
     if scheme.startswith("sqlite"):
         if not allow_sqlite:
             raise InvalidDatabaseURL(
-                "SQLite user databases are not allowed in this deployment. "
-                "Use PostgreSQL or MySQL."
+                "SQLite user databases are not allowed in this deployment. Use PostgreSQL or MySQL."
             )
         _validate_sqlite_url(url, raw)
         return url

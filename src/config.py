@@ -21,6 +21,7 @@ class UserSettings:
     query_timeout_seconds: int
     max_self_correction_retries: int
 
+
 _ENV_FILE = Path(__file__).parent.parent / ".env"
 
 
@@ -84,8 +85,8 @@ class Settings(BaseSettings):
         if not v and info.data.get("environment") != "development":
             raise ValueError(
                 "CREDENTIAL_ENCRYPTION_KEYS is required in non-development mode. "
-                "Generate one with: python -c \"from cryptography.fernet import Fernet;"
-                " print(Fernet.generate_key().decode())\""
+                'Generate one with: python -c "from cryptography.fernet import Fernet;'
+                ' print(Fernet.generate_key().decode())"'
             )
         return v
 
@@ -105,7 +106,7 @@ class Settings(BaseSettings):
         if self.environment != "development" and not self.admin_api_key:
             raise ValueError(
                 "ADMIN_API_KEY must be set in non-development environments. "
-                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
         return self
 

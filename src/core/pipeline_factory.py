@@ -88,9 +88,7 @@ class PipelineFactory:
             url_guard.assert_url_still_safe(validated_url)
 
             # Build engine off the event loop — pool warmup + dry connect block
-            components = await asyncio.to_thread(
-                self._build_components, validated_url, user_config
-            )
+            components = await asyncio.to_thread(self._build_components, validated_url, user_config)
             self._cache[cache_key] = components
             return components
 
@@ -105,7 +103,9 @@ class PipelineFactory:
             pool_timeout=10,
             pool_recycle=1800,
             pool_pre_ping=True,
-            connect_args=self._connect_args_for(validated_url, self._settings.query_timeout_seconds),
+            connect_args=self._connect_args_for(
+                validated_url, self._settings.query_timeout_seconds
+            ),
         )
         # Dry-run connect — fail fast at build time rather than at first query
         with engine.connect() as conn:

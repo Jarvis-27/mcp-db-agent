@@ -33,17 +33,15 @@ from src.api.schemas import (
 )
 from src.auth import onboarding
 from src.auth.onboarding import (
-    ACTIVE,
-    CLOSED,
+    ACCOUNT_ACTIVE,
+    ACCOUNT_CLOSED,
+    ACCOUNT_RESTRICTED,
+    ACCOUNT_SUSPENDED,
     PENDING_DB_CONNECTION,
     PENDING_EMAIL_VERIFICATION,
-    PENDING_REVIEW,
-    SUSPENDED,
-    TRIGGER_ADMIN_CLOSED,
-    TRIGGER_ADMIN_SUSPENDED,
+    SETUP_COMPLETE,
     TRIGGER_DB_SUBMITTED,
     TRIGGER_EMAIL_VERIFIED,
-    InvalidTransitionError,
 )
 from src.auth.token_store import (
     TokenAlreadyUsedError,
@@ -165,7 +163,9 @@ def _bust_tenant_caches(request: Request, tenant_id: str, api_key_id: str | None
         value = auth_cache.get(key)
         if value is None:
             continue
-        if value.user_id == tenant_id or (api_key_id is not None and value.api_key_id == api_key_id):
+        if value.user_id == tenant_id or (
+            api_key_id is not None and value.api_key_id == api_key_id
+        ):
             del auth_cache[key]
 
     owner_cache = request.app.state.owner_session_cache
@@ -184,22 +184,31 @@ def _bust_tenant_caches(request: Request, tenant_id: str, api_key_id: str | None
             pass
 
 
-def _build_blockers(status: str) -> list[str]:
-    if status == PENDING_EMAIL_VERIFICATION:
-        return ["email_verification"]
-    if status == "pending_billing":
-        return ["billing"]
-    if status == "pending_mfa":
-        return ["mfa"]
-    if status == PENDING_DB_CONNECTION:
-        return ["database_connection"]
-    if status == PENDING_REVIEW:
-        return ["admin_review"]
-    if status == SUSPENDED:
-        return ["tenant_suspended"]
-    if status == CLOSED:
-        return ["tenant_closed"]
-    return []
+def _build_blockers(onboarding_status: str, account_status: str) -> list[str]:
+    """Return a list of symbolic blockers for the current tenant state."""
+    blockers: list[str] = []
+
+    # Onboarding blockers
+    if onboarding_status == PENDING_EMAIL_VERIFICATION:
+        blockers.append("email_verification")
+    elif onboarding_status == "pending_billing":
+        blockers.append("billing")
+    elif onboarding_status == "pending_mfa":
+        blockers.append("mfa")
+    elif onboarding_status == PENDING_DB_CONNECTION:
+        blockers.append("database_connection")
+    elif onboarding_status == "pending_review":
+        blockers.append("admin_review")
+
+    # Account-health blockers
+    if account_status == ACCOUNT_SUSPENDED:
+        blockers.append("account_suspended")
+    elif account_status == ACCOUNT_CLOSED:
+        blockers.append("account_closed")
+    elif account_status == ACCOUNT_RESTRICTED:
+        blockers.append("account_restricted")
+
+    return blockers
 
 
 def _scopes_for_response(scope_text: str) -> list[str]:
@@ -214,7 +223,7 @@ async def register(request: Request, body: RegisterRequest) -> RegistrationPendi
 
     user_store: UserStore = request.app.state.user_store
     existing = user_store.get_owner_membership_by_email(body.email)
-    if existing is not None and existing.onboarding_status != CLOSED:
+    if existing is not None and existing.account_status != ACCOUNT_CLOSED:
         raise HTTPException(
             status_code=409,
             detail="An account with this email address already exists.",
@@ -291,9 +300,13 @@ async def verify_email(
     )
 
 
-@api_app.post("/v1/auth/request-login-link", response_model=GenericAcceptedResponse, status_code=202)
+@api_app.post(
+    "/v1/auth/request-login-link", response_model=GenericAcceptedResponse, status_code=202
+)
 @limiter.limit("10/minute")
-async def request_login_link(request: Request, body: RequestLoginLinkRequest) -> GenericAcceptedResponse:
+async def request_login_link(
+    request: Request, body: RequestLoginLinkRequest
+) -> GenericAcceptedResponse:
     user_store: UserStore = request.app.state.user_store
     owner = user_store.get_owner_membership_by_email(body.email)
 
@@ -354,14 +367,19 @@ async def logout(request: Request, owner: AuthedOwner) -> Response:
 @api_app.get("/v1/onboarding/status", response_model=OnboardingStatusResponse)
 async def onboarding_status(owner: AuthedOwner, request: Request) -> OnboardingStatusResponse:
     user_store: UserStore = request.app.state.user_store
-    status = user_store.get_tenant_status(owner.tenant_id)
-    if status is None:
+    tenant = user_store.get_tenant(owner.tenant_id)
+    if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    onboarding_st = str(tenant.status)
+    account_st = str(tenant.account_status)
     return OnboardingStatusResponse(
         tenant_id=owner.tenant_id,
-        status=status,
-        next_step=onboarding.get_next_step_description(status),
-        blockers=_build_blockers(status),
+        status=onboarding_st,
+        account_status=account_st,
+        plan_code=str(tenant.plan_code),
+        billing_status=str(tenant.billing_status),
+        next_step=onboarding.get_next_step_description(onboarding_st),
+        blockers=_build_blockers(onboarding_st, account_st),
         can_issue_api_key=user_store.owner_can_issue_api_keys(owner.tenant_id),
     )
 
@@ -392,14 +410,21 @@ async def submit_database(
 
     encrypted_url = request.app.state.cipher.encrypt(sanitized_url_str)
     user_store.upsert_active_database(owner.tenant_id, encrypted_url, name=(body.name or "primary"))
+
+    # Self-serve activation: db_submitted → setup_complete, account becomes active on free plan.
     onboarding.resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_DB_SUBMITTED)
-    user_store.transition_tenant_state(owner.tenant_id, PENDING_REVIEW)
+    user_store.activate_tenant(owner.tenant_id)
     _bust_tenant_caches(request, owner.tenant_id)
+
+    tenant = user_store.get_tenant(owner.tenant_id)
+    plan_code = str(tenant.plan_code) if tenant is not None else "free"
 
     return OnboardingDatabaseResponse(
         tenant_id=owner.tenant_id,
-        status=PENDING_REVIEW,
-        next_step=onboarding.get_next_step_description(PENDING_REVIEW),
+        status=SETUP_COMPLETE,
+        account_status=ACCOUNT_ACTIVE,
+        plan_code=plan_code,
+        next_step=onboarding.get_next_step_description(SETUP_COMPLETE),
     )
 
 
@@ -408,14 +433,16 @@ async def list_pending_tenants(
     request: Request,
     _: None = Depends(require_admin_key),
 ) -> list[PendingTenantItem]:
+    """List tenants with a restricted account status (admin risk holds)."""
     user_store: UserStore = request.app.state.user_store
-    rows = user_store.list_tenants_by_status(PENDING_REVIEW)
+    rows = user_store.list_tenants_by_account_status(ACCOUNT_RESTRICTED)
     return [
         PendingTenantItem(
             tenant_id=str(tenant.id),
             owner_email=None if owner is None else owner.email,
             created_at=tenant.created_at.isoformat(),
             onboarding_status=str(tenant.status),
+            account_status=str(tenant.account_status),
         )
         for tenant, owner in rows
     ]
@@ -427,19 +454,39 @@ async def approve_tenant(
     request: Request,
     _: None = Depends(require_admin_key),
 ) -> AdminStatusResponse:
+    """Clear a risk hold: sets account_status from restricted → active.
+
+    Also handles the case where the tenant is in pending_review onboarding state
+    by completing their onboarding to setup_complete.
+    """
     user_store: UserStore = request.app.state.user_store
-    current_status = user_store.get_tenant_status(tenant_id)
-    if current_status is None:
+    tenant = user_store.get_tenant(tenant_id)
+    if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    if current_status != PENDING_REVIEW:
+
+    account_st = str(tenant.account_status)
+    if account_st == ACCOUNT_CLOSED:
+        raise HTTPException(status_code=409, detail="Cannot approve a closed tenant.")
+    if account_st not in (ACCOUNT_RESTRICTED, ACCOUNT_SUSPENDED):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot approve: tenant is in '{current_status}' state, expected '{PENDING_REVIEW}'.",
+            detail=f"Tenant account_status is '{account_st}'; only restricted or suspended tenants can be approved.",
         )
 
-    user_store.transition_tenant_state(tenant_id, ACTIVE)
+    # If onboarding is still in pending_review, complete it.
+    onboarding_st = str(tenant.status)
+    if onboarding_st == "pending_review":
+        user_store.transition_tenant_state(tenant_id, SETUP_COMPLETE)
+
+    user_store.set_account_status(tenant_id, ACCOUNT_ACTIVE)
     _bust_tenant_caches(request, tenant_id)
-    return AdminStatusResponse(tenant_id=tenant_id, status=ACTIVE)
+
+    tenant_updated = user_store.get_tenant(tenant_id)
+    return AdminStatusResponse(
+        tenant_id=tenant_id,
+        status=str(tenant_updated.status) if tenant_updated else SETUP_COMPLETE,
+        account_status=ACCOUNT_ACTIVE,
+    )
 
 
 @api_app.post("/v1/admin/tenants/{tenant_id}/suspend", response_model=AdminStatusResponse)
@@ -449,21 +496,26 @@ async def suspend_tenant(
     _: None = Depends(require_admin_key),
 ) -> AdminStatusResponse:
     user_store: UserStore = request.app.state.user_store
-    current_status = user_store.get_tenant_status(tenant_id)
-    if current_status is None:
+    tenant = user_store.get_tenant(tenant_id)
+    if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    try:
-        onboarding.resolve_next_state(current_status, TRIGGER_ADMIN_SUSPENDED)
-    except InvalidTransitionError:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot suspend: tenant is in '{current_status}' state.",
-        )
+    account_st = str(tenant.account_status)
+    if account_st == ACCOUNT_CLOSED:
+        raise HTTPException(status_code=409, detail="Cannot suspend a closed tenant.")
+    if account_st == ACCOUNT_SUSPENDED:
+        raise HTTPException(status_code=409, detail="Tenant is already suspended.")
 
-    user_store.transition_tenant_state(tenant_id, SUSPENDED)
+    ok = user_store.set_account_status(tenant_id, ACCOUNT_SUSPENDED)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Could not suspend tenant.")
+
     _bust_tenant_caches(request, tenant_id)
-    return AdminStatusResponse(tenant_id=tenant_id, status=SUSPENDED)
+    return AdminStatusResponse(
+        tenant_id=tenant_id,
+        status=str(tenant.status),
+        account_status=ACCOUNT_SUSPENDED,
+    )
 
 
 @api_app.post("/v1/admin/tenants/{tenant_id}/close", response_model=AdminStatusResponse)
@@ -473,21 +525,23 @@ async def close_tenant(
     _: None = Depends(require_admin_key),
 ) -> AdminStatusResponse:
     user_store: UserStore = request.app.state.user_store
-    current_status = user_store.get_tenant_status(tenant_id)
-    if current_status is None:
+    tenant = user_store.get_tenant(tenant_id)
+    if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    try:
-        onboarding.resolve_next_state(current_status, TRIGGER_ADMIN_CLOSED)
-    except InvalidTransitionError:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot close: tenant is in '{current_status}' state.",
-        )
+    if str(tenant.account_status) == ACCOUNT_CLOSED:
+        raise HTTPException(status_code=409, detail="Tenant is already closed.")
 
-    user_store.transition_tenant_state(tenant_id, CLOSED)
+    ok = user_store.set_account_status(tenant_id, ACCOUNT_CLOSED)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Could not close tenant.")
+
     _bust_tenant_caches(request, tenant_id)
-    return AdminStatusResponse(tenant_id=tenant_id, status=CLOSED)
+    return AdminStatusResponse(
+        tenant_id=tenant_id,
+        status=str(tenant.status),
+        account_status=ACCOUNT_CLOSED,
+    )
 
 
 @api_app.post("/v1/api-keys", response_model=CreatedApiKeyResponse, status_code=201)
@@ -559,17 +613,22 @@ async def get_me(request: Request, user: AuthedUser) -> TenantMetaResponse:
     tenant = user_store.get_tenant(user.user_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    account_st = str(tenant.account_status)
+    onboarding_st = str(tenant.status)
     return TenantMetaResponse(
         tenant_id=str(tenant.id),
-        is_active=str(tenant.status) == ACTIVE,
+        is_active=account_st == ACCOUNT_ACTIVE and onboarding_st == SETUP_COMPLETE,
         created_at=tenant.created_at.isoformat(),
-        status=str(tenant.status),
+        status=onboarding_st,
+        account_status=account_st,
+        plan_code=str(tenant.plan_code),
+        billing_status=str(tenant.billing_status),
     )
 
 
 @api_app.put("/v1/users/me", status_code=200)
 async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> dict:
-    if user.onboarding_status != ACTIVE:
+    if not user.is_active:
         raise HTTPException(
             status_code=403,
             detail="Tenant must be active to update the registered database.",

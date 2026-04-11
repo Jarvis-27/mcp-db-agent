@@ -43,8 +43,10 @@ def app_state():
 
     limiter._storage.reset()
 
-    with patch.object(ug_module.settings, "environment", "development"), \
-         patch("src.api.app.settings") as mock_settings:
+    with (
+        patch.object(ug_module.settings, "environment", "development"),
+        patch("src.api.app.settings") as mock_settings,
+    ):
         mock_settings.registration_open = True
         mock_settings.allow_sqlite_user_dbs = False
         mock_settings.billing_gate_enabled = False

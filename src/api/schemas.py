@@ -50,13 +50,16 @@ class SubmitDatabaseRequest(BaseModel):
 
 class OnboardingDatabaseResponse(BaseModel):
     tenant_id: str
-    status: str
+    status: str  # onboarding progress state
+    account_status: str  # account health state
+    plan_code: str  # plan activated on completion
     next_step: str
 
 
 class AdminStatusResponse(BaseModel):
     tenant_id: str
-    status: str
+    status: str  # onboarding progress state
+    account_status: str  # account health state
 
 
 class PendingTenantItem(BaseModel):
@@ -64,13 +67,17 @@ class PendingTenantItem(BaseModel):
     owner_email: str | None
     created_at: str
     onboarding_status: str
+    account_status: str
 
 
 class TenantMetaResponse(BaseModel):
     tenant_id: str
     is_active: bool
     created_at: str
-    status: str
+    status: str  # onboarding progress (backward compat)
+    account_status: str
+    plan_code: str
+    billing_status: str
 
 
 class UpdateRequest(BaseModel):
@@ -83,7 +90,10 @@ class RotateKeyResponse(BaseModel):
 
 class OnboardingStatusResponse(BaseModel):
     tenant_id: str
-    status: str
+    status: str  # onboarding progress state
+    account_status: str  # account health state
+    plan_code: str
+    billing_status: str
     next_step: str
     blockers: list[str]
     can_issue_api_key: bool

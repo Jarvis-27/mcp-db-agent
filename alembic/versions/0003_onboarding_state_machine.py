@@ -91,9 +91,6 @@ def downgrade() -> None:
 
     # Restore NOT NULL on database_url_enc — fill empty values with a placeholder
     # so the constraint can be applied without data loss on downgrade.
-    op.execute(
-        "UPDATE users SET database_url_enc = 'placeholder' "
-        "WHERE database_url_enc IS NULL"
-    )
+    op.execute("UPDATE users SET database_url_enc = 'placeholder' WHERE database_url_enc IS NULL")
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column("database_url_enc", nullable=False)

@@ -21,8 +21,8 @@ class CredentialCipher:
         if not keys:
             raise ValueError(
                 "At least one encryption key is required. "
-                "Generate one with: python -c \"from cryptography.fernet import Fernet; "
-                "print(Fernet.generate_key().decode())\""
+                'Generate one with: python -c "from cryptography.fernet import Fernet; '
+                'print(Fernet.generate_key().decode())"'
             )
         self._fernet = MultiFernet([Fernet(k.encode()) for k in keys])
 
