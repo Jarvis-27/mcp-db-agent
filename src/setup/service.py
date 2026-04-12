@@ -1,0 +1,136 @@
+"""Setup payload orchestration for customer-facing client configuration."""
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from src.auth.onboarding import ACCOUNT_ACTIVE, SETUP_COMPLETE
+from src.auth.user_store import ApiKey, Tenant, UserStore
+from src.entitlements.service import EntitlementService
+from src.setup.config_templates import (
+    build_chatgpt_payload,
+    build_cursor_payload,
+    build_generic_http_payload,
+    build_vs_code_payload,
+)
+from src.setup.schemas import SetupApiKeyState, SetupPayload, SetupQuotaSummary
+
+_SAMPLE_PROMPTS = (
+    "List the tables in this database.",
+    "Describe the schema for the orders table.",
+    "What were the top 10 customers by revenue last month?",
+)
+
+
+class SetupPayloadInputError(ValueError):
+    """Raised when the caller supplies invalid setup payload input."""
+
+
+class SetupPayloadEligibilityError(ValueError):
+    """Raised when the tenant is not eligible to receive setup payloads."""
+
+
+@dataclass(frozen=True)
+class _SelectedApiKey:
+    api_key: ApiKey | None
+    raw_key: str | None
+
+
+class SetupPayloadService:
+    def __init__(
+        self,
+        user_store: UserStore,
+        *,
+        app_base_url: str,
+        entitlements: EntitlementService | None = None,
+    ) -> None:
+        self._user_store = user_store
+        self._app_base_url = app_base_url.rstrip("/")
+        self._entitlements = entitlements or EntitlementService()
+
+    def build_payload(self, tenant_id: str, *, raw_api_key: str | None = None) -> SetupPayload:
+        tenant = self._user_store.get_tenant(tenant_id)
+        if tenant is None:
+            raise LookupError(f"Tenant {tenant_id} not found")
+        self._ensure_eligible(tenant)
+
+        selected_key = self._select_api_key(tenant_id, raw_api_key=raw_api_key)
+        active_key_count = self._user_store.count_active_api_keys(tenant_id)
+        plan = self._entitlements.get_plan(str(tenant.plan_code))
+        daily_used = int(tenant.daily_query_count)
+        quota_summary = SetupQuotaSummary(
+            daily_limit=plan.ask_database_per_day,
+            daily_used=daily_used,
+            daily_remaining=max(plan.ask_database_per_day - daily_used, 0),
+            reset_at=_ensure_utc(tenant.daily_quota_reset_at),
+            warning_level=self._entitlements.quota_warning_level(str(tenant.plan_code), daily_used),
+        )
+        key_state = SetupApiKeyState(
+            active_key_count=active_key_count,
+            selected_api_key_id=None
+            if selected_key.api_key is None
+            else str(selected_key.api_key.id),
+            selected_api_key_name=(
+                None if selected_key.api_key is None else str(selected_key.api_key.name)
+            ),
+            selected_api_key_prefix=(
+                None if selected_key.api_key is None else str(selected_key.api_key.prefix)
+            ),
+            raw_key_included=selected_key.raw_key is not None,
+            requires_manual_key_entry=selected_key.raw_key is None,
+        )
+        mcp_url = f"{self._app_base_url}/mcp"
+        raw_key = selected_key.raw_key
+        return SetupPayload(
+            tenant_id=tenant_id,
+            status=str(tenant.status),
+            account_status=str(tenant.account_status),
+            plan_code=str(tenant.plan_code),
+            billing_status=str(tenant.billing_status),
+            mcp_url=mcp_url,
+            quota_summary=quota_summary,
+            api_key_state=key_state,
+            sample_prompts=_SAMPLE_PROMPTS,
+            vs_code=build_vs_code_payload(mcp_url, raw_key),
+            cursor=build_cursor_payload(mcp_url, raw_key),
+            chatgpt_developer_mode=build_chatgpt_payload(mcp_url),
+            generic_http=build_generic_http_payload(mcp_url, raw_key),
+        )
+
+    def _ensure_eligible(self, tenant: Tenant) -> None:
+        if str(tenant.account_status) != ACCOUNT_ACTIVE:
+            raise SetupPayloadEligibilityError(
+                "Tenant account must be active before requesting setup payloads."
+            )
+        if str(tenant.status) != SETUP_COMPLETE:
+            raise SetupPayloadEligibilityError(
+                "Tenant setup must be complete before requesting setup payloads."
+            )
+        if self._user_store.get_active_database(str(tenant.id)) is None:
+            raise SetupPayloadEligibilityError(
+                "Tenant must have an active database before requesting setup payloads."
+            )
+
+    def _select_api_key(self, tenant_id: str, *, raw_api_key: str | None) -> _SelectedApiKey:
+        normalized = None if raw_api_key is None else raw_api_key.strip()
+        if normalized:
+            api_key = self._user_store.get_active_api_key_for_tenant_by_raw_key(
+                tenant_id,
+                normalized,
+            )
+            if api_key is None:
+                raise SetupPayloadInputError(
+                    "Provided raw_api_key does not match an active API key for this tenant."
+                )
+            return _SelectedApiKey(api_key=api_key, raw_key=normalized)
+
+        active_key = next(
+            (row for row in self._user_store.list_api_keys(tenant_id) if row.revoked_at is None),
+            None,
+        )
+        return _SelectedApiKey(api_key=active_key, raw_key=None)
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt

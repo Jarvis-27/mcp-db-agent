@@ -34,6 +34,10 @@ class QueryLog:
         error: str | None,
         tenant_id: str,
         api_key_id: str | None,
+        plan_code: str | None = None,
+        daily_count: int | None = None,
+        daily_limit: int | None = None,
+        warning_level: str | None = None,
     ) -> None:
         if not tenant_id:
             raise ValueError("tenant_id is required and must not be empty")
@@ -50,6 +54,10 @@ class QueryLog:
                 attempts=attempts,
                 duration_ms=duration_ms,
                 error=error,
+                plan_code=plan_code,
+                daily_count=daily_count,
+                daily_limit=daily_limit,
+                warning_level=warning_level,
             )
             session.add(entry)
             session.commit()
@@ -79,6 +87,10 @@ class QueryLog:
                     "attempts": r.attempts,
                     "duration_ms": r.duration_ms,
                     "error": r.error,
+                    "plan_code": r.plan_code,
+                    "daily_count": r.daily_count,
+                    "daily_limit": r.daily_limit,
+                    "warning_level": r.warning_level,
                 }
                 for r in rows
             ]

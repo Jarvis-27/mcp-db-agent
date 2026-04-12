@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     max_request_bytes: int = 65536
     query_pool_size: int = 64  # ThreadPoolExecutor for SQLExecutor
     register_rate_limit: str = "5/minute"
-    ask_database_quota_per_day: int = 200  # only enforced when on fallback LLM keys
+    ask_database_quota_per_day: int = 200  # legacy fallback; hosted mode uses tenant plans
     schema_cache_ttl_seconds: int = 600
 
     # ── Onboarding gates (disabled by default; enable when Auth0/Stripe integrated) ──

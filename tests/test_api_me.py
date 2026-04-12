@@ -116,6 +116,7 @@ def test_rotate_key_issues_new_key(client, registered_user):
     new_key = resp.json()["api_key"]
     assert new_key != old_key
     assert new_key.startswith("mdbk_")
+    assert api_app.state.user_store.count_active_api_keys(registered_user["tenant_id"]) == 1
 
 
 def test_rotate_key_old_key_returns_401(client, registered_user):

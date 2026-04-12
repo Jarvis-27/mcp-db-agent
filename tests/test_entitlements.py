@@ -22,7 +22,7 @@ def test_pro_plan_has_correct_quotas():
     assert PRO_PLAN.code == "pro"
     assert PRO_PLAN.ask_database_per_day == 500
     assert PRO_PLAN.max_api_keys == 5
-    assert PRO_PLAN.max_active_databases == 2
+    assert PRO_PLAN.max_active_databases == 1
 
 
 def test_get_plan_returns_correct_plan():
@@ -55,6 +55,7 @@ def test_query_quota_below_limit_is_allowed(svc):
     assert result.allowed is True
     assert result.limit == 25
     assert result.current == 0
+    assert result.plan_code == "free"
     assert result.reason is None
 
 
@@ -85,6 +86,7 @@ def test_api_key_quota_free_allows_first_key(svc):
     result = svc.check_api_key_quota("free", current_key_count=0)
     assert result.allowed is True
     assert result.limit == 1
+    assert result.plan_code == "free"
 
 
 def test_api_key_quota_free_denies_second_key(svc):
@@ -108,10 +110,17 @@ def test_database_quota_free_allows_first(svc):
     result = svc.check_database_quota("free", current_db_count=0)
     assert result.allowed is True
     assert result.limit == 1
+    assert result.plan_code == "free"
 
 
 def test_database_quota_free_denies_second(svc):
     result = svc.check_database_quota("free", current_db_count=1)
+    assert result.allowed is False
+    assert result.reason == "database_limit_reached"
+
+
+def test_database_quota_pro_denies_second(svc):
+    result = svc.check_database_quota("pro", current_db_count=1)
     assert result.allowed is False
     assert result.reason == "database_limit_reached"
 

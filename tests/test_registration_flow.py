@@ -1,5 +1,6 @@
 """Integration tests for the tenant-backed onboarding flow."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
-from src.auth.token_store import TokenStore
+from src.auth.token_store import TokenStore, VerificationToken
 from src.auth.user_store import Base, UserStore
 from src.email_sender import LogEmailSender
 
@@ -203,6 +204,29 @@ def test_already_used_verification_token_returns_400(client):
     assert "already been used" in second.json()["detail"].lower()
 
 
+def test_expired_verification_token_returns_400(client):
+    """An expired verification token is rejected with 400 at the API layer."""
+    from hashlib import sha256
+    from sqlalchemy.orm import Session
+
+    store: UserStore = api_app.state.user_store
+    token_store: TokenStore = api_app.state.token_store
+
+    client.post("/v1/users/register", json={"email": "expired@example.com"})
+    owner = store.get_owner_membership_by_email("expired@example.com")
+    raw_token = token_store.issue_email_verification_token(owner.membership_id)
+    token_hash = sha256(raw_token.encode()).hexdigest()
+
+    with Session(store._engine) as session:
+        token = session.query(VerificationToken).filter_by(token_hash=token_hash).first()
+        token.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+
+    resp = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
+    assert resp.status_code == 400
+    assert "expired" in resp.json()["detail"].lower()
+
+
 def test_invalid_database_url_returns_400(client):
     """A URL with a blocked scheme is rejected with 400 before any connection attempt."""
     _tenant_id, owner_session = _register_and_get_owner_session(client)
@@ -248,3 +272,39 @@ def test_inactive_tenant_cannot_create_api_key(client):
     )
     assert resp.status_code == 409
     assert "not eligible" in resp.json()["detail"].lower()
+
+
+def test_create_second_api_key_returns_structured_plan_limit_error(client):
+    """Free-plan tenants should get a structured 409 when trying to create a second key."""
+    _tenant_id, owner_session = _register_and_get_owner_session(client)
+
+    with (
+        patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
+        patch("src.api.app._dry_run_connect"),
+    ):
+        db_resp = client.post(
+            "/v1/onboarding/database",
+            headers={"Authorization": f"Bearer {owner_session}"},
+            json={"database_url": _VALID_PG_URL, "name": "primary"},
+        )
+    assert db_resp.status_code == 200
+
+    first = client.post(
+        "/v1/api-keys",
+        headers={"Authorization": f"Bearer {owner_session}"},
+        json={"name": "default", "scopes": ["mcp_read"]},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/v1/api-keys",
+        headers={"Authorization": f"Bearer {owner_session}"},
+        json={"name": "second", "scopes": ["mcp_read"]},
+    )
+    assert second.status_code == 409
+    data = second.json()
+    assert "api key limit" in data["detail"].lower()
+    assert data["code"] == "api_key_limit_reached"
+    assert data["plan_code"] == "free"
+    assert data["current"] == 1
+    assert data["limit"] == 1

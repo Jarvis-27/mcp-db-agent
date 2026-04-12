@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 from src.auth.middleware import user_config_var
 from src.config import settings
+from src.entitlements.service import EntitlementService
 from src.core.logger import get_logger
 from src.core.pipeline_factory import PipelineFactory, PipelineComponents
 from src.resources.schema_overview import get_schema_overview
@@ -47,6 +48,7 @@ _cache: TTLCache = TTLCache(maxsize=1000, ttl=3600)
 CACHE_TTL = 3600
 
 _log = get_logger()
+_entitlements = EntitlementService()
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +159,26 @@ def _get_query_log():
                     if "api_key_id" not in col_names:
                         conn.execute(
                             text("ALTER TABLE query_history ADD COLUMN api_key_id TEXT NULL")
+                        )
+                        conn.commit()
+                    if "plan_code" not in col_names:
+                        conn.execute(
+                            text("ALTER TABLE query_history ADD COLUMN plan_code TEXT NULL")
+                        )
+                        conn.commit()
+                    if "daily_count" not in col_names:
+                        conn.execute(
+                            text("ALTER TABLE query_history ADD COLUMN daily_count INTEGER NULL")
+                        )
+                        conn.commit()
+                    if "daily_limit" not in col_names:
+                        conn.execute(
+                            text("ALTER TABLE query_history ADD COLUMN daily_limit INTEGER NULL")
+                        )
+                        conn.commit()
+                    if "warning_level" not in col_names:
+                        conn.execute(
+                            text("ALTER TABLE query_history ADD COLUMN warning_level TEXT NULL")
                         )
                         conn.commit()
 
@@ -306,8 +328,16 @@ async def ask_database(question: str) -> str:
     # Quota must be checked here so that over-quota requests never trigger a
     # cold-path DB connection inside _get_pipeline() / _build_components().
     if user_id != "__stdio__" and _user_store is not None:
-        new_count = _user_store.increment_daily_quota(user_id)
-        if new_count > settings.ask_database_quota_per_day:
+        quota_snapshot = _user_store.consume_daily_query_quota(user_id)
+        entitlement = _entitlements.check_query_quota(
+            quota_snapshot.plan_code,
+            max(quota_snapshot.daily_count - 1, 0),
+        )
+        warning_level = _entitlements.quota_warning_level(
+            quota_snapshot.plan_code,
+            quota_snapshot.daily_count,
+        )
+        if not entitlement.allowed:
             _log.warning(
                 "ask_database",
                 extra={
@@ -315,18 +345,27 @@ async def ask_database(question: str) -> str:
                         "tool": "ask_database",
                         "event": "quota_exceeded",
                         "user_id": user_id,
-                        "daily_count": new_count,
-                        "quota": settings.ask_database_quota_per_day,
+                        "plan_code": entitlement.plan_code,
+                        "daily_count": quota_snapshot.daily_count,
+                        "quota": entitlement.limit,
+                        "warning_level": warning_level,
+                        "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
                     }
                 },
             )
             return json.dumps(
                 {
                     "error": "Daily query quota exceeded",
-                    "quota": settings.ask_database_quota_per_day,
+                    "quota": entitlement.limit,
+                    "code": entitlement.reason,
+                    "plan_code": entitlement.plan_code,
+                    "current": quota_snapshot.daily_count,
+                    "limit": entitlement.limit,
+                    "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
+                    "warning_level": warning_level,
                     "suggestion": (
                         "Your daily quota resets at midnight UTC. "
-                        "Contact your administrator to increase your limit."
+                        "Upgrade your plan or try again after the reset."
                     ),
                 },
                 indent=2,
@@ -357,6 +396,22 @@ async def ask_database(question: str) -> str:
             error=None,
             tenant_id=user_id,
             api_key_id=api_key_id,
+            plan_code=(
+                quota_snapshot.plan_code
+                if user_id != "__stdio__" and _user_store is not None
+                else "stdio"
+            ),
+            daily_count=(
+                quota_snapshot.daily_count
+                if user_id != "__stdio__" and _user_store is not None
+                else None
+            ),
+            daily_limit=(
+                entitlement.limit if user_id != "__stdio__" and _user_store is not None else None
+            ),
+            warning_level=(
+                warning_level if user_id != "__stdio__" and _user_store is not None else None
+            ),
         )
         _cache[cache_key] = (formatted, time.monotonic())
         log_level = logging.WARNING if attempts > 1 else logging.INFO
@@ -374,6 +429,26 @@ async def ask_database(question: str) -> str:
                     "result_row_count": len(data),
                     "attempts": attempts,
                     "error": None,
+                    "plan_code": (
+                        quota_snapshot.plan_code
+                        if user_id != "__stdio__" and _user_store is not None
+                        else "stdio"
+                    ),
+                    "daily_count": (
+                        quota_snapshot.daily_count
+                        if user_id != "__stdio__" and _user_store is not None
+                        else None
+                    ),
+                    "daily_limit": (
+                        entitlement.limit
+                        if user_id != "__stdio__" and _user_store is not None
+                        else None
+                    ),
+                    "warning_level": (
+                        warning_level
+                        if user_id != "__stdio__" and _user_store is not None
+                        else None
+                    ),
                 }
             },
         )
@@ -391,6 +466,20 @@ async def ask_database(question: str) -> str:
         error=last_error,
         tenant_id=user_id,
         api_key_id=api_key_id,
+        plan_code=(
+            quota_snapshot.plan_code
+            if user_id != "__stdio__" and _user_store is not None
+            else "stdio"
+        ),
+        daily_count=(
+            quota_snapshot.daily_count if user_id != "__stdio__" and _user_store is not None else None
+        ),
+        daily_limit=(
+            entitlement.limit if user_id != "__stdio__" and _user_store is not None else None
+        ),
+        warning_level=(
+            warning_level if user_id != "__stdio__" and _user_store is not None else None
+        ),
     )
     _log.error(
         "ask_database",
@@ -405,6 +494,24 @@ async def ask_database(question: str) -> str:
                 "result_row_count": 0,
                 "attempts": result["attempts"],
                 "error": last_error,
+                "plan_code": (
+                    quota_snapshot.plan_code
+                    if user_id != "__stdio__" and _user_store is not None
+                    else "stdio"
+                ),
+                "daily_count": (
+                    quota_snapshot.daily_count
+                    if user_id != "__stdio__" and _user_store is not None
+                    else None
+                ),
+                "daily_limit": (
+                    entitlement.limit
+                    if user_id != "__stdio__" and _user_store is not None
+                    else None
+                ),
+                "warning_level": (
+                    warning_level if user_id != "__stdio__" and _user_store is not None else None
+                ),
             }
         },
     )
@@ -425,6 +532,9 @@ async def query_history(limit: int = 10) -> str:
     - ``duration_ms``: total pipeline wall-clock time in milliseconds
     - ``error``: error message if the query failed, otherwise ``null``
     - ``timestamp``: UTC timestamp of the query
+    - ``plan_code``: plan used for quota enforcement on that request
+    - ``daily_count`` / ``daily_limit``: quota snapshot at execution time
+    - ``warning_level``: quota warning level if usage was elevated
 
     Args:
         limit: Number of recent queries to return (default 10, max 200).

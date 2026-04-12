@@ -87,3 +87,61 @@ def test_register_missing_email_returns_422(client):
 def test_onboarding_status_requires_owner_session(client):
     resp = client.get("/v1/onboarding/status")
     assert resp.status_code == 401
+
+
+def test_request_login_link_unverified_account_does_not_send_email(client):
+    client.post("/v1/users/register", json={"email": "unverified@example.com"})
+
+    with patch.object(api_app.state.email_sender, "send_login_email") as send_login_email:
+        resp = client.post(
+            "/v1/auth/request-login-link",
+            json={"email": "unverified@example.com"},
+        )
+
+    assert resp.status_code == 202
+    send_login_email.assert_not_called()
+
+
+def test_exchange_login_link_requires_verified_email(client):
+    client.post("/v1/users/register", json={"email": "preverify@example.com"})
+
+    store: UserStore = api_app.state.user_store
+    token_store: TokenStore = api_app.state.token_store
+    owner = store.get_owner_membership_by_email("preverify@example.com")
+    assert owner is not None
+    raw_token = token_store.issue_owner_login_token(owner.membership_id)
+
+    resp = client.get(f"/v1/auth/exchange-login-link?token={raw_token}")
+
+    assert resp.status_code == 409
+    assert "verified" in resp.json()["detail"].lower()
+
+
+def test_request_and_exchange_login_link_work_after_email_verification(client):
+    client.post("/v1/users/register", json={"email": "verified@example.com"})
+
+    store: UserStore = api_app.state.user_store
+    token_store: TokenStore = api_app.state.token_store
+    owner = store.get_owner_membership_by_email("verified@example.com")
+    assert owner is not None
+
+    verify_token = token_store.issue_email_verification_token(owner.membership_id)
+    verify_resp = client.get(f"/v1/onboarding/verify-email?token={verify_token}")
+    assert verify_resp.status_code == 200
+
+    with patch.object(api_app.state.email_sender, "send_login_email") as send_login_email:
+        request_resp = client.post(
+            "/v1/auth/request-login-link",
+            json={"email": "verified@example.com"},
+        )
+
+    assert request_resp.status_code == 202
+    send_login_email.assert_called_once()
+
+    login_token = token_store.issue_owner_login_token(owner.membership_id)
+    exchange_resp = client.get(f"/v1/auth/exchange-login-link?token={login_token}")
+
+    assert exchange_resp.status_code == 200
+    data = exchange_resp.json()
+    assert data["status"] == "pending_db_connection"
+    assert data["owner_session_token"].startswith("mdbo_")

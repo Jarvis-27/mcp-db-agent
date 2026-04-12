@@ -321,7 +321,7 @@ Use these as a starting point, then adjust once you observe cost and conversion.
 - `pro`
   - 500 `ask_database` requests per day
   - 5 API keys
-  - 2 active databases only if you really need it
+  - 1 active database until the product has explicit multi-database support
 
 If your LLM cost is high, start lower, not higher. You can always loosen quotas later. It is much harder to take quota away after launch.
 

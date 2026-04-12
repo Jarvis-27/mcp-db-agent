@@ -119,3 +119,59 @@ class ApiKeyResponse(BaseModel):
 class CreatedApiKeyResponse(ApiKeyResponse):
     api_key: str
     warning: str = "Store this key now. We cannot show it to you again."
+
+
+class SetupPayloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_api_key: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class SetupQuotaSummaryResponse(BaseModel):
+    daily_limit: int
+    daily_used: int
+    daily_remaining: int
+    reset_at: str
+    warning_level: str | None
+
+
+class SetupApiKeyStateResponse(BaseModel):
+    active_key_count: int
+    selected_api_key_id: str | None
+    selected_api_key_name: str | None
+    selected_api_key_prefix: str | None
+    raw_key_included: bool
+    requires_manual_key_entry: bool
+
+
+class ClientSetupPayloadResponse(BaseModel):
+    client_id: str
+    display_name: str
+    status: str
+    auth_method: str
+    config_path_hint: str
+    snippet_format: str
+    snippet: str
+    api_key_handling: str
+    instructions: list[str]
+    availability_reason: str | None = None
+
+
+class SetupClientsResponse(BaseModel):
+    vs_code: ClientSetupPayloadResponse
+    cursor: ClientSetupPayloadResponse
+    chatgpt_developer_mode: ClientSetupPayloadResponse
+    generic_http: ClientSetupPayloadResponse
+
+
+class SetupPayloadResponse(BaseModel):
+    tenant_id: str
+    status: str
+    account_status: str
+    plan_code: str
+    billing_status: str
+    mcp_url: str
+    quota_summary: SetupQuotaSummaryResponse
+    api_key_state: SetupApiKeyStateResponse
+    sample_prompts: list[str]
+    clients: SetupClientsResponse

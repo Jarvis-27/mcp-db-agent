@@ -4,8 +4,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 import src.server as server
+from src.auth.user_store import Base
+from src.core.query_log import QueryLog
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +89,10 @@ async def test_query_history_returns_json():
             "error": None,
             "timestamp": "2026-01-01T00:00:00+00:00",
             "tenant_id": "user-1",
+            "plan_code": "free",
+            "daily_count": 7,
+            "daily_limit": 25,
+            "warning_level": None,
         }
     ]
     mock_log = _make_mock_log(rows=rows)
@@ -97,3 +105,41 @@ async def test_query_history_returns_json():
     assert isinstance(parsed, list)
     assert len(parsed) == 1
     assert parsed[0]["question"] == "test"
+    assert parsed[0]["plan_code"] == "free"
+    assert parsed[0]["daily_limit"] == 25
+
+
+def test_query_log_persists_plan_and_quota_context():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    log = QueryLog(engine)
+
+    try:
+        log.log_query(
+            question="Which customers churned?",
+            sql="SELECT * FROM customers",
+            success=True,
+            row_count=3,
+            attempts=1,
+            duration_ms=12,
+            error=None,
+            tenant_id="tenant-1",
+            api_key_id="key-1",
+            plan_code="pro",
+            daily_count=321,
+            daily_limit=500,
+            warning_level="medium",
+        )
+        rows = log.get_recent_queries(tenant_id="tenant-1")
+    finally:
+        engine.dispose()
+
+    assert len(rows) == 1
+    assert rows[0]["plan_code"] == "pro"
+    assert rows[0]["daily_count"] == 321
+    assert rows[0]["daily_limit"] == 500
+    assert rows[0]["warning_level"] == "medium"

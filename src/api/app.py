@@ -7,6 +7,7 @@ import logging
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -15,6 +16,7 @@ from sqlalchemy import create_engine, text
 from src.api.schemas import (
     AdminStatusResponse,
     ApiKeyResponse,
+    ClientSetupPayloadResponse,
     CreateApiKeyRequest,
     CreatedApiKeyResponse,
     GenericAcceptedResponse,
@@ -26,6 +28,11 @@ from src.api.schemas import (
     RegistrationPendingResponse,
     RequestLoginLinkRequest,
     RotateKeyResponse,
+    SetupApiKeyStateResponse,
+    SetupClientsResponse,
+    SetupPayloadRequest,
+    SetupPayloadResponse,
+    SetupQuotaSummaryResponse,
     SubmitDatabaseRequest,
     TenantMetaResponse,
     UpdateRequest,
@@ -50,8 +57,15 @@ from src.auth.token_store import (
     TokenStore,
 )
 from src.auth.url_guard import InvalidDatabaseURL, validate_database_url
-from src.auth.user_store import OwnerSessionContext, StateTransitionError, UserConfig, UserStore
+from src.auth.user_store import (
+    EntitlementExceededError,
+    OwnerSessionContext,
+    StateTransitionError,
+    UserConfig,
+    UserStore,
+)
 from src.config import settings
+from src.setup import SetupPayloadEligibilityError, SetupPayloadInputError, SetupPayloadService
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +229,34 @@ def _scopes_for_response(scope_text: str) -> list[str]:
     return [scope.strip() for scope in scope_text.split(",") if scope.strip()]
 
 
+def _entitlement_conflict_response(exc: EntitlementExceededError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(exc),
+            "code": exc.code,
+            "plan_code": exc.plan_code,
+            "current": exc.current,
+            "limit": exc.limit,
+        },
+    )
+
+
+def _client_setup_response(payload) -> ClientSetupPayloadResponse:
+    return ClientSetupPayloadResponse(
+        client_id=payload.client_id,
+        display_name=payload.display_name,
+        status=payload.status,
+        auth_method=payload.auth_method,
+        config_path_hint=payload.config_path_hint,
+        snippet_format=payload.snippet_format,
+        snippet=payload.snippet,
+        api_key_handling=payload.api_key_handling,
+        instructions=list(payload.instructions),
+        availability_reason=payload.availability_reason,
+    )
+
+
 @api_app.post("/v1/users/register", response_model=RegistrationPendingResponse, status_code=201)
 @limiter.limit(settings.register_rate_limit)
 async def register(request: Request, body: RegisterRequest) -> RegistrationPendingResponse:
@@ -310,7 +352,7 @@ async def request_login_link(
     user_store: UserStore = request.app.state.user_store
     owner = user_store.get_owner_membership_by_email(body.email)
 
-    if owner is not None:
+    if owner is not None and owner.onboarding_status != PENDING_EMAIL_VERIFICATION:
         try:
             token_store: TokenStore = request.app.state.token_store
             raw_token = token_store.issue_owner_login_token(owner.membership_id)
@@ -342,6 +384,11 @@ async def exchange_login_link(
     owner = user_store.get_owner_membership_by_id(membership_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="Owner membership not found")
+    if owner.onboarding_status == PENDING_EMAIL_VERIFICATION:
+        raise HTTPException(
+            status_code=409,
+            detail="Email must be verified before using a login link.",
+        )
 
     owner_session_token = user_store.issue_owner_session(
         membership_id,
@@ -409,7 +456,12 @@ async def submit_database(
     await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     encrypted_url = request.app.state.cipher.encrypt(sanitized_url_str)
-    user_store.upsert_active_database(owner.tenant_id, encrypted_url, name=(body.name or "primary"))
+    try:
+        user_store.upsert_active_database(
+            owner.tenant_id, encrypted_url, name=(body.name or "primary")
+        )
+    except EntitlementExceededError as exc:
+        return _entitlement_conflict_response(exc)
 
     # Self-serve activation: db_submitted → setup_complete, account becomes active on free plan.
     onboarding.resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_DB_SUBMITTED)
@@ -563,6 +615,8 @@ async def create_api_key(
             scopes=body.scopes,
             created_by_membership_id=owner.membership_id,
         )
+    except EntitlementExceededError as exc:
+        return _entitlement_conflict_response(exc)
     except StateTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -607,6 +661,55 @@ async def revoke_api_key(api_key_id: str, request: Request, owner: AuthedOwner) 
     return Response(status_code=204)
 
 
+@api_app.post("/v1/setup/payloads", response_model=SetupPayloadResponse)
+async def get_setup_payloads(
+    body: SetupPayloadRequest,
+    request: Request,
+    owner: AuthedOwner,
+) -> SetupPayloadResponse:
+    user_store: UserStore = request.app.state.user_store
+    service = SetupPayloadService(user_store, app_base_url=settings.app_base_url)
+    try:
+        payload = service.build_payload(owner.tenant_id, raw_api_key=body.raw_api_key)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    except SetupPayloadInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except SetupPayloadEligibilityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return SetupPayloadResponse(
+        tenant_id=payload.tenant_id,
+        status=payload.status,
+        account_status=payload.account_status,
+        plan_code=payload.plan_code,
+        billing_status=payload.billing_status,
+        mcp_url=payload.mcp_url,
+        quota_summary=SetupQuotaSummaryResponse(
+            daily_limit=payload.quota_summary.daily_limit,
+            daily_used=payload.quota_summary.daily_used,
+            daily_remaining=payload.quota_summary.daily_remaining,
+            reset_at=payload.quota_summary.reset_at.isoformat(),
+            warning_level=payload.quota_summary.warning_level,
+        ),
+        api_key_state=SetupApiKeyStateResponse(
+            active_key_count=payload.api_key_state.active_key_count,
+            selected_api_key_id=payload.api_key_state.selected_api_key_id,
+            selected_api_key_name=payload.api_key_state.selected_api_key_name,
+            selected_api_key_prefix=payload.api_key_state.selected_api_key_prefix,
+            raw_key_included=payload.api_key_state.raw_key_included,
+            requires_manual_key_entry=payload.api_key_state.requires_manual_key_entry,
+        ),
+        sample_prompts=list(payload.sample_prompts),
+        clients=SetupClientsResponse(
+            vs_code=_client_setup_response(payload.vs_code),
+            cursor=_client_setup_response(payload.cursor),
+            chatgpt_developer_mode=_client_setup_response(payload.chatgpt_developer_mode),
+            generic_http=_client_setup_response(payload.generic_http),
+        ),
+    )
+
+
 @api_app.get("/v1/users/me", response_model=TenantMetaResponse)
 async def get_me(request: Request, user: AuthedUser) -> TenantMetaResponse:
     user_store: UserStore = request.app.state.user_store
@@ -644,7 +747,14 @@ async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> 
         sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
         await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
         encrypted = request.app.state.cipher.encrypt(sanitized_url_str)
-        request.app.state.user_store.upsert_active_database(user.user_id, encrypted, name="primary")
+        try:
+            request.app.state.user_store.upsert_active_database(
+                user.user_id,
+                encrypted,
+                name="primary",
+            )
+        except EntitlementExceededError as exc:
+            return _entitlement_conflict_response(exc)
 
     _bust_tenant_caches(request, user.user_id)
     return {"detail": "Updated successfully"}
@@ -658,6 +768,8 @@ async def rotate_key(request: Request, user: AuthedUser) -> RotateKeyResponse:
     user_store: UserStore = request.app.state.user_store
     try:
         new_raw_key = user_store.rotate_api_key(user.user_id, user.api_key_id)
+    except EntitlementExceededError as exc:
+        return _entitlement_conflict_response(exc)
     except (StateTransitionError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     _bust_tenant_caches(request, user.user_id, api_key_id=user.api_key_id)

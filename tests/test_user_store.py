@@ -1,6 +1,8 @@
 """Tests for the tenant-backed UserStore."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -10,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.auth.crypto import CredentialCipher
 from src.auth.onboarding import ACCOUNT_ACTIVE, ACCOUNT_CLOSED, ACCOUNT_SUSPENDED, SETUP_COMPLETE
-from src.auth.user_store import Base, UserStore
+from src.auth.user_store import Base, DailyQuotaSnapshot, UserStore
 
 
 @pytest.fixture
@@ -55,6 +57,15 @@ def _make_active_tenant(store, email="owner@example.com"):
         created_by_membership_id=membership_id,
     )
     return tenant_id, membership_id, raw_key, api_key.id
+
+
+def _make_active_tenant_without_keys(store, email="owner-no-key@example.com"):
+    tenant_id, membership_id = store.create_tenant_with_owner(email=email)
+    store.set_email_verified(membership_id)
+    store.transition_tenant_state(tenant_id, "pending_db_connection")
+    store.upsert_active_database(tenant_id, store._cipher.encrypt(_VALID_URL))
+    store.activate_tenant(tenant_id)
+    return tenant_id, membership_id
 
 
 def test_create_user_returns_pending_tenant_id(store):
@@ -172,6 +183,7 @@ def test_rotate_api_key_invalidates_old_key(store):
     config = store.get_user_by_api_key(new_key)
     assert config is not None
     assert config.user_id == tenant_id
+    assert store.count_active_api_keys(tenant_id) == 1
 
 
 def test_count_active_api_keys(store):
@@ -179,6 +191,11 @@ def test_count_active_api_keys(store):
     assert store.count_active_api_keys(tenant_id) == 1
     store.revoke_api_key(tenant_id, str(key_id))
     assert store.count_active_api_keys(tenant_id) == 0
+
+
+def test_count_active_databases(store):
+    tenant_id, _membership_id, _raw_key, _api_key_id = _make_active_tenant(store)
+    assert store.count_active_databases(tenant_id) == 1
 
 
 def test_create_api_key_respects_plan_limit(store):
@@ -213,6 +230,16 @@ def test_increment_daily_quota_counts_up(store):
     assert store.increment_daily_quota(tenant_id) == 3
 
 
+def test_consume_daily_query_quota_returns_plan_snapshot(store):
+    tenant_id, _membership_id, _raw_key, _api_key_id = _make_active_tenant(store)
+    snapshot = store.consume_daily_query_quota(tenant_id)
+    assert isinstance(snapshot, DailyQuotaSnapshot)
+    assert snapshot.tenant_id == tenant_id
+    assert snapshot.plan_code == "free"
+    assert snapshot.daily_count == 1
+    assert snapshot.daily_quota_reset_at.tzinfo is not None
+
+
 def test_increment_daily_quota_resets_at_midnight(store):
     tenant_id, _membership_id, _raw_key, _api_key_id = _make_active_tenant(store)
     store.increment_daily_quota(tenant_id)
@@ -230,8 +257,6 @@ def test_increment_daily_quota_resets_at_midnight(store):
 
 
 def test_increment_daily_quota_concurrent_no_lost_updates(tmp_path, cipher):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     db_path = tmp_path / "concurrent_test.db"
     eng = create_engine(
         f"sqlite:///{db_path}",
@@ -247,5 +272,95 @@ def test_increment_daily_quota_concurrent_no_lost_updates(tmp_path, cipher):
             futures = [pool.submit(file_store.increment_daily_quota, tenant_id) for _ in range(n)]
             results = sorted(f.result() for f in as_completed(futures))
         assert results == list(range(1, n + 1))
+    finally:
+        eng.dispose()
+
+
+def test_upsert_active_database_replaces_existing_active_database(store):
+    tenant_id, membership_id = store.create_tenant_with_owner("db-limit@example.com")
+    store.set_email_verified(membership_id)
+    store.transition_tenant_state(tenant_id, "pending_db_connection")
+
+    first_id = store.upsert_active_database(
+        tenant_id, store._cipher.encrypt(_VALID_URL), name="first"
+    )
+    second_id = store.upsert_active_database(
+        tenant_id,
+        store._cipher.encrypt("postgresql://user:pass@8.8.8.8/nextdb"),
+        name="second",
+    )
+
+    assert second_id == first_id
+    assert store.count_active_databases(tenant_id) == 1
+
+
+def test_create_api_key_plan_limit_is_atomic_under_concurrency(tmp_path, cipher):
+    db_path = tmp_path / "concurrent_api_keys.db"
+    eng = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(eng)
+    file_store = UserStore(eng, cipher)
+
+    try:
+        tenant_id, membership_id = _make_active_tenant_without_keys(file_store)
+        barrier = Barrier(2)
+
+        def issue_key() -> tuple[str, str]:
+            barrier.wait()
+            try:
+                raw_key, _ = file_store.create_api_key(
+                    tenant_id=tenant_id,
+                    name="concurrent",
+                    scopes=["mcp_read"],
+                    created_by_membership_id=membership_id,
+                )
+                return ("ok", raw_key)
+            except Exception as exc:  # pragma: no cover - assertion inspects values
+                return ("error", type(exc).__name__)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = [pool.submit(issue_key) for _ in range(2)]
+            outcomes = [future.result() for future in as_completed(results)]
+
+        assert sum(status == "ok" for status, _ in outcomes) == 1
+        assert sum(status == "error" for status, _ in outcomes) == 1
+        assert file_store.count_active_api_keys(tenant_id) == 1
+        errors = [value for status, value in outcomes if status == "error"]
+        assert errors == ["EntitlementExceededError"]
+    finally:
+        eng.dispose()
+
+
+def test_upsert_active_database_is_atomic_under_concurrency(tmp_path, cipher):
+    db_path = tmp_path / "concurrent_databases.db"
+    eng = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(eng)
+    file_store = UserStore(eng, cipher)
+
+    try:
+        tenant_id, membership_id = file_store.create_tenant_with_owner("race-db@example.com")
+        file_store.set_email_verified(membership_id)
+        file_store.transition_tenant_state(tenant_id, "pending_db_connection")
+        barrier = Barrier(2)
+
+        def upsert(url_suffix: str) -> str:
+            barrier.wait()
+            return file_store.upsert_active_database(
+                tenant_id,
+                file_store._cipher.encrypt(f"postgresql://user:pass@{_PUBLIC_IP}/{url_suffix}"),
+                name=url_suffix,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(upsert, "firstdb"), pool.submit(upsert, "seconddb")]
+            ids = [future.result() for future in as_completed(futures)]
+
+        assert len(set(ids)) == 1
+        assert file_store.count_active_databases(tenant_id) == 1
     finally:
         eng.dispose()

@@ -2,7 +2,7 @@
 
 Quotas frozen in Phase 0:
   free — 25 ask_database/day, 1 API key, 1 active database
-  pro  — 500 ask_database/day, 5 API keys, 2 active databases
+  pro  — 500 ask_database/day, 5 API keys, 1 active database
 """
 
 from dataclasses import dataclass
@@ -30,7 +30,7 @@ PRO_PLAN = Plan(
     display_name="Pro",
     ask_database_per_day=500,
     max_api_keys=5,
-    max_active_databases=2,
+    max_active_databases=1,
 )
 
 _PLANS: dict[str, Plan] = {

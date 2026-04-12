@@ -154,7 +154,7 @@ Goal: make the data model match self-serve SaaS instead of manual review onboard
 ### New modules added
 
 - [x] `src/entitlements/__init__.py`
-- [x] `src/entitlements/plans.py` — `FREE_PLAN` (25/day, 1 key, 1 DB), `PRO_PLAN` (500/day, 5 keys, 2 DBs)
+- [x] `src/entitlements/plans.py` — `FREE_PLAN` (25/day, 1 key, 1 DB), `PRO_PLAN` (500/day, 5 keys, 1 DB)
 - [x] `src/entitlements/service.py` — `EntitlementService` with query/key/db quota checks and warning levels
 
 ### Checklist

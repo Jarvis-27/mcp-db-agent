@@ -302,3 +302,36 @@ The `docker-compose.yml` starts a `postgres:16` container alongside the MCP serv
 # Override transport at runtime (default in Dockerfile is streamable-http)
 docker run -e TRANSPORT=streamable-http -e DATABASE_URL=... -e ANTHROPIC_API_KEY=... mcp-db-agent
 ```
+
+---
+
+## Hosted Setup Payloads
+
+Hosted deployments expose an owner-session-authenticated setup endpoint at `/api/v1/setup/payloads`.
+
+- Method: `POST`
+- Auth: `Authorization: Bearer <owner-session-token>`
+- Optional body field: `raw_api_key`
+
+This endpoint generates client-ready MCP setup material for:
+
+- VS Code
+- Cursor
+- generic HTTP MCP clients
+
+It also returns a ChatGPT developer mode section, but that payload is intentionally marked unavailable until OAuth support exists. The current hosted backend authenticates `/mcp` with bearer API keys, not OAuth.
+
+Example request:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/setup/payloads \
+  -H "Authorization: Bearer <owner-session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"raw_api_key":"mdbk_..."}'
+```
+
+Secret-handling rules:
+
+- The backend never stores raw API keys after creation.
+- Generated payloads only embed a raw API key when you explicitly pass it to `/api/v1/setup/payloads`.
+- Otherwise the response uses placeholders or input prompts and tells the client where to paste an active key.

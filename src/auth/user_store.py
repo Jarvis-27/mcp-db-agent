@@ -30,7 +30,7 @@ from src.auth.onboarding import (
     SETUP_COMPLETE,
 )
 from src.auth.url_guard import validate_database_url
-from src.entitlements.plans import get_plan
+from src.entitlements.service import EntitlementService
 
 
 class Base(DeclarativeBase):
@@ -142,6 +142,10 @@ class QueryHistory(Base):
     attempts = Column(Integer, nullable=False)
     duration_ms = Column(Integer, nullable=False)
     error = Column(Text, nullable=True)
+    plan_code = Column(String(40), nullable=True)
+    daily_count = Column(Integer, nullable=True)
+    daily_limit = Column(Integer, nullable=True)
+    warning_level = Column(String(20), nullable=True)
 
     __table_args__ = (Index("ix_query_history_tenant_id_desc", "tenant_id", "id"),)
 
@@ -184,6 +188,33 @@ class OwnerSessionContext:
 
 class StateTransitionError(Exception):
     """Raised when a state-gated operation is not allowed."""
+
+
+class EntitlementExceededError(StateTransitionError):
+    """Raised when a tenant action would exceed a plan limit."""
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        code: str,
+        plan_code: str,
+        current: int,
+        limit: int,
+    ) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.plan_code = plan_code
+        self.current = current
+        self.limit = limit
+
+
+@dataclass(frozen=True)
+class DailyQuotaSnapshot:
+    tenant_id: str
+    plan_code: str
+    daily_count: int
+    daily_quota_reset_at: datetime
 
 
 def _hash_key(raw_key: str) -> str:
@@ -232,6 +263,7 @@ class UserStore:
     def __init__(self, engine: Engine, cipher: CredentialCipher) -> None:
         self._engine = engine
         self._cipher = cipher
+        self._entitlements = EntitlementService()
 
     # ------------------------------------------------------------------
     # Tenant + owner lifecycle
@@ -506,6 +538,24 @@ class UserStore:
                 .count()
             )
 
+    def count_active_databases(self, tenant_id: str) -> int:
+        """Return the number of active databases for the tenant."""
+        with Session(self._engine) as session:
+            return (
+                session.query(TenantDatabase)
+                .filter(TenantDatabase.tenant_id == tenant_id, TenantDatabase.is_active.is_(True))
+                .count()
+            )
+
+    def _lock_tenant_for_plan_mutation(self, session: Session, tenant_id: str) -> Tenant | None:
+        """Lock the tenant row so plan-limited mutations serialize per tenant."""
+        if session.bind is None:
+            raise RuntimeError("Session is not bound to an engine")
+        if session.bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+            return session.get(Tenant, tenant_id)
+        return session.query(Tenant).filter(Tenant.id == tenant_id).with_for_update().first()
+
     def owner_can_issue_api_keys(self, tenant_id: str) -> bool:
         """True if the tenant has completed setup, account is active, and has a DB."""
         tenant = self.get_tenant(tenant_id)
@@ -526,7 +576,7 @@ class UserStore:
     ) -> str:
         now = _utcnow()
         with Session(self._engine) as session:
-            tenant = session.get(Tenant, tenant_id)
+            tenant = self._lock_tenant_for_plan_mutation(session, tenant_id)
             if tenant is None:
                 raise ValueError(f"Tenant {tenant_id} not found")
             current = (
@@ -536,6 +586,26 @@ class UserStore:
                 .first()
             )
             if current is None:
+                active_count = (
+                    session.query(TenantDatabase)
+                    .filter(
+                        TenantDatabase.tenant_id == tenant_id,
+                        TenantDatabase.is_active.is_(True),
+                    )
+                    .count()
+                )
+                entitlement = self._entitlements.check_database_quota(
+                    str(tenant.plan_code),
+                    active_count,
+                )
+                if not entitlement.allowed:
+                    raise EntitlementExceededError(
+                        "Active database limit reached for your plan.",
+                        code=entitlement.reason or "database_limit_reached",
+                        plan_code=entitlement.plan_code,
+                        current=entitlement.current,
+                        limit=entitlement.limit,
+                    )
                 current = TenantDatabase(
                     id=str(uuid.uuid4()),
                     tenant_id=tenant_id,
@@ -585,20 +655,6 @@ class UserStore:
         scopes: str | list[str] | tuple[str, ...] | set[str] | frozenset[str],
         created_by_membership_id: str | None,
     ) -> tuple[str, ApiKey]:
-        if not self.owner_can_issue_api_keys(tenant_id):
-            raise StateTransitionError("Tenant is not eligible to issue API keys.")
-
-        # Enforce plan-level API key cap.
-        tenant = self.get_tenant(tenant_id)
-        if tenant is not None:
-            plan = get_plan(str(tenant.plan_code))
-            active_count = self.count_active_api_keys(tenant_id)
-            if active_count >= plan.max_api_keys:
-                raise StateTransitionError(
-                    f"API key limit reached for your plan "
-                    f"({plan.max_api_keys} key(s) allowed on the {plan.display_name} plan)."
-                )
-
         raw_key = "mdbk_" + secrets.token_urlsafe(32)
         now = _utcnow()
         scope_text, _ = _normalize_scopes(scopes)
@@ -615,6 +671,41 @@ class UserStore:
             created_at=now,
         )
         with Session(self._engine) as session:
+            tenant = self._lock_tenant_for_plan_mutation(session, tenant_id)
+            if tenant is None:
+                raise ValueError(f"Tenant {tenant_id} not found")
+            if str(tenant.account_status) != ACCOUNT_ACTIVE:
+                raise StateTransitionError("Tenant is not eligible to issue API keys.")
+            if str(tenant.status) != SETUP_COMPLETE:
+                raise StateTransitionError("Tenant is not eligible to issue API keys.")
+            has_active_db = (
+                session.query(TenantDatabase.id)
+                .filter(TenantDatabase.tenant_id == tenant_id, TenantDatabase.is_active.is_(True))
+                .first()
+                is not None
+            )
+            if not has_active_db:
+                raise StateTransitionError("Tenant is not eligible to issue API keys.")
+
+            active_count = (
+                session.query(ApiKey)
+                .filter(ApiKey.tenant_id == tenant_id, ApiKey.revoked_at.is_(None))
+                .count()
+            )
+            entitlement = self._entitlements.check_api_key_quota(
+                str(tenant.plan_code),
+                active_count,
+            )
+            if not entitlement.allowed:
+                plan = self._entitlements.get_plan(entitlement.plan_code)
+                raise EntitlementExceededError(
+                    f"API key limit reached for your plan "
+                    f"({plan.max_api_keys} key(s) allowed on the {plan.display_name} plan).",
+                    code=entitlement.reason or "api_key_limit_reached",
+                    plan_code=entitlement.plan_code,
+                    current=entitlement.current,
+                    limit=entitlement.limit,
+                )
             session.add(api_key)
             session.commit()
             session.refresh(api_key)
@@ -654,6 +745,8 @@ class UserStore:
                 raise StateTransitionError("Cannot rotate a revoked API key.")
             raw_key = "mdbk_" + secrets.token_urlsafe(32)
             now = _utcnow()
+            # Rotation is a replacement, not a net-new key creation, so it does
+            # not consume an extra plan slot.
             replacement = ApiKey(
                 id=str(uuid.uuid4()),
                 tenant_id=tenant_id,
@@ -711,6 +804,26 @@ class UserStore:
             session.expunge(api_key)
             return api_key
 
+    def get_active_api_key_for_tenant_by_raw_key(
+        self, tenant_id: str, raw_key: str
+    ) -> ApiKey | None:
+        """Return active API key metadata when the raw key belongs to the tenant."""
+        key_hash = _hash_key(raw_key)
+        with Session(self._engine) as session:
+            api_key = (
+                session.query(ApiKey)
+                .filter(
+                    ApiKey.tenant_id == tenant_id,
+                    ApiKey.key_hash == key_hash,
+                    ApiKey.revoked_at.is_(None),
+                )
+                .first()
+            )
+            if api_key is None:
+                return None
+            session.expunge(api_key)
+            return api_key
+
     # ------------------------------------------------------------------
     # Legacy compatibility helpers used by the bridge release
     # ------------------------------------------------------------------
@@ -729,7 +842,7 @@ class UserStore:
         try:
             self.upsert_active_database(user_id, database_url_enc)
             return True
-        except ValueError:
+        except (EntitlementExceededError, ValueError):
             return False
 
     def issue_first_api_key(self, user_id: str) -> str:
@@ -762,7 +875,7 @@ class UserStore:
         try:
             self.upsert_active_database(user_id, encrypted)
             return True
-        except ValueError:
+        except (EntitlementExceededError, ValueError):
             return False
 
     def get_user_by_id(self, user_id: str) -> UserConfig | None:
@@ -789,6 +902,9 @@ class UserStore:
         return self.set_account_status(user_id, ACCOUNT_CLOSED)
 
     def increment_daily_quota(self, user_id: str) -> int:
+        return self.consume_daily_query_quota(user_id).daily_count
+
+    def consume_daily_query_quota(self, user_id: str) -> DailyQuotaSnapshot:
         now = _utcnow()
         next_reset = _next_midnight(now)
 
@@ -808,7 +924,7 @@ class UserStore:
                         END,
                         updated_at = :now
                     WHERE id = :tenant_id
-                    RETURNING daily_query_count
+                    RETURNING plan_code, daily_query_count, daily_quota_reset_at
                     """
                 ),
                 {"now": now, "next_reset": next_reset, "tenant_id": user_id},
@@ -817,7 +933,15 @@ class UserStore:
 
         if row is None:
             raise ValueError(f"Tenant {user_id} not found")
-        return int(row[0])
+        reset_at = row[2]
+        if isinstance(reset_at, str):
+            reset_at = datetime.fromisoformat(reset_at)
+        return DailyQuotaSnapshot(
+            tenant_id=user_id,
+            plan_code=str(row[0]),
+            daily_count=int(row[1]),
+            daily_quota_reset_at=_ensure_utc(reset_at),
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -14,6 +14,7 @@ class EntitlementResult:
     allowed: bool
     limit: int
     current: int
+    plan_code: str
     reason: str | None = None
 
 
@@ -31,6 +32,7 @@ class EntitlementService:
             allowed=allowed,
             limit=plan.ask_database_per_day,
             current=current_daily_count,
+            plan_code=plan.code,
             reason=None if allowed else "daily_quota_exceeded",
         )
 
@@ -42,6 +44,7 @@ class EntitlementService:
             allowed=allowed,
             limit=plan.max_api_keys,
             current=current_key_count,
+            plan_code=plan.code,
             reason=None if allowed else "api_key_limit_reached",
         )
 
@@ -53,6 +56,7 @@ class EntitlementService:
             allowed=allowed,
             limit=plan.max_active_databases,
             current=current_db_count,
+            plan_code=plan.code,
             reason=None if allowed else "database_limit_reached",
         )
 
