@@ -8,6 +8,7 @@ wheels/
 
 # Environment variables
 .env
+frontend/.env.local
 
 # Databases
 *.db
@@ -37,3 +38,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Frontend build output and dependencies
+frontend/.next/
+frontend/node_modules/

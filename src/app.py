@@ -14,6 +14,7 @@ from cachetools import TTLCache  # type: ignore[import-untyped]
 from sqlalchemy import create_engine, event
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
 from src.api.app import api_app
@@ -147,6 +148,7 @@ async def lifespan(app: Starlette):
     api_app.state.token_store = token_store
     api_app.state.email_sender = email_sender
     api_app.state.cipher = cipher
+    api_app.state.query_log = query_log
 
     # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
     app.state.user_store = user_store
@@ -194,6 +196,13 @@ app = Starlette(
         Mount("/mcp", app=_mcp_app),
     ],
     middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allow_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        ),
         Middleware(RequestIDMiddleware),
         Middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes),
     ],

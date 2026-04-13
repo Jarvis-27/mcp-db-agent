@@ -14,16 +14,20 @@ from slowapi.util import get_remote_address
 from sqlalchemy import create_engine, text
 
 from src.api.schemas import (
+    ActiveDatabaseSummary,
     AdminStatusResponse,
     ApiKeyResponse,
     ClientSetupPayloadResponse,
     CreateApiKeyRequest,
     CreatedApiKeyResponse,
+    DashboardSummaryResponse,
     GenericAcceptedResponse,
     OnboardingDatabaseResponse,
     OnboardingStatusResponse,
     OwnerSessionResponse,
     PendingTenantItem,
+    QuotaSummary,
+    RecentQueryItem,
     RegisterRequest,
     RegistrationPendingResponse,
     RequestLoginLinkRequest,
@@ -36,6 +40,7 @@ from src.api.schemas import (
     SubmitDatabaseRequest,
     TenantMetaResponse,
     UpdateRequest,
+    UsageRecentResponse,
     VerifyEmailResponse,
 )
 from src.auth import onboarding
@@ -65,7 +70,10 @@ from src.auth.user_store import (
     UserStore,
 )
 from src.config import settings
+from src.entitlements.service import EntitlementService
 from src.setup import SetupPayloadEligibilityError, SetupPayloadInputError, SetupPayloadService
+
+_entitlements = EntitlementService()
 
 logger = logging.getLogger(__name__)
 
@@ -279,9 +287,7 @@ async def register(request: Request, body: RegisterRequest) -> RegistrationPendi
     try:
         token_store: TokenStore = request.app.state.token_store
         raw_token = token_store.issue_email_verification_token(membership_id)
-        verification_url = (
-            f"{settings.app_base_url}/api/v1/onboarding/verify-email?token={raw_token}"
-        )
+        verification_url = f"{settings.frontend_base_url}/auth/verify?token={raw_token}"
         email_sender = request.app.state.email_sender
         email_sender.send_verification_email(body.email, verification_url)
     except Exception as exc:
@@ -356,7 +362,7 @@ async def request_login_link(
         try:
             token_store: TokenStore = request.app.state.token_store
             raw_token = token_store.issue_owner_login_token(owner.membership_id)
-            login_url = f"{settings.app_base_url}/api/v1/auth/exchange-login-link?token={raw_token}"
+            login_url = f"{settings.frontend_base_url}/auth/login?token={raw_token}"
             request.app.state.email_sender.send_login_email(body.email, login_url)
         except Exception as exc:
             logger.warning("Failed to send login email for %s: %s", body.email, exc)
@@ -707,6 +713,72 @@ async def get_setup_payloads(
             chatgpt_developer_mode=_client_setup_response(payload.chatgpt_developer_mode),
             generic_http=_client_setup_response(payload.generic_http),
         ),
+    )
+
+
+@api_app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
+async def dashboard_summary(owner: AuthedOwner, request: Request) -> DashboardSummaryResponse:
+    user_store: UserStore = request.app.state.user_store
+    tenant = user_store.get_tenant(owner.tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    plan_code = str(tenant.plan_code)
+    daily_count = int(tenant.daily_query_count)
+    plan = _entitlements.get_plan(plan_code)
+    warning_level = _entitlements.quota_warning_level(plan_code, daily_count)
+
+    active_db = user_store.get_active_database(owner.tenant_id)
+    api_key_count = user_store.count_active_api_keys(owner.tenant_id)
+
+    return DashboardSummaryResponse(
+        tenant_id=owner.tenant_id,
+        account_status=str(tenant.account_status),
+        onboarding_status=str(tenant.status),
+        plan_code=plan_code,
+        billing_status=str(tenant.billing_status),
+        active_database=(
+            ActiveDatabaseSummary(
+                name=str(active_db.name),
+                validation_status=str(active_db.validation_status),
+            )
+            if active_db is not None
+            else None
+        ),
+        api_key_count=api_key_count,
+        quota=QuotaSummary(
+            daily_limit=plan.ask_database_per_day,
+            daily_used=daily_count,
+            daily_remaining=max(0, plan.ask_database_per_day - daily_count),
+            reset_at=tenant.daily_quota_reset_at,
+            warning_level=warning_level,
+        ),
+    )
+
+
+@api_app.get("/v1/usage/recent", response_model=UsageRecentResponse)
+async def usage_recent(
+    request: Request,
+    owner: AuthedOwner,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> UsageRecentResponse:
+    query_log = request.app.state.query_log
+    rows = query_log.get_recent_queries(limit=limit, tenant_id=owner.tenant_id)
+    return UsageRecentResponse(
+        items=[
+            RecentQueryItem(
+                id=int(r["id"]),
+                timestamp=str(r["timestamp"]),
+                question=str(r["question"]),
+                sql=str(r["sql"]) if r["sql"] is not None else None,
+                success=bool(r["success"]),
+                row_count=int(r["row_count"]) if r["row_count"] is not None else None,
+                duration_ms=int(r["duration_ms"]) if r["duration_ms"] is not None else None,
+                error=str(r["error"]) if r["error"] is not None else None,
+            )
+            for r in rows
+        ],
+        total=len(rows),
     )
 
 

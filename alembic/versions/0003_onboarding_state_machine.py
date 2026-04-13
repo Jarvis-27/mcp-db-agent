@@ -5,7 +5,7 @@ Revises: 0002
 Create Date: 2026-04-10 00:00:00.000000
 
 Changes:
-- users.database_url_enc: NOT NULL → nullable (DB URL is now submitted in a
+- users.database_url_enc: NOT NULL -> nullable (DB URL is now submitted in a
   separate onboarding step, not at registration time).
 - users.email_verified_at: new nullable DateTime column.
 - verification_tokens: new table for single-use email verification tokens and
@@ -25,7 +25,7 @@ depends_on = None
 
 def upgrade() -> None:
     # ------------------------------------------------------------------
-    # 1. Make database_url_enc nullable — DB URL is submitted post-verification
+    # 1. Make database_url_enc nullable - DB URL is submitted post-verification
     # ------------------------------------------------------------------
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column("database_url_enc", nullable=True)
@@ -40,15 +40,21 @@ def upgrade() -> None:
 
     # ------------------------------------------------------------------
     # 3. Data migration: rows that already have an api_key_hash are
-    #    pre-state-machine active users — mark them as such.
-    #    SQLite stores booleans as integers; PostgreSQL has a native BOOLEAN.
-    #    Using a CASE expression avoids dialect-specific TRUE/1 differences.
+    #    pre-state-machine active users - mark them as such.
+    #    Build the UPDATE with SQLAlchemy so the boolean predicate is compiled
+    #    correctly for both PostgreSQL and SQLite.
     # ------------------------------------------------------------------
+    users = sa.sql.table(
+        "users",
+        sa.Column("onboarding_status", sa.String()),
+        sa.Column("api_key_hash", sa.String()),
+        sa.Column("is_active", sa.Boolean()),
+    )
     op.execute(
-        sa.text(
-            "UPDATE users SET onboarding_status = 'active' "
-            "WHERE api_key_hash IS NOT NULL AND is_active IS NOT NULL AND is_active != 0"
-        )
+        users.update()
+        .where(users.c.api_key_hash.is_not(None))
+        .where(users.c.is_active.is_(True))
+        .values(onboarding_status="active")
     )
 
     # ------------------------------------------------------------------
@@ -89,7 +95,7 @@ def downgrade() -> None:
     with op.batch_alter_table("users") as batch_op:
         batch_op.drop_column("email_verified_at")
 
-    # Restore NOT NULL on database_url_enc — fill empty values with a placeholder
+    # Restore NOT NULL on database_url_enc - fill empty values with a placeholder
     # so the constraint can be applied without data loss on downgrade.
     op.execute("UPDATE users SET database_url_enc = 'placeholder' WHERE database_url_enc IS NULL")
     with op.batch_alter_table("users") as batch_op:

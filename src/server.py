@@ -472,7 +472,9 @@ async def ask_database(question: str) -> str:
             else "stdio"
         ),
         daily_count=(
-            quota_snapshot.daily_count if user_id != "__stdio__" and _user_store is not None else None
+            quota_snapshot.daily_count
+            if user_id != "__stdio__" and _user_store is not None
+            else None
         ),
         daily_limit=(
             entitlement.limit if user_id != "__stdio__" and _user_store is not None else None

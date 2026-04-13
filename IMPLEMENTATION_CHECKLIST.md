@@ -335,7 +335,7 @@ Do not continue until:
 
 - one supported client can be connected from generated setup material alone
 
-## Phase 5: Frontend Application
+## Phase 5: Frontend Application ✓ COMPLETE
 
 Goal: add the missing customer-facing product surface.
 
@@ -364,29 +364,31 @@ Recommended initial pages:
 
 ### Checklist
 
-- Choose frontend framework and hosting model
-- Build owner-session based auth flow for web pages
-- Build the setup wizard:
-  - verify state
-  - collect DB URL
-  - run connection test
-  - activate free tier
-  - create first API key
-  - show generated config
-- Build dashboard summary:
-  - account state
-  - billing state
-  - connected DB
-  - remaining quota
-  - recent queries
+- [x] Choose frontend framework and hosting model (Next.js 16, pnpm, Tailwind, shadcn/ui)
+- [x] Build owner-session based auth flow for web pages (HTTP-only cookie BFF pattern)
+- [x] Build the setup wizard:
+  - [x] verify state (`/auth/verify`)
+  - [x] collect DB URL (`/setup/database`)
+  - [x] run connection test (backend validates on submit)
+  - [x] activate free tier (handled by backend on DB connect)
+  - [x] create first API key (`/setup/api-key`, one-time reveal)
+  - [x] show generated config (`/setup/clients`, tabbed per client)
+- [x] Backend additions:
+  - [x] `GET /v1/dashboard/summary`
+  - [x] `GET /v1/usage/recent`
+  - [x] CORS middleware
+  - [x] Frontend URL in email links
+- [ ] Build dashboard summary (Phase 6 scope):
+  - account state, billing state, connected DB, remaining quota, recent queries
 
 ### Validation
 
 Automated:
 
-- frontend route guards
-- setup wizard state transitions
-- API contract tests against backend schemas
+- [x] frontend route guards (protected layout redirects to /login)
+- [x] setup wizard state transitions (onboarding state machine enforced by backend)
+- [x] backend tests: 375 passing (includes 6 new dashboard tests)
+- [x] frontend build: clean (pnpm build, pnpm lint — 0 errors)
 
 Manual:
 

@@ -58,6 +58,7 @@ def app_state():
         mock_settings.admin_api_key = "test-admin-key"
         mock_settings.register_rate_limit = "100/minute"
         mock_settings.app_base_url = "http://localhost:8000"
+        mock_settings.frontend_base_url = "http://localhost:3000"
         mock_settings.owner_session_ttl_hours = 24
         yield
 

@@ -1,5 +1,7 @@
 """Pydantic v2 request/response models for the tenant-backed REST API."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -175,3 +177,46 @@ class SetupPayloadResponse(BaseModel):
     api_key_state: SetupApiKeyStateResponse
     sample_prompts: list[str]
     clients: SetupClientsResponse
+
+
+# ── Dashboard / usage summary schemas ────────────────────────────────────────
+
+
+class ActiveDatabaseSummary(BaseModel):
+    name: str
+    validation_status: str
+
+
+class QuotaSummary(BaseModel):
+    daily_limit: int
+    daily_used: int
+    daily_remaining: int
+    reset_at: datetime
+    warning_level: str | None
+
+
+class DashboardSummaryResponse(BaseModel):
+    tenant_id: str
+    account_status: str
+    onboarding_status: str
+    plan_code: str
+    billing_status: str
+    active_database: ActiveDatabaseSummary | None
+    api_key_count: int
+    quota: QuotaSummary
+
+
+class RecentQueryItem(BaseModel):
+    id: int
+    timestamp: str
+    question: str
+    sql: str | None
+    success: bool
+    row_count: int | None
+    duration_ms: int | None
+    error: str | None
+
+
+class UsageRecentResponse(BaseModel):
+    items: list[RecentQueryItem]
+    total: int

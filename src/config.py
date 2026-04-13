@@ -76,8 +76,11 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_address: str | None = None
 
-    # ── Application base URL (used to build email verification links) ──
+    # ── Application base URL (used to build the MCP endpoint URL in setup payloads) ──
     app_base_url: str = "http://localhost:8000"
+
+    # ── Frontend base URL (used for email verification/login link redirects) ──
+    frontend_base_url: str = "http://localhost:3000"
 
     @field_validator("credential_encryption_keys")
     @classmethod
