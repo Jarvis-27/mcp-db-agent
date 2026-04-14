@@ -5,6 +5,26 @@ export function getBackendApiUrl(): string {
   return process.env.BACKEND_API_URL ?? 'http://localhost:8000'
 }
 
+/**
+ * Returns the public base URL (scheme + host) for building redirect URLs in
+ * route handlers that run behind a reverse proxy (e.g. nginx + certbot).
+ *
+ * nginx rewrites the Host to "localhost:3000" internally, but it also sets
+ * X-Forwarded-Proto and preserves the original Host header. Reading those
+ * headers lets us produce the correct public URL instead of
+ * "https://localhost:3000/…".
+ */
+export function getRequestBaseUrl(request: NextRequest): string {
+  const parsed = new URL(request.url)
+  const proto =
+    request.headers.get('x-forwarded-proto') ?? parsed.protocol.replace(':', '')
+  const host =
+    request.headers.get('x-forwarded-host') ??
+    request.headers.get('host') ??
+    parsed.host
+  return `${proto}://${host}`
+}
+
 export async function getApiErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
     const err = await res.json()
@@ -23,7 +43,7 @@ export function redirectWithError(
   pathname: '/auth/login' | '/auth/verify',
   message: string,
 ): NextResponse {
-  const url = new URL(pathname, request.url)
+  const url = new URL(pathname, getRequestBaseUrl(request))
   url.searchParams.set('error', message)
   return NextResponse.redirect(url)
 }
