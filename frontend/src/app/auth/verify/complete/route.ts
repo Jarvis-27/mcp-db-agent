@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import {
   getApiErrorMessage,
   getBackendApiUrl,
+  getRequestBaseUrl,
   redirectWithError,
   setOwnerSessionCookie,
 } from '@/lib/api/auth-callback'
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
 
   const data: VerifyEmailResponse = await res.json()
   const destination = resolveOnboardingDestination(data.status)
-  const response = NextResponse.redirect(new URL(destination, request.url))
+  const response = NextResponse.redirect(new URL(destination, getRequestBaseUrl(request)))
 
   setOwnerSessionCookie(response, data.owner_session_token, data.expires_in_seconds)
 
