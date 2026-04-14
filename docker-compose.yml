@@ -1,37 +1,15 @@
 services:
-  auth-db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: mcp_auth
-      POSTGRES_PASSWORD_FILE: /run/secrets/auth_db_password
-      POSTGRES_DB: mcp_auth
-    volumes:
-      - auth-db-data:/var/lib/postgresql/data
-    secrets:
-      - auth_db_password
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mcp_auth -d mcp_auth"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   mcp-server:
     build: .
+    container_name: mcp-db-agent
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
       ENVIRONMENT: production
-      AUTH_DATABASE_URL: postgresql://mcp_auth:${AUTH_DB_PASSWORD}@auth-db:5432/mcp_auth
+      AUTH_DATABASE_URL: ${AUTH_DATABASE_URL}
       CREDENTIAL_ENCRYPTION_KEYS: ${CREDENTIAL_ENCRYPTION_KEYS}
-    depends_on:
-      auth-db:
-        condition: service_healthy
-
-volumes:
-  auth-db-data:
-
-secrets:
-  auth_db_password:
-    file: ./secrets/auth_db_password.txt
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      REGISTRATION_OPEN: ${REGISTRATION_OPEN}
