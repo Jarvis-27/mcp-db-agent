@@ -86,7 +86,7 @@ export default function DatabaseSetupPage() {
             </div>
 
             <Button type="submit" className="w-full" disabled={isPending}>
-              {isPending ? 'Testing connection…' : 'Connect database'}
+              {isPending ? 'Testing connection...' : 'Connect database'}
             </Button>
           </form>
         </CardContent>

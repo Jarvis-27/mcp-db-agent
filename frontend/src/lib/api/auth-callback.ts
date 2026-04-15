@@ -12,7 +12,7 @@ export function getBackendApiUrl(): string {
  * nginx rewrites the Host to "localhost:3000" internally, but it also sets
  * X-Forwarded-Proto and preserves the original Host header. Reading those
  * headers lets us produce the correct public URL instead of
- * "https://localhost:3000/…".
+ * "https://localhost:3000/...".
  */
 export function getRequestBaseUrl(request: NextRequest): string {
   const parsed = new URL(request.url)
@@ -48,12 +48,12 @@ export function redirectWithError(
   return NextResponse.redirect(url)
 }
 
-export function setOwnerSessionCookie(
+export function setSessionCookie(
   response: NextResponse,
-  ownerSessionToken: string,
+  sessionToken: string,
   expiresInSeconds: number,
 ): void {
-  response.cookies.set('mdb_session', ownerSessionToken, {
+  response.cookies.set('mdb_session', sessionToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',

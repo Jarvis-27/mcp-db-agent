@@ -8,52 +8,53 @@ import pytest
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
 from src.auth.token_store import TokenStore
-from src.auth.user_store import Base, Tenant, UserStore
+from src.auth.user_store import Base, UserStore
 from src.email_sender import LogEmailSender
 
 _VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
 
 
-def _register_and_get_owner_session(client: TestClient, email: str) -> tuple[str, str]:
-    reg = client.post("/v1/users/register", json={"email": email})
-    assert reg.status_code == 201
+def _register_and_get_session(client: TestClient, email: str) -> tuple[str, str]:
+    """Register a user and return (user_id, session_token) after email verify."""
+    reg = client.post("/v1/auth/signup", json={"email": email})
+    assert reg.status_code == 201, reg.text
 
     store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
-    owner = store.get_owner_membership_by_email(email)
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
-    verify = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
-    assert verify.status_code == 200
-    return reg.json()["tenant_id"], verify.json()["owner_session_token"]
+    ctx = store.get_user_by_email(email)
+    assert ctx is not None
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
+    verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
+    assert verify.status_code == 200, verify.text
+    return reg.json()["user_id"], verify.json()["session_token"]
 
 
-def _activate_via_api(client: TestClient, owner_session: str) -> None:
+def _activate_via_api(client: TestClient, session_token: str) -> None:
     with (
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect"),
     ):
-        resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL, "name": "primary"},
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
 
 
-def _create_api_key(client: TestClient, owner_session: str, name: str = "default") -> str:
+def _create_api_key(client: TestClient, session_token: str, name: str = "default") -> str:
     resp = client.post(
-        "/v1/api-keys",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/api-keys",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"name": name, "scopes": ["mcp_read"]},
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     return resp.json()["api_key"]
 
 
@@ -74,7 +75,7 @@ def app_state():
     api_app.state.token_store = token_store
     api_app.state.email_sender = LogEmailSender()
     api_app.state.auth_key_cache = TTLCache(maxsize=100, ttl=60)
-    api_app.state.owner_session_cache = TTLCache(maxsize=100, ttl=60)
+    api_app.state.user_session_cache = TTLCache(maxsize=100, ttl=60)
     api_app.state.factory = None
 
     from src.api.app import limiter
@@ -88,11 +89,10 @@ def app_state():
         mock_settings.allow_sqlite_user_dbs = False
         mock_settings.billing_gate_enabled = False
         mock_settings.mfa_gate_enabled = False
-        mock_settings.admin_api_key = "test-admin-key"
         mock_settings.register_rate_limit = "100/minute"
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
-        mock_settings.owner_session_ttl_hours = 24
+        mock_settings.user_session_ttl_hours = 24
         yield
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -103,26 +103,26 @@ def client():
     return TestClient(api_app)
 
 
-def test_setup_payload_requires_owner_session(client):
-    resp = client.post("/v1/setup/payloads", json={})
+def test_setup_payload_requires_session(client):
+    resp = client.post("/v1/account/setup-payloads", json={})
     assert resp.status_code == 401
 
 
-def test_setup_payload_returns_tenant_scoped_payload_and_no_secret_leaks(client):
-    tenant_id, owner_session = _register_and_get_owner_session(client, "setup@example.com")
-    _activate_via_api(client, owner_session)
-    raw_key = _create_api_key(client, owner_session)
+def test_setup_payload_returns_user_scoped_payload_and_no_secret_leaks(client):
+    user_id, session_token = _register_and_get_session(client, "setup@example.com")
+    _activate_via_api(client, session_token)
+    raw_key = _create_api_key(client, session_token)
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"raw_api_key": raw_key},
     )
     assert resp.status_code == 200
     data = resp.json()
     payload_text = resp.text
 
-    assert data["tenant_id"] == tenant_id
+    assert data["user_id"] == user_id
     assert data["mcp_url"] == "http://localhost:8000/mcp"
     assert data["plan_code"] == "free"
     assert data["quota_summary"]["daily_limit"] == 25
@@ -131,18 +131,18 @@ def test_setup_payload_returns_tenant_scoped_payload_and_no_secret_leaks(client)
     assert raw_key in data["clients"]["vs_code"]["snippet"]
     assert "postgresql://user:pass@8.8.8.8/mydb" not in payload_text
     assert "key_hash" not in payload_text
-    assert "owner_session_token" not in payload_text
+    assert "session_token" not in payload_text
     assert data["clients"]["chatgpt_developer_mode"]["status"] == "unsupported_until_oauth"
 
 
 def test_setup_payload_uses_placeholders_when_raw_key_not_supplied(client):
-    _tenant_id, owner_session = _register_and_get_owner_session(client, "placeholder@example.com")
-    _activate_via_api(client, owner_session)
-    raw_key = _create_api_key(client, owner_session)
+    _user_id, session_token = _register_and_get_session(client, "placeholder@example.com")
+    _activate_via_api(client, session_token)
+    raw_key = _create_api_key(client, session_token)
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={},
     )
     assert resp.status_code == 200
@@ -156,17 +156,17 @@ def test_setup_payload_uses_placeholders_when_raw_key_not_supplied(client):
 
 
 def test_setup_payload_rejects_revoked_key(client):
-    tenant_id, owner_session = _register_and_get_owner_session(client, "revoked@example.com")
-    _activate_via_api(client, owner_session)
-    raw_key = _create_api_key(client, owner_session)
+    user_id, session_token = _register_and_get_session(client, "revoked@example.com")
+    _activate_via_api(client, session_token)
+    raw_key = _create_api_key(client, session_token)
 
     store: UserStore = api_app.state.user_store
-    active = next(row for row in store.list_api_keys(tenant_id) if row.revoked_at is None)
-    assert store.revoke_api_key(tenant_id, str(active.id)) is True
+    active = next(row for row in store.list_api_keys(user_id) if row.revoked_at is None)
+    assert store.revoke_api_key(user_id, str(active.id)) is True
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"raw_api_key": raw_key},
     )
     assert resp.status_code == 400
@@ -174,17 +174,17 @@ def test_setup_payload_rejects_revoked_key(client):
 
 
 def test_setup_payload_returns_placeholder_after_revoke(client):
-    tenant_id, owner_session = _register_and_get_owner_session(client, "after-revoke@example.com")
-    _activate_via_api(client, owner_session)
-    _raw_key = _create_api_key(client, owner_session)
+    user_id, session_token = _register_and_get_session(client, "after-revoke@example.com")
+    _activate_via_api(client, session_token)
+    _raw_key = _create_api_key(client, session_token)
 
     store: UserStore = api_app.state.user_store
-    active = next(row for row in store.list_api_keys(tenant_id) if row.revoked_at is None)
-    assert store.revoke_api_key(tenant_id, str(active.id)) is True
+    active = next(row for row in store.list_api_keys(user_id) if row.revoked_at is None)
+    assert store.revoke_api_key(user_id, str(active.id)) is True
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={},
     )
     assert resp.status_code == 200
@@ -198,11 +198,11 @@ def test_setup_payload_returns_placeholder_after_revoke(client):
 
 
 def test_setup_payload_returns_409_before_setup_complete(client):
-    _tenant_id, owner_session = _register_and_get_owner_session(client, "incomplete@example.com")
+    _user_id, session_token = _register_and_get_session(client, "incomplete@example.com")
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={},
     )
     assert resp.status_code == 409
@@ -210,21 +210,24 @@ def test_setup_payload_returns_409_before_setup_complete(client):
 
 
 def test_setup_payload_reports_live_pro_quota(client):
-    tenant_id, owner_session = _register_and_get_owner_session(client, "pro@example.com")
-    _activate_via_api(client, owner_session)
+    user_id, session_token = _register_and_get_session(client, "pro@example.com")
+    _activate_via_api(client, session_token)
 
     store: UserStore = api_app.state.user_store
     next_reset = datetime.now(UTC) + timedelta(hours=2)
-    with Session(store._engine) as session:
-        tenant = session.get(Tenant, tenant_id)
-        tenant.plan_code = "pro"  # type: ignore[assignment]
-        tenant.daily_query_count = 120  # type: ignore[assignment]
-        tenant.daily_quota_reset_at = next_reset  # type: ignore[assignment]
-        session.commit()
+    with store._engine.connect() as conn:
+        conn.execute(
+            text(
+                "UPDATE users SET plan_code = 'pro', daily_query_count = 120,"
+                " daily_quota_reset_at = :reset WHERE id = :id"
+            ),
+            {"reset": next_reset, "id": user_id},
+        )
+        conn.commit()
 
     resp = client.post(
-        "/v1/setup/payloads",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/setup-payloads",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={},
     )
     assert resp.status_code == 200

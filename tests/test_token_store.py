@@ -3,9 +3,11 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from src.auth.crypto import CredentialCipher
 from src.auth.token_store import (
     TokenAlreadyUsedError,
     TokenExpiredError,
@@ -14,8 +16,6 @@ from src.auth.token_store import (
     VerificationToken,
 )
 from src.auth.user_store import Base, UserStore
-from src.auth.crypto import CredentialCipher
-from cryptography.fernet import Fernet
 
 
 @pytest.fixture
@@ -37,37 +37,36 @@ def store(engine):
 
 
 @pytest.fixture
-def membership_id(engine):
+def user_id(engine):
     cipher = CredentialCipher([Fernet.generate_key().decode()])
     user_store = UserStore(engine, cipher)
-    _tenant_id, membership_id = user_store.create_tenant_with_owner("test@example.com")
-    return membership_id
+    return user_store.create_user("test@example.com")
 
 
-def test_issue_email_token_prefix(store, membership_id):
-    token = store.issue_email_verification_token(membership_id)
+def test_issue_email_token_prefix(store, user_id):
+    token = store.issue_email_verification_token(user_id)
     assert token.startswith("mdbkv_")
 
 
-def test_verify_email_token_returns_membership_id(store, membership_id):
-    raw = store.issue_email_verification_token(membership_id)
-    assert store.verify_email_token(raw) == membership_id
+def test_verify_email_token_returns_user_id(store, user_id):
+    raw = store.issue_email_verification_token(user_id)
+    assert store.verify_email_token(raw) == user_id
 
 
-def test_verify_email_token_is_single_use(store, membership_id):
-    raw = store.issue_email_verification_token(membership_id)
+def test_verify_email_token_is_single_use(store, user_id):
+    raw = store.issue_email_verification_token(user_id)
     store.verify_email_token(raw)
     with pytest.raises(TokenAlreadyUsedError):
         store.verify_email_token(raw)
 
 
-def test_verify_email_token_not_found(store, membership_id):
+def test_verify_email_token_not_found(store, user_id):
     with pytest.raises(TokenNotFoundError):
         store.verify_email_token("mdbkv_doesnotexist")
 
 
-def test_verify_email_token_expired(store, membership_id, engine):
-    raw = store.issue_email_verification_token(membership_id)
+def test_verify_email_token_expired(store, user_id, engine):
+    raw = store.issue_email_verification_token(user_id)
     token_hash = __import__("hashlib").sha256(raw.encode()).hexdigest()
     from sqlalchemy.orm import Session
 
@@ -80,24 +79,24 @@ def test_verify_email_token_expired(store, membership_id, engine):
         store.verify_email_token(raw)
 
 
-def test_issue_login_token_prefix(store, membership_id):
-    token = store.issue_owner_login_token(membership_id)
+def test_issue_login_token_prefix(store, user_id):
+    token = store.issue_user_login_token(user_id)
     assert token.startswith("mdbl_")
 
 
-def test_verify_login_token_returns_membership_id(store, membership_id):
-    raw = store.issue_owner_login_token(membership_id)
-    assert store.verify_owner_login_token(raw) == membership_id
+def test_verify_login_token_returns_user_id(store, user_id):
+    raw = store.issue_user_login_token(user_id)
+    assert store.verify_user_login_token(raw) == user_id
 
 
-def test_verify_login_token_is_single_use(store, membership_id):
-    raw = store.issue_owner_login_token(membership_id)
-    store.verify_owner_login_token(raw)
+def test_verify_login_token_is_single_use(store, user_id):
+    raw = store.issue_user_login_token(user_id)
+    store.verify_user_login_token(raw)
     with pytest.raises(TokenAlreadyUsedError):
-        store.verify_owner_login_token(raw)
+        store.verify_user_login_token(raw)
 
 
-def test_verify_login_token_wrong_purpose(store, membership_id):
-    raw = store.issue_email_verification_token(membership_id)
+def test_verify_login_token_wrong_purpose(store, user_id):
+    raw = store.issue_email_verification_token(user_id)
     with pytest.raises(TokenNotFoundError):
-        store.verify_owner_login_token(raw)
+        store.verify_user_login_token(raw)

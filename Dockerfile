@@ -24,7 +24,6 @@ USER app
 EXPOSE 8000
 
 ENV ENVIRONMENT=production
-ENV TRANSPORT=streamable-http
 ENV TRUSTED_PROXY_IPS=127.0.0.1
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
@@ -39,5 +38,4 @@ CMD ["sh", "-c", "exec uv run uvicorn src.app:app \
      --workers 4 \
      --proxy-headers --forwarded-allow-ips \"${TRUSTED_PROXY_IPS}\""]
 
-# For stdio single-user mode:
-# docker run -e TRANSPORT=stdio --entrypoint uv ... run src/server.py
+# Hosted HTTP is the only supported runtime in this image.

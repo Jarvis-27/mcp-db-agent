@@ -13,8 +13,8 @@ export async function submitDatabaseAction(
 
   if (!databaseUrl) return { error: 'Database URL is required.' }
 
-  const res = await backendFetch('/v1/onboarding/database', {
-    method: 'POST',
+  const res = await backendFetch('/v1/account/database', {
+    method: 'PUT',
     body: JSON.stringify({ database_url: databaseUrl, name: 'primary' }),
   })
 

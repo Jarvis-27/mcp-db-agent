@@ -1,28 +1,27 @@
-"""Pydantic v2 request/response models for the tenant-backed REST API."""
+"""Pydantic v2 request/response models for the user-account REST API."""
 
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class RegisterRequest(BaseModel):
+class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(..., min_length=1, max_length=254)
-    tenant_name: str | None = Field(default=None, max_length=200)
 
 
-class RegistrationPendingResponse(BaseModel):
-    tenant_id: str
+class SignupPendingResponse(BaseModel):
+    user_id: str
     status: str
     message: str
 
 
 class VerifyEmailResponse(BaseModel):
-    tenant_id: str
+    user_id: str
     status: str
     next_step: str
-    owner_session_token: str
+    session_token: str
     expires_in_seconds: int
 
 
@@ -36,10 +35,10 @@ class GenericAcceptedResponse(BaseModel):
     message: str
 
 
-class OwnerSessionResponse(BaseModel):
-    tenant_id: str
+class SessionResponse(BaseModel):
+    user_id: str
     status: str
-    owner_session_token: str
+    session_token: str
     expires_in_seconds: int
 
 
@@ -50,55 +49,33 @@ class SubmitDatabaseRequest(BaseModel):
     name: str | None = Field(default="primary", max_length=100)
 
 
-class OnboardingDatabaseResponse(BaseModel):
-    tenant_id: str
-    status: str  # onboarding progress state
-    account_status: str  # account health state
-    plan_code: str  # plan activated on completion
+class DatabaseResponse(BaseModel):
+    user_id: str
+    status: str        # onboarding progress state
+    account_status: str
+    plan_code: str
     next_step: str
 
 
-class AdminStatusResponse(BaseModel):
-    tenant_id: str
-    status: str  # onboarding progress state
-    account_status: str  # account health state
-
-
-class PendingTenantItem(BaseModel):
-    tenant_id: str
-    owner_email: str | None
-    created_at: str
-    onboarding_status: str
+class AccountStatusResponse(BaseModel):
+    user_id: str
+    status: str        # onboarding progress state
     account_status: str
-
-
-class TenantMetaResponse(BaseModel):
-    tenant_id: str
-    is_active: bool
-    created_at: str
-    status: str  # onboarding progress (backward compat)
-    account_status: str
-    plan_code: str
-    billing_status: str
-
-
-class UpdateRequest(BaseModel):
-    database_url: str | None = Field(default=None, max_length=2048)
-
-
-class RotateKeyResponse(BaseModel):
-    api_key: str
-
-
-class OnboardingStatusResponse(BaseModel):
-    tenant_id: str
-    status: str  # onboarding progress state
-    account_status: str  # account health state
     plan_code: str
     billing_status: str
     next_step: str
     blockers: list[str]
     can_issue_api_key: bool
+
+
+class AccountResponse(BaseModel):
+    user_id: str
+    is_active: bool
+    created_at: str
+    status: str        # onboarding progress
+    account_status: str
+    plan_code: str
+    billing_status: str
 
 
 class CreateApiKeyRequest(BaseModel):
@@ -121,6 +98,10 @@ class ApiKeyResponse(BaseModel):
 class CreatedApiKeyResponse(ApiKeyResponse):
     api_key: str
     warning: str = "Store this key now. We cannot show it to you again."
+
+
+class RotateKeyResponse(BaseModel):
+    api_key: str
 
 
 class SetupPayloadRequest(BaseModel):
@@ -167,7 +148,7 @@ class SetupClientsResponse(BaseModel):
 
 
 class SetupPayloadResponse(BaseModel):
-    tenant_id: str
+    user_id: str
     status: str
     account_status: str
     plan_code: str
@@ -196,7 +177,7 @@ class QuotaSummary(BaseModel):
 
 
 class DashboardSummaryResponse(BaseModel):
-    tenant_id: str
+    user_id: str
     account_status: str
     onboarding_status: str
     plan_code: str

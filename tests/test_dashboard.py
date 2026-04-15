@@ -1,4 +1,4 @@
-"""Tests for GET /v1/dashboard/summary and GET /v1/usage/recent endpoints."""
+"""Tests for GET /v1/account/dashboard and GET /v1/account/usage/recent endpoints."""
 
 from unittest.mock import patch
 
@@ -20,30 +20,31 @@ from src.email_sender import LogEmailSender
 _VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
 
 
-def _register_and_get_owner_session(client: TestClient, email: str) -> tuple[str, str]:
-    reg = client.post("/v1/users/register", json={"email": email})
-    assert reg.status_code == 201
+def _register_and_get_session(client: TestClient, email: str) -> tuple[str, str]:
+    reg = client.post("/v1/auth/signup", json={"email": email})
+    assert reg.status_code == 201, reg.text
 
     store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
-    owner = store.get_owner_membership_by_email(email)
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
-    verify = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
-    assert verify.status_code == 200
-    return reg.json()["tenant_id"], verify.json()["owner_session_token"]
+    ctx = store.get_user_by_email(email)
+    assert ctx is not None
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
+    verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
+    assert verify.status_code == 200, verify.text
+    return reg.json()["user_id"], verify.json()["session_token"]
 
 
-def _activate_tenant(client: TestClient, owner_session: str) -> None:
+def _activate_user(client: TestClient, session_token: str) -> None:
     with (
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect"),
     ):
-        resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL, "name": "primary"},
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +65,7 @@ def app_state():
     api_app.state.token_store = token_store
     api_app.state.email_sender = LogEmailSender()
     api_app.state.auth_key_cache = TTLCache(maxsize=100, ttl=60)
-    api_app.state.owner_session_cache = TTLCache(maxsize=100, ttl=60)
+    api_app.state.user_session_cache = TTLCache(maxsize=100, ttl=60)
     api_app.state.factory = None
     api_app.state.query_log = query_log
 
@@ -79,11 +80,10 @@ def app_state():
         mock_settings.allow_sqlite_user_dbs = False
         mock_settings.billing_gate_enabled = False
         mock_settings.mfa_gate_enabled = False
-        mock_settings.admin_api_key = "test-admin-key"
         mock_settings.register_rate_limit = "100/minute"
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
-        mock_settings.owner_session_ttl_hours = 24
+        mock_settings.user_session_ttl_hours = 24
         yield
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -98,19 +98,19 @@ def client():
 
 
 def test_dashboard_summary_requires_auth(client):
-    """Missing owner session → 401."""
-    resp = client.get("/v1/dashboard/summary")
+    """Missing session → 401."""
+    resp = client.get("/v1/account/dashboard")
     assert resp.status_code == 401
 
 
-def test_dashboard_summary_active_tenant(client):
-    """Active tenant with a connected database gets a complete summary."""
-    _, owner_session = _register_and_get_owner_session(client, "dash@example.com")
-    _activate_tenant(client, owner_session)
+def test_dashboard_summary_active_user(client):
+    """Active user with a connected database gets a complete summary."""
+    _, session_token = _register_and_get_session(client, "dash@example.com")
+    _activate_user(client, session_token)
 
     resp = client.get(
-        "/v1/dashboard/summary",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/dashboard",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -135,12 +135,12 @@ def test_dashboard_summary_active_tenant(client):
 
 
 def test_dashboard_summary_no_database_shows_null(client):
-    """Tenant who has verified email but not yet connected a DB gets active_database=null."""
-    _, owner_session = _register_and_get_owner_session(client, "nodbyet@example.com")
+    """User who has verified email but not yet connected a DB gets active_database=null."""
+    _, session_token = _register_and_get_session(client, "nodbyet@example.com")
 
     resp = client.get(
-        "/v1/dashboard/summary",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/dashboard",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -152,18 +152,18 @@ def test_dashboard_summary_no_database_shows_null(client):
 
 
 def test_usage_recent_requires_auth(client):
-    """Missing owner session → 401."""
-    resp = client.get("/v1/usage/recent")
+    """Missing session → 401."""
+    resp = client.get("/v1/account/usage/recent")
     assert resp.status_code == 401
 
 
 def test_usage_recent_empty(client):
-    """New tenant with no queries returns empty items list."""
-    _, owner_session = _register_and_get_owner_session(client, "noqueries@example.com")
+    """New user with no queries returns empty items list."""
+    _, session_token = _register_and_get_session(client, "noqueries@example.com")
 
     resp = client.get(
-        "/v1/usage/recent",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/usage/recent",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -173,8 +173,8 @@ def test_usage_recent_empty(client):
 
 def test_usage_recent_respects_limit(client):
     """Limit query param caps number of items returned."""
-    tenant_id, owner_session = _register_and_get_owner_session(client, "limitme@example.com")
-    _activate_tenant(client, owner_session)
+    user_id, session_token = _register_and_get_session(client, "limitme@example.com")
+    _activate_user(client, session_token)
 
     # Log 5 synthetic queries directly
     query_log: QueryLog = api_app.state.query_log
@@ -187,13 +187,13 @@ def test_usage_recent_respects_limit(client):
             attempts=1,
             duration_ms=10,
             error=None,
-            tenant_id=tenant_id,
+            user_id=user_id,
             api_key_id=None,
         )
 
     resp = client.get(
-        "/v1/usage/recent?limit=3",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/usage/recent?limit=3",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert resp.status_code == 200
     data = resp.json()

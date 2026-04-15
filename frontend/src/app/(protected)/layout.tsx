@@ -45,7 +45,7 @@ async function logoutAction() {
     const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000'
     await fetch(`${backendUrl}/api/v1/auth/logout`, {
       method: 'POST',
-      headers: { 'x-owner-session': session },
+      headers: { 'x-session-token': session },
     }).catch(() => {/* ignore network errors on logout */})
   }
   cookieStore.delete('mdb_session')

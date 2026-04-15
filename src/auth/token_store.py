@@ -1,4 +1,4 @@
-"""Token store for email-verification and owner-login links."""
+"""Token store for email-verification and user login links."""
 
 import hashlib
 import secrets
@@ -27,9 +27,9 @@ class VerificationToken(Base):
     __tablename__ = "verification_tokens"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    membership_id = Column(
+    user_id = Column(
         String(36),
-        ForeignKey("tenant_memberships.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -55,7 +55,7 @@ def _hash_token(raw_token: str) -> str:
 
 class TokenStore:
     PURPOSE_EMAIL = "email_verification"
-    PURPOSE_OWNER_LOGIN = "owner_login"
+    PURPOSE_USER_LOGIN = "user_login"
 
     def __init__(
         self,
@@ -67,18 +67,18 @@ class TokenStore:
         self._email_ttl = timedelta(minutes=email_token_ttl_minutes)
         self._login_ttl = timedelta(minutes=login_token_ttl_minutes)
 
-    def issue_email_verification_token(self, membership_id: str) -> str:
+    def issue_email_verification_token(self, user_id: str) -> str:
         return self._issue_token(
-            membership_id=membership_id,
+            user_id=user_id,
             purpose=self.PURPOSE_EMAIL,
             prefix="mdbkv_",
             ttl=self._email_ttl,
         )
 
-    def issue_owner_login_token(self, membership_id: str) -> str:
+    def issue_user_login_token(self, user_id: str) -> str:
         return self._issue_token(
-            membership_id=membership_id,
-            purpose=self.PURPOSE_OWNER_LOGIN,
+            user_id=user_id,
+            purpose=self.PURPOSE_USER_LOGIN,
             prefix="mdbl_",
             ttl=self._login_ttl,
         )
@@ -86,13 +86,13 @@ class TokenStore:
     def verify_email_token(self, raw_token: str) -> str:
         return self._consume_token(raw_token, self.PURPOSE_EMAIL)
 
-    def verify_owner_login_token(self, raw_token: str) -> str:
-        return self._consume_token(raw_token, self.PURPOSE_OWNER_LOGIN)
+    def verify_user_login_token(self, raw_token: str) -> str:
+        return self._consume_token(raw_token, self.PURPOSE_USER_LOGIN)
 
     def _issue_token(
         self,
         *,
-        membership_id: str,
+        user_id: str,
         purpose: str,
         prefix: str,
         ttl: timedelta,
@@ -102,15 +102,16 @@ class TokenStore:
         now = _utcnow()
 
         with Session(self._engine) as session:
+            # Invalidate any previous unused tokens for the same user + purpose
             session.query(VerificationToken).filter(
-                VerificationToken.membership_id == membership_id,
+                VerificationToken.user_id == user_id,
                 VerificationToken.purpose == purpose,
                 VerificationToken.used_at.is_(None),
             ).update({"used_at": now})
 
             token = VerificationToken(
                 id=str(uuid.uuid4()),
-                membership_id=membership_id,
+                user_id=user_id,
                 token_hash=token_hash,
                 purpose=purpose,
                 expires_at=now + ttl,
@@ -136,6 +137,6 @@ class TokenStore:
             if _ensure_utc(token.expires_at) < now:
                 raise TokenExpiredError("Token has expired.")
             token.used_at = now  # type: ignore[assignment]
-            membership_id = str(token.membership_id)
+            user_id = str(token.user_id)
             session.commit()
-            return membership_id
+            return user_id

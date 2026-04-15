@@ -58,4 +58,4 @@ pnpm typecheck    # tsc --noEmit
 
 ## Auth Model
 
-Session is stored in an HTTP-only `mdb_session` cookie set by Server Actions and Server Components. The raw token is never exposed to client-side JavaScript. All authenticated requests to the backend inject the cookie value via the `x-owner-session` header (server-side only).
+Session is stored in an HTTP-only `mdb_session` cookie set by Server Actions and Server Components. The raw token is never exposed to client-side JavaScript. All authenticated requests to the backend inject the cookie value via the `x-session-token` header (server-side only).

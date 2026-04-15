@@ -22,7 +22,6 @@ def pool():
 @pytest.fixture
 def mock_settings():
     s = MagicMock()
-    s.database_url = ""
     s.anthropic_api_key = "sk-ant-global"
     s.groq_api_key = "gsk-global"
     s.llm_provider = "anthropic"
@@ -35,7 +34,6 @@ def mock_settings():
     s.allow_sqlite_user_dbs = True  # allow for tests
     s.environment = "development"
     s.extra_blocked_cidrs = ""
-    s.sqlite_user_db_dir = "/tmp"
     s.auth_database_url = "sqlite:///./auth.db"
     return s
 
@@ -125,12 +123,12 @@ async def test_shutdown_disposes_all_engines(mock_settings, pool):
 
 
 # ---------------------------------------------------------------------------
-# LLM key resolution (server-owned keys after multi-tenant migration)
+# LLM key resolution (server-owned keys)
 # ---------------------------------------------------------------------------
 
 
 def test_server_anthropic_key_used(mock_settings, pool):
-    """After the multi-tenant migration, LLM keys come from server settings only."""
+    """LLM keys come from server settings only."""
     factory = PipelineFactory(mock_settings, pool)
     us = factory._build_user_settings(_make_user())
     assert us.anthropic_api_key == "sk-ant-global"
@@ -150,34 +148,6 @@ def test_no_llm_key_available_raises(mock_settings, pool):
     factory = PipelineFactory(mock_settings, pool)
     with pytest.raises(NoLLMKeyAvailable):
         factory._build_user_settings(_make_user())
-
-
-# ---------------------------------------------------------------------------
-# stdio backward compat
-# ---------------------------------------------------------------------------
-
-
-def test_get_from_settings_raises_without_database_url(mock_settings, pool):
-    mock_settings.database_url = ""
-    factory = PipelineFactory(mock_settings, pool)
-    with pytest.raises(RuntimeError, match="DATABASE_URL must be set"):
-        factory.get_from_settings(mock_settings)
-
-
-def test_get_from_settings_stdio_path_works(mock_settings, pool):
-    """Regression: get_from_settings previously passed stale kwargs to UserConfig,
-    raising TypeError: UserConfig.__init__() got an unexpected keyword argument 'llm_provider'.
-    Pre-seed the cache so no real DB connection is attempted; the UserConfig
-    construction (which was the crash site) runs before the cache check.
-    """
-    mock_settings.database_url = "sqlite:///./demo.db"
-    factory = PipelineFactory(mock_settings, pool)
-
-    expected = MagicMock()
-    factory._cache[("__stdio__", "sqlite:///./demo.db")] = expected
-
-    result = factory.get_from_settings(mock_settings)
-    assert result is expected
 
 
 # ---------------------------------------------------------------------------
@@ -212,18 +182,6 @@ async def test_invalidate_noop_for_unknown_user(mock_settings, pool):
 
     assert ("user-A", "postgres://db") in factory._cache
     engine_a.dispose.assert_not_called()
-
-
-async def test_invalidate_stdio_user_works(mock_settings, pool):
-    factory = PipelineFactory(mock_settings, pool)
-    engine = MagicMock()
-    c = MagicMock(engine=engine, inspector=MagicMock())
-    factory._cache[("__stdio__", "sqlite:///./demo.db")] = c
-
-    await factory.invalidate("__stdio__")
-
-    assert len(factory._cache) == 0
-    engine.dispose.assert_called_once()
 
 
 async def test_invalidate_evicts_all_entries_for_user(mock_settings, pool):

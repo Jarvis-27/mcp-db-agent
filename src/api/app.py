@@ -1,8 +1,7 @@
-"""FastAPI REST API for tenant registration, owner sessions, and key management."""
+"""FastAPI REST API — user account management, auth, and key management."""
 
 import asyncio
 import hashlib
-import hmac
 import logging
 from typing import Annotated
 
@@ -14,32 +13,29 @@ from slowapi.util import get_remote_address
 from sqlalchemy import create_engine, text
 
 from src.api.schemas import (
+    AccountResponse,
+    AccountStatusResponse,
     ActiveDatabaseSummary,
-    AdminStatusResponse,
     ApiKeyResponse,
     ClientSetupPayloadResponse,
     CreateApiKeyRequest,
     CreatedApiKeyResponse,
     DashboardSummaryResponse,
+    DatabaseResponse,
     GenericAcceptedResponse,
-    OnboardingDatabaseResponse,
-    OnboardingStatusResponse,
-    OwnerSessionResponse,
-    PendingTenantItem,
     QuotaSummary,
     RecentQueryItem,
-    RegisterRequest,
-    RegistrationPendingResponse,
     RequestLoginLinkRequest,
     RotateKeyResponse,
+    SessionResponse,
     SetupApiKeyStateResponse,
     SetupClientsResponse,
     SetupPayloadRequest,
     SetupPayloadResponse,
     SetupQuotaSummaryResponse,
+    SignupPendingResponse,
+    SignupRequest,
     SubmitDatabaseRequest,
-    TenantMetaResponse,
-    UpdateRequest,
     UsageRecentResponse,
     VerifyEmailResponse,
 )
@@ -47,7 +43,6 @@ from src.auth import onboarding
 from src.auth.onboarding import (
     ACCOUNT_ACTIVE,
     ACCOUNT_CLOSED,
-    ACCOUNT_RESTRICTED,
     ACCOUNT_SUSPENDED,
     PENDING_DB_CONNECTION,
     PENDING_EMAIL_VERIFICATION,
@@ -64,9 +59,9 @@ from src.auth.token_store import (
 from src.auth.url_guard import InvalidDatabaseURL, validate_database_url
 from src.auth.user_store import (
     EntitlementExceededError,
-    OwnerSessionContext,
     StateTransitionError,
     UserConfig,
+    UserSessionContext,
     UserStore,
 )
 from src.config import settings
@@ -79,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 
-api_app = FastAPI(title="MCP Database Analytics - Management API")
+api_app = FastAPI(title="MCP Database Analytics - Account API")
 api_app.state.limiter = limiter
 api_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
@@ -94,8 +89,8 @@ def _extract_raw_key(request: Request) -> str | None:
     return None
 
 
-def _extract_owner_session(request: Request) -> str | None:
-    token = request.headers.get("x-owner-session")
+def _extract_session_token(request: Request) -> str | None:
+    token = request.headers.get("x-session-token")
     if token:
         return token.strip()
     auth = request.headers.get("authorization", "")
@@ -123,34 +118,27 @@ def require_api_key(request: Request) -> UserConfig:
     return user_config
 
 
-def require_owner_session(request: Request) -> OwnerSessionContext:
-    raw_token = _extract_owner_session(request)
+def require_user_session(request: Request) -> UserSessionContext:
+    raw_token = _extract_session_token(request)
     if not raw_token:
-        raise HTTPException(status_code=401, detail="Missing owner session")
+        raise HTTPException(status_code=401, detail="Missing session token")
 
     user_store: UserStore = request.app.state.user_store
-    cache = request.app.state.owner_session_cache
+    cache = request.app.state.user_session_cache
 
     cache_key = hashlib.sha256(raw_token.encode()).hexdigest()
-    owner: OwnerSessionContext | None = cache.get(cache_key)
-    if owner is None:
-        owner = user_store.get_owner_by_session(raw_token)
-        if owner is None:
-            raise HTTPException(status_code=401, detail="Invalid or expired owner session")
-        cache[cache_key] = owner
+    ctx: UserSessionContext | None = cache.get(cache_key)
+    if ctx is None:
+        ctx = user_store.get_user_by_session(raw_token)
+        if ctx is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        cache[cache_key] = ctx
 
-    return owner
-
-
-def require_admin_key(request: Request) -> None:
-    provided = request.headers.get("x-admin-key", "")
-    expected = settings.admin_api_key or ""
-    if not expected or not hmac.compare_digest(provided.encode(), expected.encode()):
-        raise HTTPException(status_code=403, detail="Invalid or missing admin key")
+    return ctx
 
 
 AuthedUser = Annotated[UserConfig, Depends(require_api_key)]
-AuthedOwner = Annotated[OwnerSessionContext, Depends(require_owner_session)]
+AuthedSession = Annotated[UserSessionContext, Depends(require_user_session)]
 
 
 def _dry_run_connect(database_url: str, timeout: int = 5) -> None:
@@ -179,57 +167,43 @@ def _dry_run_connect(database_url: str, timeout: int = 5) -> None:
         )
 
 
-def _bust_tenant_caches(request: Request, tenant_id: str, api_key_id: str | None = None) -> None:
+def _bust_user_caches(request: Request, user_id: str, api_key_id: str | None = None) -> None:
     auth_cache = request.app.state.auth_key_cache
     for key in list(auth_cache.keys()):
         value = auth_cache.get(key)
         if value is None:
             continue
-        if value.user_id == tenant_id or (
+        if value.user_id == user_id or (
             api_key_id is not None and value.api_key_id == api_key_id
         ):
             del auth_cache[key]
 
-    owner_cache = request.app.state.owner_session_cache
-    for key in list(owner_cache.keys()):
-        value = owner_cache.get(key)
-        if value is not None and value.tenant_id == tenant_id:
-            del owner_cache[key]
+    session_cache = request.app.state.user_session_cache
+    for key in list(session_cache.keys()):
+        value = session_cache.get(key)
+        if value is not None and value.user_id == user_id:
+            del session_cache[key]
 
     factory = getattr(request.app.state, "factory", None)
     if factory is not None:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(factory.invalidate(tenant_id))
+                loop.create_task(factory.invalidate(user_id))
         except Exception:
             pass
 
 
 def _build_blockers(onboarding_status: str, account_status: str) -> list[str]:
-    """Return a list of symbolic blockers for the current tenant state."""
     blockers: list[str] = []
-
-    # Onboarding blockers
     if onboarding_status == PENDING_EMAIL_VERIFICATION:
         blockers.append("email_verification")
-    elif onboarding_status == "pending_billing":
-        blockers.append("billing")
-    elif onboarding_status == "pending_mfa":
-        blockers.append("mfa")
     elif onboarding_status == PENDING_DB_CONNECTION:
         blockers.append("database_connection")
-    elif onboarding_status == "pending_review":
-        blockers.append("admin_review")
-
-    # Account-health blockers
     if account_status == ACCOUNT_SUSPENDED:
         blockers.append("account_suspended")
     elif account_status == ACCOUNT_CLOSED:
         blockers.append("account_closed")
-    elif account_status == ACCOUNT_RESTRICTED:
-        blockers.append("account_restricted")
-
     return blockers
 
 
@@ -265,42 +239,43 @@ def _client_setup_response(payload) -> ClientSetupPayloadResponse:
     )
 
 
-@api_app.post("/v1/users/register", response_model=RegistrationPendingResponse, status_code=201)
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+
+@api_app.post("/v1/auth/signup", response_model=SignupPendingResponse, status_code=201)
 @limiter.limit(settings.register_rate_limit)
-async def register(request: Request, body: RegisterRequest) -> RegistrationPendingResponse:
+async def signup(request: Request, body: SignupRequest) -> SignupPendingResponse:
     if not settings.registration_open:
         raise HTTPException(status_code=403, detail="Registration is currently closed.")
 
     user_store: UserStore = request.app.state.user_store
-    existing = user_store.get_owner_membership_by_email(body.email)
-    if existing is not None and existing.account_status != ACCOUNT_CLOSED:
+    if user_store.email_exists(body.email):
         raise HTTPException(
             status_code=409,
             detail="An account with this email address already exists.",
         )
 
-    tenant_id, membership_id = user_store.create_tenant_with_owner(
-        email=body.email,
-        tenant_name=body.tenant_name,
-    )
+    user_id = user_store.create_user(email=body.email)
 
     try:
         token_store: TokenStore = request.app.state.token_store
-        raw_token = token_store.issue_email_verification_token(membership_id)
+        raw_token = token_store.issue_email_verification_token(user_id)
         verification_url = f"{settings.frontend_base_url}/auth/verify?token={raw_token}"
         email_sender = request.app.state.email_sender
         email_sender.send_verification_email(body.email, verification_url)
     except Exception as exc:
-        logger.warning("Failed to send verification email for tenant %s: %s", tenant_id, exc)
+        logger.warning("Failed to send verification email for user %s: %s", user_id, exc)
 
-    return RegistrationPendingResponse(
-        tenant_id=tenant_id,
+    return SignupPendingResponse(
+        user_id=user_id,
         status=PENDING_EMAIL_VERIFICATION,
-        message="Tenant created. Check your email and verify your address to continue.",
+        message="Account created. Check your email and verify your address to continue.",
     )
 
 
-@api_app.get("/v1/onboarding/verify-email", response_model=VerifyEmailResponse)
+@api_app.get("/v1/auth/verify-email", response_model=VerifyEmailResponse)
 async def verify_email(
     token: str = Query(..., description="Email verification token from the verification link"),
     request: Request = ...,  # type: ignore[assignment]
@@ -309,7 +284,7 @@ async def verify_email(
     user_store: UserStore = request.app.state.user_store
 
     try:
-        membership_id = token_store.verify_email_token(token)
+        user_id = token_store.verify_email_token(token)
     except TokenNotFoundError:
         raise HTTPException(status_code=400, detail="Invalid verification token.")
     except TokenExpiredError:
@@ -317,34 +292,32 @@ async def verify_email(
     except TokenAlreadyUsedError:
         raise HTTPException(status_code=400, detail="Verification token has already been used.")
 
-    owner = user_store.get_owner_membership_by_id(membership_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="Owner membership not found")
-    if owner.onboarding_status != PENDING_EMAIL_VERIFICATION:
+    user = user_store.get_user_row(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if str(user.onboarding_status) != PENDING_EMAIL_VERIFICATION:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot verify email: tenant is in '{owner.onboarding_status}' state.",
+            detail=f"Cannot verify email: account is in '{user.onboarding_status}' state.",
         )
 
-    user_store.set_email_verified(membership_id)
+    user_store.set_email_verified(user_id)
     new_state = onboarding.resolve_next_state(
         PENDING_EMAIL_VERIFICATION,
         TRIGGER_EMAIL_VERIFIED,
-        billing_gate_enabled=settings.billing_gate_enabled,
-        mfa_gate_enabled=settings.mfa_gate_enabled,
     )
-    user_store.transition_tenant_state(owner.tenant_id, new_state)
-    owner_session_token = user_store.issue_owner_session(
-        membership_id,
-        ttl_hours=settings.owner_session_ttl_hours,
+    user_store.transition_user_state(user_id, new_state)
+    session_token = user_store.issue_user_session(
+        user_id,
+        ttl_hours=settings.user_session_ttl_hours,
     )
 
     return VerifyEmailResponse(
-        tenant_id=owner.tenant_id,
+        user_id=user_id,
         status=new_state,
         next_step=onboarding.get_next_step_description(new_state),
-        owner_session_token=owner_session_token,
-        expires_in_seconds=settings.owner_session_ttl_hours * 3600,
+        session_token=session_token,
+        expires_in_seconds=settings.user_session_ttl_hours * 3600,
     )
 
 
@@ -356,12 +329,12 @@ async def request_login_link(
     request: Request, body: RequestLoginLinkRequest
 ) -> GenericAcceptedResponse:
     user_store: UserStore = request.app.state.user_store
-    owner = user_store.get_owner_membership_by_email(body.email)
+    ctx = user_store.get_user_by_email(body.email)
 
-    if owner is not None and owner.onboarding_status != PENDING_EMAIL_VERIFICATION:
+    if ctx is not None and ctx.onboarding_status != PENDING_EMAIL_VERIFICATION:
         try:
             token_store: TokenStore = request.app.state.token_store
-            raw_token = token_store.issue_owner_login_token(owner.membership_id)
+            raw_token = token_store.issue_user_login_token(ctx.user_id)
             login_url = f"{settings.frontend_base_url}/auth/login?token={raw_token}"
             request.app.state.email_sender.send_login_email(body.email, login_url)
         except Exception as exc:
@@ -370,16 +343,16 @@ async def request_login_link(
     return GenericAcceptedResponse(message="If an account exists, a sign-in link has been sent.")
 
 
-@api_app.get("/v1/auth/exchange-login-link", response_model=OwnerSessionResponse)
+@api_app.get("/v1/auth/exchange-login-link", response_model=SessionResponse)
 async def exchange_login_link(
-    token: str = Query(..., description="Owner login token from the email link"),
+    token: str = Query(..., description="Login token from the email link"),
     request: Request = ...,  # type: ignore[assignment]
-) -> OwnerSessionResponse:
+) -> SessionResponse:
     token_store: TokenStore = request.app.state.token_store
     user_store: UserStore = request.app.state.user_store
 
     try:
-        membership_id = token_store.verify_owner_login_token(token)
+        user_id = token_store.verify_user_login_token(token)
     except TokenNotFoundError:
         raise HTTPException(status_code=400, detail="Invalid login token.")
     except TokenExpiredError:
@@ -387,68 +360,75 @@ async def exchange_login_link(
     except TokenAlreadyUsedError:
         raise HTTPException(status_code=400, detail="Login token has already been used.")
 
-    owner = user_store.get_owner_membership_by_id(membership_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="Owner membership not found")
-    if owner.onboarding_status == PENDING_EMAIL_VERIFICATION:
+    user = user_store.get_user_row(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if str(user.onboarding_status) == PENDING_EMAIL_VERIFICATION:
         raise HTTPException(
             status_code=409,
             detail="Email must be verified before using a login link.",
         )
 
-    owner_session_token = user_store.issue_owner_session(
-        membership_id,
-        ttl_hours=settings.owner_session_ttl_hours,
+    session_token = user_store.issue_user_session(
+        user_id,
+        ttl_hours=settings.user_session_ttl_hours,
     )
-    return OwnerSessionResponse(
-        tenant_id=owner.tenant_id,
-        status=owner.onboarding_status,
-        owner_session_token=owner_session_token,
-        expires_in_seconds=settings.owner_session_ttl_hours * 3600,
+    return SessionResponse(
+        user_id=user_id,
+        status=str(user.onboarding_status),
+        session_token=session_token,
+        expires_in_seconds=settings.user_session_ttl_hours * 3600,
     )
 
 
 @api_app.post("/v1/auth/logout", status_code=204)
-async def logout(request: Request, owner: AuthedOwner) -> Response:
-    raw_token = _extract_owner_session(request)
+async def logout(request: Request, session: AuthedSession) -> Response:
+    raw_token = _extract_session_token(request)
     if raw_token:
-        request.app.state.user_store.revoke_owner_session(raw_token)
-    _bust_tenant_caches(request, owner.tenant_id)
+        request.app.state.user_store.revoke_user_session(raw_token)
+    _bust_user_caches(request, session.user_id)
     return Response(status_code=204)
 
 
-@api_app.get("/v1/onboarding/status", response_model=OnboardingStatusResponse)
-async def onboarding_status(owner: AuthedOwner, request: Request) -> OnboardingStatusResponse:
+# ---------------------------------------------------------------------------
+# Account endpoints (session-authenticated)
+# ---------------------------------------------------------------------------
+
+
+@api_app.get("/v1/account/status", response_model=AccountStatusResponse)
+async def account_status(session: AuthedSession, request: Request) -> AccountStatusResponse:
     user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(owner.tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    onboarding_st = str(tenant.status)
-    account_st = str(tenant.account_status)
-    return OnboardingStatusResponse(
-        tenant_id=owner.tenant_id,
+    user = user_store.get_user_row(session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    onboarding_st = str(user.onboarding_status)
+    account_st = str(user.account_status)
+    return AccountStatusResponse(
+        user_id=session.user_id,
         status=onboarding_st,
         account_status=account_st,
-        plan_code=str(tenant.plan_code),
-        billing_status=str(tenant.billing_status),
+        plan_code=str(user.plan_code),
+        billing_status=str(user.billing_status),
         next_step=onboarding.get_next_step_description(onboarding_st),
         blockers=_build_blockers(onboarding_st, account_st),
-        can_issue_api_key=user_store.owner_can_issue_api_keys(owner.tenant_id),
+        can_issue_api_key=user_store.user_can_issue_api_keys(session.user_id),
     )
 
 
-@api_app.post("/v1/onboarding/database", response_model=OnboardingDatabaseResponse)
+@api_app.put("/v1/account/database", response_model=DatabaseResponse)
 async def submit_database(
     body: SubmitDatabaseRequest,
     request: Request,
-    owner: AuthedOwner,
-) -> OnboardingDatabaseResponse:
+    session: AuthedSession,
+) -> DatabaseResponse:
     user_store: UserStore = request.app.state.user_store
-    current_status = user_store.get_tenant_status(owner.tenant_id)
-    if current_status != PENDING_DB_CONNECTION:
+    current_status = user_store.get_user_onboarding_status(session.user_id)
+
+    # Accept both pending_db_connection (first setup) and setup_complete (reconnect)
+    if current_status not in (PENDING_DB_CONNECTION, SETUP_COMPLETE):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot submit database: tenant is in '{current_status}' state.",
+            detail=f"Cannot submit database: account is in '{current_status}' state.",
         )
 
     try:
@@ -462,23 +442,21 @@ async def submit_database(
     await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     encrypted_url = request.app.state.cipher.encrypt(sanitized_url_str)
-    try:
-        user_store.upsert_active_database(
-            owner.tenant_id, encrypted_url, name=(body.name or "primary")
-        )
-    except EntitlementExceededError as exc:
-        return _entitlement_conflict_response(exc)
+    user_store.upsert_user_database(
+        session.user_id, encrypted_url, name=(body.name or "primary")
+    )
 
-    # Self-serve activation: db_submitted → setup_complete, account becomes active on free plan.
-    onboarding.resolve_next_state(PENDING_DB_CONNECTION, TRIGGER_DB_SUBMITTED)
-    user_store.activate_tenant(owner.tenant_id)
-    _bust_tenant_caches(request, owner.tenant_id)
+    # Activate on first DB submission; on reconnect keep existing status
+    if current_status == PENDING_DB_CONNECTION:
+        user_store.activate_user(session.user_id)
 
-    tenant = user_store.get_tenant(owner.tenant_id)
-    plan_code = str(tenant.plan_code) if tenant is not None else "free"
+    _bust_user_caches(request, session.user_id)
 
-    return OnboardingDatabaseResponse(
-        tenant_id=owner.tenant_id,
+    user = user_store.get_user_row(session.user_id)
+    plan_code = str(user.plan_code) if user is not None else "free"
+
+    return DatabaseResponse(
+        user_id=session.user_id,
         status=SETUP_COMPLETE,
         account_status=ACCOUNT_ACTIVE,
         plan_code=plan_code,
@@ -486,127 +464,11 @@ async def submit_database(
     )
 
 
-@api_app.get("/v1/admin/tenants/pending", response_model=list[PendingTenantItem])
-async def list_pending_tenants(
-    request: Request,
-    _: None = Depends(require_admin_key),
-) -> list[PendingTenantItem]:
-    """List tenants with a restricted account status (admin risk holds)."""
-    user_store: UserStore = request.app.state.user_store
-    rows = user_store.list_tenants_by_account_status(ACCOUNT_RESTRICTED)
-    return [
-        PendingTenantItem(
-            tenant_id=str(tenant.id),
-            owner_email=None if owner is None else owner.email,
-            created_at=tenant.created_at.isoformat(),
-            onboarding_status=str(tenant.status),
-            account_status=str(tenant.account_status),
-        )
-        for tenant, owner in rows
-    ]
-
-
-@api_app.post("/v1/admin/tenants/{tenant_id}/approve", response_model=AdminStatusResponse)
-async def approve_tenant(
-    tenant_id: str,
-    request: Request,
-    _: None = Depends(require_admin_key),
-) -> AdminStatusResponse:
-    """Clear a risk hold: sets account_status from restricted → active.
-
-    Also handles the case where the tenant is in pending_review onboarding state
-    by completing their onboarding to setup_complete.
-    """
-    user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    account_st = str(tenant.account_status)
-    if account_st == ACCOUNT_CLOSED:
-        raise HTTPException(status_code=409, detail="Cannot approve a closed tenant.")
-    if account_st not in (ACCOUNT_RESTRICTED, ACCOUNT_SUSPENDED):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Tenant account_status is '{account_st}'; only restricted or suspended tenants can be approved.",
-        )
-
-    # If onboarding is still in pending_review, complete it.
-    onboarding_st = str(tenant.status)
-    if onboarding_st == "pending_review":
-        user_store.transition_tenant_state(tenant_id, SETUP_COMPLETE)
-
-    user_store.set_account_status(tenant_id, ACCOUNT_ACTIVE)
-    _bust_tenant_caches(request, tenant_id)
-
-    tenant_updated = user_store.get_tenant(tenant_id)
-    return AdminStatusResponse(
-        tenant_id=tenant_id,
-        status=str(tenant_updated.status) if tenant_updated else SETUP_COMPLETE,
-        account_status=ACCOUNT_ACTIVE,
-    )
-
-
-@api_app.post("/v1/admin/tenants/{tenant_id}/suspend", response_model=AdminStatusResponse)
-async def suspend_tenant(
-    tenant_id: str,
-    request: Request,
-    _: None = Depends(require_admin_key),
-) -> AdminStatusResponse:
-    user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    account_st = str(tenant.account_status)
-    if account_st == ACCOUNT_CLOSED:
-        raise HTTPException(status_code=409, detail="Cannot suspend a closed tenant.")
-    if account_st == ACCOUNT_SUSPENDED:
-        raise HTTPException(status_code=409, detail="Tenant is already suspended.")
-
-    ok = user_store.set_account_status(tenant_id, ACCOUNT_SUSPENDED)
-    if not ok:
-        raise HTTPException(status_code=409, detail="Could not suspend tenant.")
-
-    _bust_tenant_caches(request, tenant_id)
-    return AdminStatusResponse(
-        tenant_id=tenant_id,
-        status=str(tenant.status),
-        account_status=ACCOUNT_SUSPENDED,
-    )
-
-
-@api_app.post("/v1/admin/tenants/{tenant_id}/close", response_model=AdminStatusResponse)
-async def close_tenant(
-    tenant_id: str,
-    request: Request,
-    _: None = Depends(require_admin_key),
-) -> AdminStatusResponse:
-    user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    if str(tenant.account_status) == ACCOUNT_CLOSED:
-        raise HTTPException(status_code=409, detail="Tenant is already closed.")
-
-    ok = user_store.set_account_status(tenant_id, ACCOUNT_CLOSED)
-    if not ok:
-        raise HTTPException(status_code=409, detail="Could not close tenant.")
-
-    _bust_tenant_caches(request, tenant_id)
-    return AdminStatusResponse(
-        tenant_id=tenant_id,
-        status=str(tenant.status),
-        account_status=ACCOUNT_CLOSED,
-    )
-
-
-@api_app.post("/v1/api-keys", response_model=CreatedApiKeyResponse, status_code=201)
+@api_app.post("/v1/account/api-keys", response_model=CreatedApiKeyResponse, status_code=201)
 async def create_api_key(
     body: CreateApiKeyRequest,
     request: Request,
-    owner: AuthedOwner,
+    session: AuthedSession,
 ) -> CreatedApiKeyResponse:
     allowed_scopes = {"mcp_read", "api_key_admin"}
     bad_scopes = [scope for scope in body.scopes if scope not in allowed_scopes]
@@ -616,17 +478,16 @@ async def create_api_key(
     user_store: UserStore = request.app.state.user_store
     try:
         raw_key, api_key = user_store.create_api_key(
-            tenant_id=owner.tenant_id,
+            user_id=session.user_id,
             name=body.name,
             scopes=body.scopes,
-            created_by_membership_id=owner.membership_id,
         )
     except EntitlementExceededError as exc:
         return _entitlement_conflict_response(exc)
     except StateTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    _bust_tenant_caches(request, owner.tenant_id)
+    _bust_user_caches(request, session.user_id)
     return CreatedApiKeyResponse(
         id=str(api_key.id),
         name=str(api_key.name),
@@ -639,10 +500,10 @@ async def create_api_key(
     )
 
 
-@api_app.get("/v1/api-keys", response_model=list[ApiKeyResponse])
-async def list_api_keys(request: Request, owner: AuthedOwner) -> list[ApiKeyResponse]:
+@api_app.get("/v1/account/api-keys", response_model=list[ApiKeyResponse])
+async def list_api_keys(request: Request, session: AuthedSession) -> list[ApiKeyResponse]:
     user_store: UserStore = request.app.state.user_store
-    rows = user_store.list_api_keys(owner.tenant_id)
+    rows = user_store.list_api_keys(session.user_id)
     return [
         ApiKeyResponse(
             id=str(row.id),
@@ -657,35 +518,55 @@ async def list_api_keys(request: Request, owner: AuthedOwner) -> list[ApiKeyResp
     ]
 
 
-@api_app.delete("/v1/api-keys/{api_key_id}", status_code=204)
-async def revoke_api_key(api_key_id: str, request: Request, owner: AuthedOwner) -> Response:
+@api_app.delete("/v1/account/api-keys/{api_key_id}", status_code=204)
+async def revoke_api_key(
+    api_key_id: str, request: Request, session: AuthedSession
+) -> Response:
     user_store: UserStore = request.app.state.user_store
-    revoked = user_store.revoke_api_key(owner.tenant_id, api_key_id)
+    revoked = user_store.revoke_api_key(session.user_id, api_key_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="API key not found")
-    _bust_tenant_caches(request, owner.tenant_id, api_key_id=api_key_id)
+    _bust_user_caches(request, session.user_id, api_key_id=api_key_id)
     return Response(status_code=204)
 
 
-@api_app.post("/v1/setup/payloads", response_model=SetupPayloadResponse)
+@api_app.post(
+    "/v1/account/api-keys/{api_key_id}/rotate", response_model=RotateKeyResponse
+)
+@limiter.limit("10/hour")
+async def rotate_api_key(
+    api_key_id: str, request: Request, session: AuthedSession
+) -> RotateKeyResponse:
+    user_store: UserStore = request.app.state.user_store
+    try:
+        new_raw_key = user_store.rotate_api_key(session.user_id, api_key_id)
+    except EntitlementExceededError as exc:
+        return _entitlement_conflict_response(exc)
+    except (StateTransitionError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    _bust_user_caches(request, session.user_id, api_key_id=api_key_id)
+    return RotateKeyResponse(api_key=new_raw_key)
+
+
+@api_app.post("/v1/account/setup-payloads", response_model=SetupPayloadResponse)
 async def get_setup_payloads(
     body: SetupPayloadRequest,
     request: Request,
-    owner: AuthedOwner,
+    session: AuthedSession,
 ) -> SetupPayloadResponse:
     user_store: UserStore = request.app.state.user_store
     service = SetupPayloadService(user_store, app_base_url=settings.app_base_url)
     try:
-        payload = service.build_payload(owner.tenant_id, raw_api_key=body.raw_api_key)
+        payload = service.build_payload(session.user_id, raw_api_key=body.raw_api_key)
     except LookupError:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+        raise HTTPException(status_code=404, detail="User not found")
     except SetupPayloadInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except SetupPayloadEligibilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
     return SetupPayloadResponse(
-        tenant_id=payload.tenant_id,
+        user_id=payload.user_id,
         status=payload.status,
         account_status=payload.account_status,
         plan_code=payload.plan_code,
@@ -716,31 +597,33 @@ async def get_setup_payloads(
     )
 
 
-@api_app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
-async def dashboard_summary(owner: AuthedOwner, request: Request) -> DashboardSummaryResponse:
+@api_app.get("/v1/account/dashboard", response_model=DashboardSummaryResponse)
+async def dashboard_summary(
+    session: AuthedSession, request: Request
+) -> DashboardSummaryResponse:
     user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(owner.tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    user = user_store.get_user_row(session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    plan_code = str(tenant.plan_code)
-    daily_count = int(tenant.daily_query_count)
+    plan_code = str(user.plan_code)
+    daily_count = int(user.daily_query_count)
     plan = _entitlements.get_plan(plan_code)
     warning_level = _entitlements.quota_warning_level(plan_code, daily_count)
 
-    active_db = user_store.get_active_database(owner.tenant_id)
-    api_key_count = user_store.count_active_api_keys(owner.tenant_id)
+    active_db = user_store.get_active_database(session.user_id)
+    api_key_count = user_store.count_active_api_keys(session.user_id)
 
     return DashboardSummaryResponse(
-        tenant_id=owner.tenant_id,
-        account_status=str(tenant.account_status),
-        onboarding_status=str(tenant.status),
+        user_id=session.user_id,
+        account_status=str(user.account_status),
+        onboarding_status=str(user.onboarding_status),
         plan_code=plan_code,
-        billing_status=str(tenant.billing_status),
+        billing_status=str(user.billing_status),
         active_database=(
             ActiveDatabaseSummary(
-                name=str(active_db.name),
-                validation_status=str(active_db.validation_status),
+                name=active_db.name,
+                validation_status=active_db.validation_status,
             )
             if active_db is not None
             else None
@@ -750,20 +633,20 @@ async def dashboard_summary(owner: AuthedOwner, request: Request) -> DashboardSu
             daily_limit=plan.ask_database_per_day,
             daily_used=daily_count,
             daily_remaining=max(0, plan.ask_database_per_day - daily_count),
-            reset_at=tenant.daily_quota_reset_at,
+            reset_at=user.daily_quota_reset_at,
             warning_level=warning_level,
         ),
     )
 
 
-@api_app.get("/v1/usage/recent", response_model=UsageRecentResponse)
+@api_app.get("/v1/account/usage/recent", response_model=UsageRecentResponse)
 async def usage_recent(
     request: Request,
-    owner: AuthedOwner,
+    session: AuthedSession,
     limit: int = Query(default=20, ge=1, le=100),
 ) -> UsageRecentResponse:
     query_log = request.app.state.query_log
-    rows = query_log.get_recent_queries(limit=limit, tenant_id=owner.tenant_id)
+    rows = query_log.get_recent_queries(limit=limit, user_id=session.user_id)
     return UsageRecentResponse(
         items=[
             RecentQueryItem(
@@ -782,78 +665,33 @@ async def usage_recent(
     )
 
 
-@api_app.get("/v1/users/me", response_model=TenantMetaResponse)
-async def get_me(request: Request, user: AuthedUser) -> TenantMetaResponse:
+# ---------------------------------------------------------------------------
+# Account meta (API-key-authenticated)
+# ---------------------------------------------------------------------------
+
+
+@api_app.get("/v1/account", response_model=AccountResponse)
+async def get_account(request: Request, session: AuthedSession) -> AccountResponse:
     user_store: UserStore = request.app.state.user_store
-    tenant = user_store.get_tenant(user.user_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    account_st = str(tenant.account_status)
-    onboarding_st = str(tenant.status)
-    return TenantMetaResponse(
-        tenant_id=str(tenant.id),
+    row = user_store.get_user_row(session.user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    account_st = str(row.account_status)
+    onboarding_st = str(row.onboarding_status)
+    return AccountResponse(
+        user_id=str(row.id),
         is_active=account_st == ACCOUNT_ACTIVE and onboarding_st == SETUP_COMPLETE,
-        created_at=tenant.created_at.isoformat(),
+        created_at=row.created_at.isoformat(),
         status=onboarding_st,
         account_status=account_st,
-        plan_code=str(tenant.plan_code),
-        billing_status=str(tenant.billing_status),
+        plan_code=str(row.plan_code),
+        billing_status=str(row.billing_status),
     )
 
 
-@api_app.put("/v1/users/me", status_code=200)
-async def update_me(request: Request, body: UpdateRequest, user: AuthedUser) -> dict:
-    if not user.is_active:
-        raise HTTPException(
-            status_code=403,
-            detail="Tenant must be active to update the registered database.",
-        )
-
-    if body.database_url:
-        try:
-            sanitized_url = validate_database_url(
-                body.database_url, allow_sqlite=settings.allow_sqlite_user_dbs
-            )
-        except InvalidDatabaseURL as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
-        await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
-        encrypted = request.app.state.cipher.encrypt(sanitized_url_str)
-        try:
-            request.app.state.user_store.upsert_active_database(
-                user.user_id,
-                encrypted,
-                name="primary",
-            )
-        except EntitlementExceededError as exc:
-            return _entitlement_conflict_response(exc)
-
-    _bust_tenant_caches(request, user.user_id)
-    return {"detail": "Updated successfully"}
-
-
-@api_app.post("/v1/users/me/rotate-key", response_model=RotateKeyResponse)
-@limiter.limit("10/hour")
-async def rotate_key(request: Request, user: AuthedUser) -> RotateKeyResponse:
-    if user.api_key_id is None:
-        raise HTTPException(status_code=409, detail="Current key metadata is unavailable.")
-    user_store: UserStore = request.app.state.user_store
-    try:
-        new_raw_key = user_store.rotate_api_key(user.user_id, user.api_key_id)
-    except EntitlementExceededError as exc:
-        return _entitlement_conflict_response(exc)
-    except (StateTransitionError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    _bust_tenant_caches(request, user.user_id, api_key_id=user.api_key_id)
-    return RotateKeyResponse(api_key=new_raw_key)
-
-
-@api_app.delete("/v1/users/me", status_code=410)
-async def delete_me(_: Request, __: AuthedUser) -> Response:
-    raise HTTPException(
-        status_code=410,
-        detail="DELETE /v1/users/me is deprecated. Close the tenant via an owner session or admin action.",
-    )
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 
 @api_app.get("/health/live")

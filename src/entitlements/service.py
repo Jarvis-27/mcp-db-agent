@@ -1,6 +1,6 @@
 """Entitlement evaluation service.
 
-Provides server-side quota and limit checks keyed on the tenant's plan_code.
+Provides server-side quota and limit checks keyed on the user's plan_code.
 All decisions are evaluated server-side — never trust client-supplied plan data.
 """
 
@@ -19,7 +19,7 @@ class EntitlementResult:
 
 
 class EntitlementService:
-    """Evaluate whether a tenant action is within their plan entitlements."""
+    """Evaluate whether a user action is within their plan entitlements."""
 
     def get_plan(self, plan_code: str) -> Plan:
         return get_plan(plan_code)
@@ -37,7 +37,7 @@ class EntitlementService:
         )
 
     def check_api_key_quota(self, plan_code: str, current_key_count: int) -> EntitlementResult:
-        """Check if the tenant can create another API key."""
+        """Check if the user can create another API key."""
         plan = get_plan(plan_code)
         allowed = current_key_count < plan.max_api_keys
         return EntitlementResult(
@@ -49,7 +49,7 @@ class EntitlementService:
         )
 
     def check_database_quota(self, plan_code: str, current_db_count: int) -> EntitlementResult:
-        """Check if the tenant can connect another database."""
+        """Check if the user can connect another database."""
         plan = get_plan(plan_code)
         allowed = current_db_count < plan.max_active_databases
         return EntitlementResult(
@@ -61,7 +61,7 @@ class EntitlementService:
         )
 
     def quota_warning_level(self, plan_code: str, current_daily_count: int) -> str | None:
-        """Return a warning level string if the tenant is approaching their daily quota.
+        """Return a warning level string if the user is approaching their daily quota.
 
         Returns 'critical' at 100%, 'high' at 80%, 'medium' at 50%, None otherwise.
         """

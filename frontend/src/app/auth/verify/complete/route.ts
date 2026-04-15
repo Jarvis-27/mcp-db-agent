@@ -5,7 +5,7 @@ import {
   getBackendApiUrl,
   getRequestBaseUrl,
   redirectWithError,
-  setOwnerSessionCookie,
+  setSessionCookie,
 } from '@/lib/api/auth-callback'
 import { resolveOnboardingDestination } from '@/lib/onboarding'
 import type { VerifyEmailResponse } from '@/types/api'
@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   }
 
   const res = await fetch(
-    `${getBackendApiUrl()}/api/v1/onboarding/verify-email?token=${encodeURIComponent(token)}`,
+    `${getBackendApiUrl()}/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`,
     { cache: 'no-store' },
   )
 
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
   const destination = resolveOnboardingDestination(data.status)
   const response = NextResponse.redirect(new URL(destination, getRequestBaseUrl(request)))
 
-  setOwnerSessionCookie(response, data.owner_session_token, data.expires_in_seconds)
+  setSessionCookie(response, data.session_token, data.expires_in_seconds)
 
   return response
 }

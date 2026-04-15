@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from src.auth.onboarding import ACCOUNT_ACTIVE, SETUP_COMPLETE
-from src.auth.user_store import ApiKey, Tenant, UserStore
+from src.auth.user_store import ApiKey, User, UserStore
 from src.entitlements.service import EntitlementService
 from src.setup.config_templates import (
     build_chatgpt_payload,
@@ -26,7 +26,7 @@ class SetupPayloadInputError(ValueError):
 
 
 class SetupPayloadEligibilityError(ValueError):
-    """Raised when the tenant is not eligible to receive setup payloads."""
+    """Raised when the user is not eligible to receive setup payloads."""
 
 
 @dataclass(frozen=True)
@@ -47,22 +47,22 @@ class SetupPayloadService:
         self._app_base_url = app_base_url.rstrip("/")
         self._entitlements = entitlements or EntitlementService()
 
-    def build_payload(self, tenant_id: str, *, raw_api_key: str | None = None) -> SetupPayload:
-        tenant = self._user_store.get_tenant(tenant_id)
-        if tenant is None:
-            raise LookupError(f"Tenant {tenant_id} not found")
-        self._ensure_eligible(tenant)
+    def build_payload(self, user_id: str, *, raw_api_key: str | None = None) -> SetupPayload:
+        user = self._user_store.get_user_row(user_id)
+        if user is None:
+            raise LookupError(f"User {user_id} not found")
+        self._ensure_eligible(user)
 
-        selected_key = self._select_api_key(tenant_id, raw_api_key=raw_api_key)
-        active_key_count = self._user_store.count_active_api_keys(tenant_id)
-        plan = self._entitlements.get_plan(str(tenant.plan_code))
-        daily_used = int(tenant.daily_query_count)
+        selected_key = self._select_api_key(user_id, raw_api_key=raw_api_key)
+        active_key_count = self._user_store.count_active_api_keys(user_id)
+        plan = self._entitlements.get_plan(str(user.plan_code))
+        daily_used = int(user.daily_query_count)
         quota_summary = SetupQuotaSummary(
             daily_limit=plan.ask_database_per_day,
             daily_used=daily_used,
             daily_remaining=max(plan.ask_database_per_day - daily_used, 0),
-            reset_at=_ensure_utc(tenant.daily_quota_reset_at),
-            warning_level=self._entitlements.quota_warning_level(str(tenant.plan_code), daily_used),
+            reset_at=_ensure_utc(user.daily_quota_reset_at),
+            warning_level=self._entitlements.quota_warning_level(str(user.plan_code), daily_used),
         )
         key_state = SetupApiKeyState(
             active_key_count=active_key_count,
@@ -81,11 +81,11 @@ class SetupPayloadService:
         mcp_url = f"{self._app_base_url}/mcp"
         raw_key = selected_key.raw_key
         return SetupPayload(
-            tenant_id=tenant_id,
-            status=str(tenant.status),
-            account_status=str(tenant.account_status),
-            plan_code=str(tenant.plan_code),
-            billing_status=str(tenant.billing_status),
+            user_id=user_id,
+            status=str(user.onboarding_status),
+            account_status=str(user.account_status),
+            plan_code=str(user.plan_code),
+            billing_status=str(user.billing_status),
             mcp_url=mcp_url,
             quota_summary=quota_summary,
             api_key_state=key_state,
@@ -96,35 +96,35 @@ class SetupPayloadService:
             generic_http=build_generic_http_payload(mcp_url, raw_key),
         )
 
-    def _ensure_eligible(self, tenant: Tenant) -> None:
-        if str(tenant.account_status) != ACCOUNT_ACTIVE:
+    def _ensure_eligible(self, user: User) -> None:
+        if str(user.account_status) != ACCOUNT_ACTIVE:
             raise SetupPayloadEligibilityError(
-                "Tenant account must be active before requesting setup payloads."
+                "Account must be active before requesting setup payloads."
             )
-        if str(tenant.status) != SETUP_COMPLETE:
+        if str(user.onboarding_status) != SETUP_COMPLETE:
             raise SetupPayloadEligibilityError(
-                "Tenant setup must be complete before requesting setup payloads."
+                "Account setup must be complete before requesting setup payloads."
             )
-        if self._user_store.get_active_database(str(tenant.id)) is None:
+        if user.db_url_enc is None:
             raise SetupPayloadEligibilityError(
-                "Tenant must have an active database before requesting setup payloads."
+                "Account must have an active database before requesting setup payloads."
             )
 
-    def _select_api_key(self, tenant_id: str, *, raw_api_key: str | None) -> _SelectedApiKey:
+    def _select_api_key(self, user_id: str, *, raw_api_key: str | None) -> _SelectedApiKey:
         normalized = None if raw_api_key is None else raw_api_key.strip()
         if normalized:
-            api_key = self._user_store.get_active_api_key_for_tenant_by_raw_key(
-                tenant_id,
+            api_key = self._user_store.get_active_api_key_for_user_by_raw_key(
+                user_id,
                 normalized,
             )
             if api_key is None:
                 raise SetupPayloadInputError(
-                    "Provided raw_api_key does not match an active API key for this tenant."
+                    "Provided raw_api_key does not match an active API key for this account."
                 )
             return _SelectedApiKey(api_key=api_key, raw_key=normalized)
 
         active_key = next(
-            (row for row in self._user_store.list_api_keys(tenant_id) if row.revoked_at is None),
+            (row for row in self._user_store.list_api_keys(user_id) if row.revoked_at is None),
             None,
         )
         return _SelectedApiKey(api_key=active_key, raw_key=None)

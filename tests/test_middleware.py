@@ -12,9 +12,9 @@ from sqlalchemy.pool import StaticPool
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
 from src.auth.middleware import ApiKeyMiddleware, user_config_var
+from src.auth.onboarding import ACCOUNT_SUSPENDED
 from src.auth.token_store import TokenStore
 from src.auth.user_store import Base, UserConfig, UserStore
-from src.config import settings
 from src.email_sender import LogEmailSender
 
 
@@ -213,7 +213,8 @@ async def test_non_http_scope_passes_through():
     assert passed == ["lifespan"]
 
 
-async def test_suspended_tenant_loses_mcp_access_after_admin_suspend():
+async def test_suspended_user_loses_mcp_access():
+    """After account suspension (cache cleared), MCP access is denied."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -231,19 +232,21 @@ async def test_suspended_tenant_loses_mcp_access_after_admin_suspend():
         api_app.state.token_store = token_store
         api_app.state.email_sender = LogEmailSender()
         api_app.state.auth_key_cache = auth_cache
-        api_app.state.owner_session_cache = TTLCache(maxsize=100, ttl=60)
+        api_app.state.user_session_cache = TTLCache(maxsize=100, ttl=60)
         api_app.state.factory = None
 
-        tenant_id, membership_id = store.create_tenant_with_owner("mcp-suspend@example.com")
-        store.set_email_verified(membership_id)
-        store.transition_tenant_state(tenant_id, "pending_db_connection")
-        store.upsert_active_database(tenant_id, cipher.encrypt("postgresql://user:pass@8.8.8.8/db"))
-        store.activate_tenant(tenant_id)
-        api_key, _ = store.create_api_key(
-            tenant_id=tenant_id,
+        # Create active user with API key
+        user_id = store.create_user("mcp-suspend@example.com")
+        store.set_email_verified(user_id)
+        store.transition_user_state(user_id, "pending_db_connection")
+        store.upsert_user_database(
+            user_id, cipher.encrypt("postgresql://user:pass@8.8.8.8/db")
+        )
+        store.activate_user(user_id)
+        raw_key, _ = store.create_api_key(
+            user_id=user_id,
             name="default",
             scopes=["mcp_read"],
-            created_by_membership_id=membership_id,
         )
 
         async def inner_app(scope, receive, send):
@@ -251,22 +254,18 @@ async def test_suspended_tenant_loses_mcp_access_after_admin_suspend():
             await send({"type": "http.response.body", "body": b""})
 
         mw = ApiKeyMiddleware(inner_app, store, auth_cache)
-        scope = _http_scope([(b"x-api-key", api_key.encode())])
+        scope = _http_scope([(b"x-api-key", raw_key.encode())])
 
+        # First request succeeds and populates cache
         first_status, _ = await _collect_response(mw, scope)
         assert first_status == 200
         assert len(auth_cache) == 1
 
-        with patch.object(settings, "admin_api_key", "test-admin-key"):
-            with TestClient(api_app) as client:
-                resp = client.post(
-                    f"/v1/admin/tenants/{tenant_id}/suspend",
-                    headers={"x-admin-key": "test-admin-key"},
-                )
+        # Suspend the user and manually clear the cache (simulating a suspension event)
+        store.set_account_status(user_id, ACCOUNT_SUSPENDED)
+        auth_cache.clear()
 
-        assert resp.status_code == 200
-        assert len(auth_cache) == 0
-
+        # Next request must fail because the store now returns None for suspended users
         second_status, body = await _collect_response(mw, scope)
         assert second_status == 401
         assert b"Invalid or inactive API key" in body

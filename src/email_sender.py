@@ -1,4 +1,4 @@
-"""Email sender abstraction for verification and owner login links."""
+"""Email sender abstraction for verification and account sign-in links."""
 
 import logging
 import smtplib
@@ -61,7 +61,7 @@ class SMTPEmailSender:
 
     def send_login_email(self, to_address: str, login_url: str) -> None:
         body = (
-            "<p>Use the link below to sign in to your tenant owner session:</p>"
+            "<p>Use the link below to sign in to your account:</p>"
             f'<p><a href="{login_url}">{login_url}</a></p>'
             "<p>This link expires shortly. If you did not request it, you can ignore this email.</p>"
         )

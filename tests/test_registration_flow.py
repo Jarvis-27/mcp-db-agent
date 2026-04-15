@@ -1,4 +1,4 @@
-"""Integration tests for the tenant-backed onboarding flow."""
+"""Integration tests for the user-backed onboarding flow."""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -40,7 +40,7 @@ def app_state():
     api_app.state.email_sender = LogEmailSender()
     api_app.state.cipher = cipher
     api_app.state.auth_key_cache = TTLCache(maxsize=100, ttl=60)
-    api_app.state.owner_session_cache = TTLCache(maxsize=100, ttl=60)
+    api_app.state.user_session_cache = TTLCache(maxsize=100, ttl=60)
     api_app.state.factory = None
 
     from src.api.app import limiter
@@ -55,11 +55,10 @@ def app_state():
         mock_settings.allow_sqlite_user_dbs = False
         mock_settings.billing_gate_enabled = False
         mock_settings.mfa_gate_enabled = False
-        mock_settings.admin_api_key = "test-admin-key"
         mock_settings.register_rate_limit = "100/minute"
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
-        mock_settings.owner_session_ttl_hours = 24
+        mock_settings.user_session_ttl_hours = 24
         yield
 
     Base.metadata.drop_all(engine)
@@ -71,31 +70,48 @@ def client():
     return TestClient(api_app)
 
 
+def _register_and_get_session(client, email: str) -> tuple[str, str]:
+    """Register a user and return (user_id, session_token) after email verify."""
+    reg = client.post("/v1/auth/signup", json={"email": email})
+    assert reg.status_code == 201, reg.text
+    user_id = reg.json()["user_id"]
+
+    store: UserStore = api_app.state.user_store
+    token_store: TokenStore = api_app.state.token_store
+    ctx = store.get_user_by_email(email)
+    assert ctx is not None
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
+
+    verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
+    assert verify.status_code == 200, verify.text
+    return user_id, verify.json()["session_token"]
+
+
 def test_happy_path_self_serve_activation(client):
-    """Full self-serve lifecycle: register → verify → connect DB → active (no admin step)."""
-    # 1. Register
-    reg = client.post("/v1/users/register", json={"email": "user@example.com"})
+    """Full self-serve lifecycle: signup → verify → connect DB → active (no admin step)."""
+    # 1. Sign up
+    reg = client.post("/v1/auth/signup", json={"email": "user@example.com"})
     assert reg.status_code == 201
-    tenant_id = reg.json()["tenant_id"]
+    user_id = reg.json()["user_id"]
     assert reg.json()["status"] == "pending_email_verification"
 
     # 2. Retrieve the verification token directly from the token store
     token_store: TokenStore = api_app.state.token_store
     store: UserStore = api_app.state.user_store
-    owner = store.get_owner_membership_by_email("user@example.com")
-    assert owner is not None
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
+    ctx = store.get_user_by_email("user@example.com")
+    assert ctx is not None
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
 
     # 3. Verify email
-    verify = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
+    verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
     assert verify.status_code == 200
-    owner_session = verify.json()["owner_session_token"]
+    session_token = verify.json()["session_token"]
     assert verify.json()["status"] == "pending_db_connection"
 
-    # 4. Check onboarding status
+    # 4. Check account status
     status = client.get(
-        "/v1/onboarding/status",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/status",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert status.status_code == 200
     assert status.json()["status"] == "pending_db_connection"
@@ -105,23 +121,23 @@ def test_happy_path_self_serve_activation(client):
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect"),
     ):
-        db_resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        db_resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL, "name": "primary"},
         )
     assert db_resp.status_code == 200
     data = db_resp.json()
-    # Phase 1 invariant: db submission goes to setup_complete, not pending_review.
+    # Invariant: db submission goes to setup_complete immediately.
     assert data["status"] == "setup_complete"
     assert data["account_status"] == "active"
     assert data["plan_code"] == "free"
-    assert data["tenant_id"] == tenant_id
+    assert data["user_id"] == user_id
 
-    # 6. Verify onboarding status shows active + setup_complete
+    # 6. Verify account status shows active + setup_complete
     final_status = client.get(
-        "/v1/onboarding/status",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/status",
+        headers={"Authorization": f"Bearer {session_token}"},
     )
     assert final_status.status_code == 200
     assert final_status.json()["status"] == "setup_complete"
@@ -131,57 +147,40 @@ def test_happy_path_self_serve_activation(client):
 
 
 def test_no_admin_approval_required_on_happy_path(client):
-    """Confirm that a tenant reaches setup_complete without any admin endpoint being called."""
-    reg = client.post("/v1/users/register", json={"email": "nonadmin@example.com"})
+    """Confirm that a user reaches setup_complete without any admin endpoint being called."""
+    reg = client.post("/v1/auth/signup", json={"email": "nonadmin@example.com"})
     assert reg.status_code == 201
 
     store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
-    owner = store.get_owner_membership_by_email("nonadmin@example.com")
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
+    ctx = store.get_user_by_email("nonadmin@example.com")
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
 
-    verify = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
-    owner_session = verify.json()["owner_session_token"]
+    verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
+    session_token = verify.json()["session_token"]
 
     with (
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect"),
     ):
-        db_resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        db_resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL},
         )
     assert db_resp.status_code == 200
-    # Directly active — no pending_review state was ever reached.
     assert db_resp.json()["status"] == "setup_complete"
     assert db_resp.json()["account_status"] == "active"
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: failure cases
+# Failure cases
 # ---------------------------------------------------------------------------
-
-
-def _register_and_get_owner_session(client) -> tuple[str, str]:
-    """Register a user and return (tenant_id, owner_session_token) after email verify."""
-    reg = client.post("/v1/users/register", json={"email": "flow@example.com"})
-    assert reg.status_code == 201
-    tenant_id = reg.json()["tenant_id"]
-
-    store: UserStore = api_app.state.user_store
-    token_store: TokenStore = api_app.state.token_store
-    owner = store.get_owner_membership_by_email("flow@example.com")
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
-
-    verify = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
-    assert verify.status_code == 200
-    return tenant_id, verify.json()["owner_session_token"]
 
 
 def test_invalid_verification_token_returns_400(client):
     """A bogus verification token is rejected with 400."""
-    resp = client.get("/v1/onboarding/verify-email?token=mdbkv_doesnotexist")
+    resp = client.get("/v1/auth/verify-email?token=mdbkv_doesnotexist")
     assert resp.status_code == 400
     assert "invalid" in resp.json()["detail"].lower()
 
@@ -191,16 +190,16 @@ def test_already_used_verification_token_returns_400(client):
     store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
 
-    client.post("/v1/users/register", json={"email": "reuse@example.com"})
-    owner = store.get_owner_membership_by_email("reuse@example.com")
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
+    client.post("/v1/auth/signup", json={"email": "reuse@example.com"})
+    ctx = store.get_user_by_email("reuse@example.com")
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
 
     # First use succeeds.
-    first = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
+    first = client.get(f"/v1/auth/verify-email?token={raw_token}")
     assert first.status_code == 200
 
     # Second use is rejected.
-    second = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
+    second = client.get(f"/v1/auth/verify-email?token={raw_token}")
     assert second.status_code == 400
     assert "already been used" in second.json()["detail"].lower()
 
@@ -213,9 +212,9 @@ def test_expired_verification_token_returns_400(client):
     store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
 
-    client.post("/v1/users/register", json={"email": "expired@example.com"})
-    owner = store.get_owner_membership_by_email("expired@example.com")
-    raw_token = token_store.issue_email_verification_token(owner.membership_id)
+    client.post("/v1/auth/signup", json={"email": "expired@example.com"})
+    ctx = store.get_user_by_email("expired@example.com")
+    raw_token = token_store.issue_email_verification_token(ctx.user_id)
     token_hash = sha256(raw_token.encode()).hexdigest()
 
     with Session(store._engine) as session:
@@ -223,17 +222,17 @@ def test_expired_verification_token_returns_400(client):
         token.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.commit()
 
-    resp = client.get(f"/v1/onboarding/verify-email?token={raw_token}")
+    resp = client.get(f"/v1/auth/verify-email?token={raw_token}")
     assert resp.status_code == 400
     assert "expired" in resp.json()["detail"].lower()
 
 
 def test_invalid_database_url_returns_400(client):
     """A URL with a blocked scheme is rejected with 400 before any connection attempt."""
-    _tenant_id, owner_session = _register_and_get_owner_session(client)
-    resp = client.post(
-        "/v1/onboarding/database",
-        headers={"Authorization": f"Bearer {owner_session}"},
+    _user_id, session_token = _register_and_get_session(client, "flow@example.com")
+    resp = client.put(
+        "/v1/account/database",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"database_url": "sqlite:///./local.db"},
     )
     assert resp.status_code == 400
@@ -241,7 +240,7 @@ def test_invalid_database_url_returns_400(client):
 
 def test_unreachable_database_returns_400(client):
     """When the live connectivity check fails, the endpoint returns 400."""
-    _tenant_id, owner_session = _register_and_get_owner_session(client)
+    _user_id, session_token = _register_and_get_session(client, "flow2@example.com")
 
     def _fail_connect(url, timeout=5):
         raise HTTPException(
@@ -253,22 +252,22 @@ def test_unreachable_database_returns_400(client):
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect", side_effect=_fail_connect),
     ):
-        resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL},
         )
     assert resp.status_code == 400
     assert "connect" in resp.json()["detail"].lower()
 
 
-def test_inactive_tenant_cannot_create_api_key(client):
-    """A tenant that hasn't completed setup cannot create an API key (returns 409)."""
-    _tenant_id, owner_session = _register_and_get_owner_session(client)
-    # Tenant is now in pending_db_connection — setup not complete, no active DB.
+def test_inactive_user_cannot_create_api_key(client):
+    """A user that hasn't completed setup cannot create an API key (returns 409)."""
+    _user_id, session_token = _register_and_get_session(client, "inactive@example.com")
+    # User is now in pending_db_connection — setup not complete, no active DB.
     resp = client.post(
-        "/v1/api-keys",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/api-keys",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"name": "early-key", "scopes": ["mcp_read"]},
     )
     assert resp.status_code == 409
@@ -276,30 +275,30 @@ def test_inactive_tenant_cannot_create_api_key(client):
 
 
 def test_create_second_api_key_returns_structured_plan_limit_error(client):
-    """Free-plan tenants should get a structured 409 when trying to create a second key."""
-    _tenant_id, owner_session = _register_and_get_owner_session(client)
+    """Free-plan users should get a structured 409 when trying to create a second key."""
+    _user_id, session_token = _register_and_get_session(client, "limit@example.com")
 
     with (
         patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
         patch("src.api.app._dry_run_connect"),
     ):
-        db_resp = client.post(
-            "/v1/onboarding/database",
-            headers={"Authorization": f"Bearer {owner_session}"},
+        db_resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
             json={"database_url": _VALID_PG_URL, "name": "primary"},
         )
     assert db_resp.status_code == 200
 
     first = client.post(
-        "/v1/api-keys",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/api-keys",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"name": "default", "scopes": ["mcp_read"]},
     )
     assert first.status_code == 201
 
     second = client.post(
-        "/v1/api-keys",
-        headers={"Authorization": f"Bearer {owner_session}"},
+        "/v1/account/api-keys",
+        headers={"Authorization": f"Bearer {session_token}"},
         json={"name": "second", "scopes": ["mcp_read"]},
     )
     assert second.status_code == 409

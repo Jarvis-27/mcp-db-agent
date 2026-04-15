@@ -1,4 +1,4 @@
-"""Persistent query history log keyed by tenant and API key."""
+"""Persistent query history log keyed by user and API key."""
 
 from datetime import UTC, datetime
 
@@ -32,20 +32,20 @@ class QueryLog:
         attempts: int,
         duration_ms: int,
         error: str | None,
-        tenant_id: str,
+        user_id: str,
         api_key_id: str | None,
         plan_code: str | None = None,
         daily_count: int | None = None,
         daily_limit: int | None = None,
         warning_level: str | None = None,
     ) -> None:
-        if not tenant_id:
-            raise ValueError("tenant_id is required and must not be empty")
+        if not user_id:
+            raise ValueError("user_id is required and must not be empty")
 
         with Session(self._engine) as session:
             entry = QueryHistory(
                 timestamp=datetime.now(UTC),
-                tenant_id=tenant_id,
+                user_id=user_id,
                 api_key_id=api_key_id,
                 question=question,
                 sql=sql,
@@ -62,14 +62,14 @@ class QueryLog:
             session.add(entry)
             session.commit()
 
-    def get_recent_queries(self, limit: int = 10, tenant_id: str = "") -> list[dict[str, object]]:
-        if not tenant_id:
-            raise ValueError("tenant_id is required and must not be empty")
+    def get_recent_queries(self, limit: int = 10, user_id: str = "") -> list[dict[str, object]]:
+        if not user_id:
+            raise ValueError("user_id is required and must not be empty")
 
         with Session(self._engine) as session:
             rows = (
                 session.query(QueryHistory)
-                .filter(QueryHistory.tenant_id == tenant_id)
+                .filter(QueryHistory.user_id == user_id)
                 .order_by(QueryHistory.id.desc())
                 .limit(limit)
                 .all()
@@ -78,7 +78,7 @@ class QueryLog:
                 {
                     "id": r.id,
                     "timestamp": r.timestamp.isoformat() if r.timestamp else None,
-                    "tenant_id": r.tenant_id,
+                    "user_id": r.user_id,
                     "api_key_id": r.api_key_id,
                     "question": r.question,
                     "sql": r.sql,

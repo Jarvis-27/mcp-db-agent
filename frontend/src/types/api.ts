@@ -2,50 +2,43 @@ export type OnboardingStatus =
   | 'pending_email_verification'
   | 'pending_db_connection'
   | 'setup_complete'
-  | 'pending_billing'
-  | 'pending_mfa'
-  | 'pending_review'
 
-export type AccountStatus = 'active' | 'restricted' | 'suspended' | 'closed'
+export type AccountStatus = 'active' | 'suspended' | 'closed'
 
 export type OnboardingBlocker =
   | 'email_verification'
-  | 'billing'
-  | 'mfa'
   | 'database_connection'
-  | 'admin_review'
   | 'account_suspended'
   | 'account_closed'
-  | 'account_restricted'
 
 /**
  * TypeScript types matching the Python backend's Pydantic response schemas.
  * Keep in sync with src/api/schemas.py.
  */
 
-export interface RegistrationPendingResponse {
-  tenant_id: string
+export interface SignupPendingResponse {
+  user_id: string
   status: string
   message: string
 }
 
 export interface VerifyEmailResponse {
-  tenant_id: string
+  user_id: string
   status: OnboardingStatus
   next_step: string
-  owner_session_token: string
+  session_token: string
   expires_in_seconds: number
 }
 
-export interface OwnerSessionResponse {
-  tenant_id: string
+export interface SessionResponse {
+  user_id: string
   status: OnboardingStatus
-  owner_session_token: string
+  session_token: string
   expires_in_seconds: number
 }
 
-export interface OnboardingStatusResponse {
-  tenant_id: string
+export interface AccountStatusResponse {
+  user_id: string
   status: OnboardingStatus
   account_status: AccountStatus
   plan_code: string
@@ -55,8 +48,8 @@ export interface OnboardingStatusResponse {
   can_issue_api_key: boolean
 }
 
-export interface OnboardingDatabaseResponse {
-  tenant_id: string
+export interface AccountDatabaseResponse {
+  user_id: string
   status: OnboardingStatus
   account_status: AccountStatus
   plan_code: string
@@ -107,7 +100,7 @@ export interface SetupQuotaSummaryResponse {
 }
 
 export interface SetupPayloadResponse {
-  tenant_id: string
+  user_id: string
   status: OnboardingStatus
   account_status: AccountStatus
   plan_code: string

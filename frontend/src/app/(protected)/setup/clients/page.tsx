@@ -14,7 +14,7 @@ export default async function SetupClientsPage() {
     redirect(destination)
   }
 
-  const res = await backendFetch('/v1/setup/payloads', {
+  const res = await backendFetch('/v1/account/setup-payloads', {
     method: 'POST',
     body: JSON.stringify({ raw_api_key: null }),
     cache: 'no-store',
@@ -53,7 +53,6 @@ export default async function SetupClientsPage() {
         </p>
       </div>
 
-      {/* Quota summary */}
       <div className="rounded-lg border bg-card p-4 flex flex-wrap gap-6 text-sm">
         <div>
           <p className="text-muted-foreground text-xs mb-0.5">Plan</p>
@@ -80,7 +79,6 @@ export default async function SetupClientsPage() {
         </div>
       </div>
 
-      {/* MCP URL */}
       <div className="space-y-1.5">
         <p className="text-sm font-medium">MCP endpoint</p>
         <div className="flex items-center gap-2">
@@ -90,10 +88,8 @@ export default async function SetupClientsPage() {
         </div>
       </div>
 
-      {/* Client configs */}
       <ClientConfigDisplay clients={clients} />
 
-      {/* Sample prompts */}
       {payload.sample_prompts.length > 0 && (
         <div className="space-y-3">
           <p className="text-sm font-medium">Sample prompts to try</p>
@@ -110,7 +106,6 @@ export default async function SetupClientsPage() {
         </div>
       )}
 
-      {/* Key handling info */}
       {!hasActiveKey && (
         <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-sm">
           <strong>API key required:</strong> No active API key was found.{' '}

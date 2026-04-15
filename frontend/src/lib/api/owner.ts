@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation'
 import { backendFetch } from '@/lib/api/backend'
-import type { ApiKeyResponse, OnboardingStatusResponse } from '@/types/api'
+import type { AccountStatusResponse, ApiKeyResponse } from '@/types/api'
 
-export async function getOnboardingStatusOrRedirect(): Promise<OnboardingStatusResponse> {
-  const res = await backendFetch('/v1/onboarding/status', { cache: 'no-store' })
+export async function getOnboardingStatusOrRedirect(): Promise<AccountStatusResponse> {
+  const res = await backendFetch('/v1/account/status', { cache: 'no-store' })
 
   if (res.status === 401) {
     redirect('/login')
@@ -17,7 +17,7 @@ export async function getOnboardingStatusOrRedirect(): Promise<OnboardingStatusR
 }
 
 export async function getApiKeysOrRedirect(): Promise<ApiKeyResponse[]> {
-  const res = await backendFetch('/v1/api-keys', { cache: 'no-store' })
+  const res = await backendFetch('/v1/account/api-keys', { cache: 'no-store' })
 
   if (res.status === 401) {
     redirect('/login')

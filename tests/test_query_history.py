@@ -33,7 +33,7 @@ async def test_query_history_default_limit():
         patch("src.server._get_query_log", return_value=mock_log),
     ):
         await server.query_history()
-    mock_log.get_recent_queries.assert_called_once_with(10, tenant_id="user-1")
+    mock_log.get_recent_queries.assert_called_once_with(10, user_id="user-1")
 
 
 async def test_query_history_large_limit_clamped_to_200():
@@ -43,7 +43,7 @@ async def test_query_history_large_limit_clamped_to_200():
         patch("src.server._get_query_log", return_value=mock_log),
     ):
         await server.query_history(limit=999_999)
-    mock_log.get_recent_queries.assert_called_once_with(200, tenant_id="user-1")
+    mock_log.get_recent_queries.assert_called_once_with(200, user_id="user-1")
 
 
 async def test_query_history_zero_clamped_to_1():
@@ -53,7 +53,7 @@ async def test_query_history_zero_clamped_to_1():
         patch("src.server._get_query_log", return_value=mock_log),
     ):
         await server.query_history(limit=0)
-    mock_log.get_recent_queries.assert_called_once_with(1, tenant_id="user-1")
+    mock_log.get_recent_queries.assert_called_once_with(1, user_id="user-1")
 
 
 async def test_query_history_negative_clamped_to_1():
@@ -63,7 +63,7 @@ async def test_query_history_negative_clamped_to_1():
         patch("src.server._get_query_log", return_value=mock_log),
     ):
         await server.query_history(limit=-50)
-    mock_log.get_recent_queries.assert_called_once_with(1, tenant_id="user-1")
+    mock_log.get_recent_queries.assert_called_once_with(1, user_id="user-1")
 
 
 async def test_query_history_at_max_passes_through():
@@ -73,7 +73,7 @@ async def test_query_history_at_max_passes_through():
         patch("src.server._get_query_log", return_value=mock_log),
     ):
         await server.query_history(limit=200)
-    mock_log.get_recent_queries.assert_called_once_with(200, tenant_id="user-1")
+    mock_log.get_recent_queries.assert_called_once_with(200, user_id="user-1")
 
 
 async def test_query_history_returns_json():
@@ -88,7 +88,7 @@ async def test_query_history_returns_json():
             "duration_ms": 5,
             "error": None,
             "timestamp": "2026-01-01T00:00:00+00:00",
-            "tenant_id": "user-1",
+            "user_id": "user-1",
             "plan_code": "free",
             "daily_count": 7,
             "daily_limit": 25,
@@ -127,14 +127,14 @@ def test_query_log_persists_plan_and_quota_context():
             attempts=1,
             duration_ms=12,
             error=None,
-            tenant_id="tenant-1",
+            user_id="user-1",
             api_key_id="key-1",
             plan_code="pro",
             daily_count=321,
             daily_limit=500,
             warning_level="medium",
         )
-        rows = log.get_recent_queries(tenant_id="tenant-1")
+        rows = log.get_recent_queries(user_id="user-1")
     finally:
         engine.dispose()
 

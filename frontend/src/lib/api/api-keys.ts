@@ -14,7 +14,7 @@ export type RevokeApiKeyActionResult =
 export async function createApiKeyAction(name: string): Promise<CreateApiKeyActionResult> {
   const normalizedName = name.trim() || 'default'
 
-  const res = await backendFetch('/v1/api-keys', {
+  const res = await backendFetch('/v1/account/api-keys', {
     method: 'POST',
     body: JSON.stringify({ name: normalizedName, scopes: ['mcp_read'] }),
   })
@@ -37,7 +37,7 @@ export async function createApiKeyAction(name: string): Promise<CreateApiKeyActi
 }
 
 export async function revokeApiKeyAction(apiKeyId: string): Promise<RevokeApiKeyActionResult> {
-  const res = await backendFetch(`/v1/api-keys/${apiKeyId}`, {
+  const res = await backendFetch(`/v1/account/api-keys/${apiKeyId}`, {
     method: 'DELETE',
   })
 

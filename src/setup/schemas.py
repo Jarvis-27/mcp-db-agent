@@ -39,7 +39,7 @@ class ClientSetupPayload:
 
 @dataclass(frozen=True)
 class SetupPayload:
-    tenant_id: str
+    user_id: str
     status: str
     account_status: str
     plan_code: str

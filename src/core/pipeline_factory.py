@@ -142,9 +142,6 @@ class PipelineFactory:
 
     def _connect_args_for(self, url: URL, timeout_seconds: int) -> dict:
         if url.drivername.startswith("postgresql"):
-            # Do NOT pass startup options (e.g. statement_timeout) here — pooled
-            # providers such as Neon reject unknown startup parameters.
-            # statement_timeout is applied per-connection in SQLExecutor._run_query.
             return {"connect_timeout": 10}
         return {}
 
@@ -168,12 +165,7 @@ class PipelineFactory:
         )
 
     async def invalidate(self, user_id: str) -> None:
-        """Drop all cache entries belonging to user_id.
-
-        Called from PUT/DELETE /v1/users/me and POST /v1/users/me/rotate-key.
-        Only entries whose cache key starts with user_id are evicted, so other
-        users' pipelines are not disturbed.
-        """
+        """Drop all cache entries belonging to user_id."""
         async with self._lock:
             for key in list(self._cache.keys()):
                 if key[0] != user_id:
@@ -194,66 +186,3 @@ class PipelineFactory:
                 except Exception as exc:
                     log.warning("engine_dispose_on_shutdown_failed", extra={"err": str(exc)})
             self._cache.clear()
-
-    def get_from_settings(self, s: Settings) -> PipelineComponents:
-        """Synchronous stdio backward-compat path.
-
-        Builds and caches a pipeline keyed on the global settings database_url.
-        Raises RuntimeError if DATABASE_URL is not set.
-        """
-        if not s.database_url:
-            raise RuntimeError(
-                "DATABASE_URL must be set for stdio mode. "
-                "Set it in .env, or run the HTTP server via `uv run uvicorn src.app:app`."
-            )
-        synthetic = UserConfig(
-            user_id="__stdio__",
-            database_url=s.database_url,
-            is_active=True,
-            onboarding_status="active",
-            email=None,
-        )
-
-        # For stdio mode we skip the URL guard (localhost is fine in dev)
-        # and build components synchronously.
-        cache_key = self._build_key(synthetic)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-
-        from sqlalchemy import create_engine
-        from sqlalchemy.engine import make_url as _make_url
-
-        _parsed_url = _make_url(s.database_url)
-        engine = create_engine(
-            s.database_url,
-            connect_args=self._connect_args_for(_parsed_url, s.query_timeout_seconds),
-        )
-        inspector = SchemaInspector(engine, cache_ttl_seconds=s.schema_cache_ttl_seconds)
-        user_settings = UserSettings(
-            llm_provider=s.llm_provider or "anthropic",
-            anthropic_api_key=s.anthropic_api_key or "",
-            groq_api_key=s.groq_api_key or "",
-            claude_model=s.claude_model,
-            groq_model=s.groq_model,
-            max_query_rows=s.max_query_rows,
-            query_timeout_seconds=s.query_timeout_seconds,
-            max_self_correction_retries=s.max_self_correction_retries,
-        )
-        generator = SQLGenerator(user_settings, inspector)
-        validator = SQLValidator(inspector)
-        executor = SQLExecutor(engine, user_settings, self._executor_pool)
-        corrector = SelfCorrector(generator, validator, executor, user_settings)
-        formatter = ResultFormatter()
-        dialect = "postgresql" if s.database_url.startswith("postgresql") else "sqlite"
-        components = PipelineComponents(
-            inspector=inspector,
-            generator=generator,
-            validator=validator,
-            executor=executor,
-            corrector=corrector,
-            formatter=formatter,
-            dialect=dialect,
-            engine=engine,
-        )
-        self._cache[cache_key] = components
-        return components

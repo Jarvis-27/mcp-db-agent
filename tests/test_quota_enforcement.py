@@ -44,7 +44,7 @@ def _make_user_store(*, daily_count: int, plan_code: str = "free"):
     """Return a mock UserStore whose consume_daily_query_quota returns a snapshot."""
     us = MagicMock()
     us.consume_daily_query_quota.return_value = SimpleNamespace(
-        tenant_id="test-user-id",
+        user_id="test-user-id",
         plan_code=plan_code,
         daily_count=daily_count,
         daily_quota_reset_at=datetime.now(UTC) + timedelta(hours=1),
@@ -138,7 +138,7 @@ async def test_ask_database_at_quota_boundary_succeeds():
 
 
 async def test_ask_database_pro_plan_uses_higher_limit():
-    """Pro tenants should receive the higher plan quota."""
+    """Pro users should receive the higher plan quota."""
     import src.server as server
 
     pipeline = _make_pipeline()
@@ -158,31 +158,8 @@ async def test_ask_database_pro_plan_uses_higher_limit():
     user_store.consume_daily_query_quota.assert_called_once_with("test-user-id")
 
 
-async def test_ask_database_stdio_bypasses_quota():
-    """stdio users (user_id == '__stdio__') are never subject to quota."""
-    import src.server as server
-
-    pipeline = _make_pipeline()
-    user_store = _make_user_store(daily_count=9999, plan_code="free")
-    query_log = MagicMock()
-
-    with (
-        patch.object(server, "_user_store", user_store),
-        patch.object(server, "_get_pipeline", AsyncMock(return_value=pipeline)),
-        patch("src.server._current_user_id", return_value="__stdio__"),
-        patch.object(server, "_get_query_log", return_value=query_log),
-        patch.object(server, "_cache", _empty_cache()),
-    ):
-        result = json.loads(await server.ask_database("How many users?"))
-
-    # No quota error for stdio
-    assert "Daily query quota exceeded" not in result.get("error", "")
-    # UserStore must never be touched for stdio
-    user_store.consume_daily_query_quota.assert_not_called()
-
-
 async def test_ask_database_no_user_store_bypasses_quota():
-    """When _user_store is None (stdio mode before app.py wires it up), quota is skipped."""
+    """When _user_store is None, quota is skipped."""
     import src.server as server
 
     pipeline = _make_pipeline()
@@ -205,6 +182,7 @@ async def test_ask_database_cache_hit_bypasses_quota():
     import src.server as server
 
     user_store = _make_user_store(daily_count=999, plan_code="free")
+    query_log = MagicMock()
     question = "How many users?"
     user_id = "test-user-id"
     cache_key = (user_id, question.lower().strip())
@@ -217,6 +195,7 @@ async def test_ask_database_cache_hit_bypasses_quota():
     with (
         patch.object(server, "_user_store", user_store),
         patch("src.server._current_user_id", return_value=user_id),
+        patch.object(server, "_get_query_log", return_value=query_log),
         patch.object(server, "_cache", pre_populated_cache),
         patch.object(server, "_get_pipeline", AsyncMock()),  # should not be called
     ):

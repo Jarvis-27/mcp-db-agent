@@ -1,6 +1,6 @@
 /**
  * Server-side backend API helper.
- * Reads the mdb_session HTTP-only cookie and injects it as an owner-session header.
+ * Reads the mdb_session HTTP-only cookie and injects it as a session header.
  * Only call this from Server Components, Server Actions, or Route Handlers.
  */
 
@@ -19,7 +19,7 @@ export async function backendFetch(
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(session ? { 'x-owner-session': session } : {}),
+      ...(session ? { 'x-session-token': session } : {}),
       ...(init?.headers ?? {}),
     },
   })

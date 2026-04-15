@@ -1,8 +1,8 @@
 import type {
   AccountStatus,
+  AccountStatusResponse,
   OnboardingBlocker,
   OnboardingStatus,
-  OnboardingStatusResponse,
 } from '@/types/api'
 
 export type ProtectedRoute = '/api-keys' | '/setup/api-key' | '/setup/clients' | '/setup/database' | '/setup/status'
@@ -21,16 +21,13 @@ export function resolveOnboardingDestination(
     case 'pending_db_connection':
       return '/setup/database'
     case 'pending_email_verification':
-    case 'pending_billing':
-    case 'pending_mfa':
-    case 'pending_review':
     default:
       return '/setup/status'
   }
 }
 
 export function resolveStatusResponseDestination(
-  payload: Pick<OnboardingStatusResponse, 'status' | 'account_status'>,
+  payload: Pick<AccountStatusResponse, 'status' | 'account_status'>,
 ): ProtectedRoute {
   return resolveOnboardingDestination(payload.status, payload.account_status)
 }
@@ -40,13 +37,6 @@ export function getStatusPageCopy(
   accountStatus: AccountStatus,
   blockers: OnboardingBlocker[],
 ): { title: string; detail: string } {
-  if (accountStatus === 'restricted' || blockers.includes('account_restricted')) {
-    return {
-      title: 'Account restricted',
-      detail: 'Your account is temporarily restricted. Review the message below and contact support if you need help.',
-    }
-  }
-
   if (accountStatus === 'suspended' || blockers.includes('account_suspended')) {
     return {
       title: 'Account suspended',
@@ -57,28 +47,7 @@ export function getStatusPageCopy(
   if (accountStatus === 'closed' || blockers.includes('account_closed')) {
     return {
       title: 'Account closed',
-      detail: 'This tenant has been closed. Setup and API-key management are no longer available for this account.',
-    }
-  }
-
-  if (status === 'pending_billing' || blockers.includes('billing')) {
-    return {
-      title: 'Billing setup required',
-      detail: 'Billing is enabled for this environment. Finish the required billing step before continuing with database setup.',
-    }
-  }
-
-  if (status === 'pending_mfa' || blockers.includes('mfa')) {
-    return {
-      title: 'Additional verification required',
-      detail: 'This environment requires MFA before database setup can continue.',
-    }
-  }
-
-  if (status === 'pending_review' || blockers.includes('admin_review')) {
-    return {
-      title: 'Account under review',
-      detail: 'Your account is waiting for manual review. Setup will resume automatically after the hold is cleared.',
+      detail: 'This account has been closed. Setup and API-key management are no longer available.',
     }
   }
 

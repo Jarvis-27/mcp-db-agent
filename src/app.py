@@ -1,7 +1,6 @@
-"""Combined ASGI entry point for hosted multi-tenant deployment.
+"""Combined ASGI entry point for the hosted single-account HTTP deployment.
 
-Stdio single-user mode:  uv run src/server.py  (does NOT use this file)
-Hosted HTTP mode:        uv run uvicorn src.app:app --workers 4 ...
+Hosted HTTP mode: uv run uvicorn src.app:app --workers 4 ...
 """
 
 import importlib
@@ -48,11 +47,9 @@ def _enable_sqlite_wal(engine) -> None:
 async def lifespan(app: Starlette):
     """Unified lifespan — starts all shared resources, tears them down on exit."""
 
-    # 1. Build cipher (fails loud if no encryption key in non-dev mode)
+    # 1. Build cipher
     keys = settings.credential_encryption_keys_list()
     if not keys:
-        # Development fallback — generate an ephemeral key so the server starts
-        # without CREDENTIAL_ENCRYPTION_KEYS set in .env.
         from cryptography.fernet import Fernet
 
         ephemeral = Fernet.generate_key().decode()
@@ -85,14 +82,10 @@ async def lifespan(app: Starlette):
             command.upgrade(alembic_cfg, "head")
         except Exception as exc:
             log.warning("Alembic auto-migration failed (dev mode): %s", exc)
-            # Fall back to create_all so tests work without a migration chain
             from src.auth.user_store import Base
 
             Base.metadata.create_all(auth_engine)
     else:
-        # Production: verify schema is at the Alembic head revision.
-        # expected_head is read from the script directory so this check
-        # never needs updating when new migrations are added.
         try:
             from pathlib import Path as _Path
             from alembic.config import Config as _AlembicConfig
@@ -122,10 +115,10 @@ async def lifespan(app: Starlette):
                 raise
             log.warning("Could not verify Alembic schema version: %s", exc)
 
-    # 4. Build UserStore, auth-key cache, executor pool, query log, pipeline factory
+    # 4. Build UserStore, caches, executor pool, query log, pipeline factory
     user_store = UserStore(auth_engine, cipher)
     auth_key_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)
-    owner_session_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)
+    user_session_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)
     executor_pool = ThreadPoolExecutor(
         max_workers=settings.query_pool_size, thread_name_prefix="sql-exec"
     )
@@ -143,7 +136,7 @@ async def lifespan(app: Starlette):
     # 6. Stash on api_app.state for FastAPI dependency injection
     api_app.state.user_store = user_store
     api_app.state.auth_key_cache = auth_key_cache
-    api_app.state.owner_session_cache = owner_session_cache
+    api_app.state.user_session_cache = user_session_cache
     api_app.state.factory = factory
     api_app.state.token_store = token_store
     api_app.state.email_sender = email_sender
@@ -153,19 +146,15 @@ async def lifespan(app: Starlette):
     # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
     app.state.user_store = user_store
     app.state.auth_key_cache = auth_key_cache
-    app.state.owner_session_cache = owner_session_cache
 
-    # 7. Stash factory and query_log on server module for MCP tool handlers
+    # 7. Stash factory, query_log, and user_store on server module for MCP tool handlers
     server_module = importlib.import_module("src.server")
     server_module._factory = factory  # type: ignore[attr-defined]
     server_module._query_log = query_log  # type: ignore[attr-defined]
     server_module._user_store = user_store  # type: ignore[attr-defined]
 
-    log.info("MCP Database Analytics Agent started (hosted multi-tenant mode)")
+    log.info("MCP Database Analytics Agent started (hosted single-account HTTP mode)")
 
-    # Start the FastMCP session manager — required for streamable HTTP transport.
-    # The sub-app lifespan is not automatically forwarded through _AuthedMCPWrapper,
-    # so we run it explicitly here.
     async with _server_module.mcp.session_manager.run():
         try:
             yield
@@ -180,7 +169,6 @@ async def lifespan(app: Starlette):
 # Build the MCP ASGI app
 # ---------------------------------------------------------------------------
 
-# Reuse the same FastMCP instance from server.py — all tools are registered on it.
 _mcp_app = _server_module.mcp.streamable_http_app()
 
 # ---------------------------------------------------------------------------
@@ -191,8 +179,6 @@ app = Starlette(
     lifespan=lifespan,
     routes=[
         Mount("/api", app=api_app),
-        # ApiKeyMiddleware is applied at runtime after lifespan populates user_store.
-        # We use a small ASGI wrapper so the middleware sees the populated state.
         Mount("/mcp", app=_mcp_app),
     ],
     middleware=[
@@ -210,12 +196,7 @@ app = Starlette(
 
 
 class _AuthedMCPWrapper:
-    """Wrap the MCP ASGI app with ApiKeyMiddleware after startup.
-
-    ApiKeyMiddleware needs user_store from app.state, which is only available
-    after lifespan startup. This wrapper defers construction of the middleware
-    to the first request.
-    """
+    """Wrap the MCP ASGI app with ApiKeyMiddleware after startup."""
 
     def __init__(self, inner_app, starlette_app: Starlette) -> None:
         self._inner = inner_app

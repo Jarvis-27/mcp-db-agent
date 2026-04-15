@@ -65,22 +65,8 @@ export default function SignupPage() {
             />
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="tenant_name">
-              Organization name{' '}
-              <span className="text-muted-foreground font-normal">(optional)</span>
-            </Label>
-            <Input
-              id="tenant_name"
-              name="tenant_name"
-              type="text"
-              placeholder="Acme Corp"
-              autoComplete="organization"
-            />
-          </div>
-
           <Button type="submit" className="w-full" disabled={isPending}>
-            {isPending ? 'Creating account…' : 'Create account'}
+            {isPending ? 'Creating account...' : 'Create account'}
           </Button>
         </form>
 

@@ -27,7 +27,7 @@ def get_logger(name: str = "mcp_db_agent") -> logging.Logger:
     """Return a module-level logger that writes JSON lines to stderr.
 
     Safe to call multiple times — the handler is only attached once.
-    Logs go to stderr so they do not interfere with the MCP stdio transport.
+    Logs go to stderr so application logs stay separate from HTTP responses.
     """
     logger = logging.getLogger(name)
     if not logger.handlers:
