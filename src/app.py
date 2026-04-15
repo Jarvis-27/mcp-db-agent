@@ -1,6 +1,11 @@
 """Combined ASGI entry point for the hosted single-account HTTP deployment.
 
 Hosted HTTP mode: uv run uvicorn src.app:app --workers 4 ...
+
+MCP auth modes (controlled by MCP_AUTH_MODE setting):
+  api_key_only  — bearer mdbk_* API keys only  (default)
+  hybrid        — OAuth tokens preferred; API keys accepted as fallback
+  oauth_only    — OAuth 2.1 access tokens only
 """
 
 import importlib
@@ -18,7 +23,7 @@ from starlette.routing import Mount
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
-from src.auth.middleware import ApiKeyMiddleware
+from src.auth.middleware import ApiKeyMiddleware, HybridMCPMiddleware, OAuthMCPMiddleware
 from src.auth.token_store import TokenStore
 from src.auth.user_store import UserStore
 from src.config import settings
@@ -41,6 +46,46 @@ def _enable_sqlite_wal(engine) -> None:
         cur.execute("PRAGMA busy_timeout=5000")
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
+
+
+
+
+def _resource_metadata_url() -> str | None:
+    """Return the RFC 9728 protected resource metadata URL for WWW-Authenticate headers."""
+    if not settings.oauth_is_configured():
+        return None
+    resource_url = settings.effective_mcp_resource_url()
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(resource_url)
+        resource_path = parsed.path if parsed.path != "/" else ""
+        return f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource{resource_path}"
+    except Exception:
+        return None
+
+
+def _build_protected_resource_routes():
+    """Build RFC 9728 metadata routes for the parent Starlette app.
+
+    Returns an empty list when OAuth is not configured.
+    """
+    if not settings.oauth_is_configured():
+        return []
+    try:
+        from mcp.server.auth.routes import create_protected_resource_routes
+        from pydantic import AnyHttpUrl
+
+        resource_url = settings.effective_mcp_resource_url()
+        issuer_url = settings.oauth_issuer_url.rstrip("/")
+        scopes = settings.oauth_required_scopes_list() or None
+        return create_protected_resource_routes(
+            resource_url=AnyHttpUrl(resource_url),
+            authorization_servers=[AnyHttpUrl(issuer_url)],
+            scopes_supported=scopes,
+        )
+    except Exception as exc:
+        log.warning("Could not build protected resource metadata routes: %s", exc)
+        return []
 
 
 @asynccontextmanager
@@ -143,7 +188,7 @@ async def lifespan(app: Starlette):
     api_app.state.cipher = cipher
     api_app.state.query_log = query_log
 
-    # Also stash on the parent Starlette app's state so _AuthedMCPWrapper can read it
+    # Also stash on the parent Starlette app's state
     app.state.user_store = user_store
     app.state.auth_key_cache = auth_key_cache
 
@@ -152,6 +197,19 @@ async def lifespan(app: Starlette):
     server_module._factory = factory  # type: ignore[attr-defined]
     server_module._query_log = query_log  # type: ignore[attr-defined]
     server_module._user_store = user_store  # type: ignore[attr-defined]
+
+    # 8. Wire MCP auth middleware now that UserStore is available
+    mcp_mount_index = _find_mcp_mount_index(app)
+    if mcp_mount_index is not None:
+        auth_mode = settings.mcp_auth_mode
+        wrapped = _wrap_mcp_app(
+            _mcp_app,
+            auth_mode=auth_mode,
+            user_store=user_store,
+            api_key_cache=auth_key_cache,
+        )
+        app.routes[mcp_mount_index] = Mount("/mcp", app=wrapped)
+        log.info("MCP auth mode: %s", auth_mode)
 
     log.info("MCP Database Analytics Agent started (hosted single-account HTTP mode)")
 
@@ -166,10 +224,107 @@ async def lifespan(app: Starlette):
 
 
 # ---------------------------------------------------------------------------
+# MCP auth wrapper construction
+# ---------------------------------------------------------------------------
+
+
+def _find_mcp_mount_index(app: Starlette) -> int | None:
+    for i, route in enumerate(app.routes):
+        if isinstance(route, Mount) and route.path == "/mcp":
+            return i
+    return None
+
+
+def _wrap_mcp_app(mcp_app, *, auth_mode: str, user_store: UserStore, api_key_cache: TTLCache):
+    """Return the appropriate auth-wrapping ASGI app for *mcp_app*."""
+    meta_url = _resource_metadata_url()
+
+    if auth_mode == "oauth_only":
+        if not settings.oauth_is_configured():
+            log.error(
+                "MCP_AUTH_MODE=oauth_only but OAuth is not configured "
+                "(OAUTH_ISSUER_URL and MCP_RESOURCE_URL are required). "
+                "Falling back to api_key_only."
+            )
+            return _api_key_wrapper(mcp_app, user_store, api_key_cache)
+        verifier, resolver = _make_oauth_components(user_store)
+        return OAuthMCPMiddleware(
+            mcp_app,
+            verifier=verifier,
+            resolver=resolver,
+            resource_metadata_url=meta_url,
+        )
+
+    if auth_mode == "hybrid":
+        if not settings.oauth_is_configured():
+            log.warning(
+                "MCP_AUTH_MODE=hybrid but OAuth is not configured — using api_key_only."
+            )
+            return _api_key_wrapper(mcp_app, user_store, api_key_cache)
+        verifier, resolver = _make_oauth_components(user_store)
+        return HybridMCPMiddleware(
+            mcp_app,
+            verifier=verifier,
+            resolver=resolver,
+            user_store=user_store,
+            api_key_cache=api_key_cache,
+            resource_metadata_url=meta_url,
+        )
+
+    # Default: api_key_only
+    return _api_key_wrapper(mcp_app, user_store, api_key_cache)
+
+
+def _api_key_wrapper(mcp_app, user_store: UserStore, cache: TTLCache) -> "ApiKeyLazyWrapper":
+    return ApiKeyLazyWrapper(mcp_app, user_store=user_store, cache=cache)
+
+
+def _make_oauth_components(user_store: UserStore):
+    from src.auth.oauth_verifier import OAuthVerifier
+    from src.auth.oauth_identity import OAuthIdentityResolver
+
+    verifier = OAuthVerifier(
+        issuer_url=settings.oauth_issuer_url,
+        audience=settings.oauth_audience,
+        required_scopes=settings.oauth_required_scopes_list(),
+        jwks_url=settings.oauth_jwks_url,
+        jwks_cache_ttl=settings.oauth_jwks_cache_seconds,
+    )
+    resolver = OAuthIdentityResolver(user_store)
+    return verifier, resolver
+
+
+# ---------------------------------------------------------------------------
+# Lazy API-key wrapper (preserves previous lifespan-safe pattern)
+# ---------------------------------------------------------------------------
+
+
+class ApiKeyLazyWrapper:
+    """Wraps the MCP ASGI app with ApiKeyMiddleware after startup."""
+
+    def __init__(self, inner_app, *, user_store: UserStore, cache: TTLCache) -> None:
+        self._inner = inner_app
+        self._mw = ApiKeyMiddleware(inner_app, user_store=user_store, cache=cache)
+
+    async def __call__(self, scope, receive, send):
+        await self._mw(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
 # Build the MCP ASGI app
 # ---------------------------------------------------------------------------
 
 _mcp_app = _server_module.mcp.streamable_http_app()
+
+# ---------------------------------------------------------------------------
+# Build routes (including protected resource metadata if OAuth is configured)
+# ---------------------------------------------------------------------------
+
+_base_routes = [
+    Mount("/api", app=api_app),
+    Mount("/mcp", app=_mcp_app),  # placeholder; replaced in lifespan
+]
+_base_routes.extend(_build_protected_resource_routes())
 
 # ---------------------------------------------------------------------------
 # Parent Starlette app — lifespan lives HERE, not on sub-apps
@@ -177,10 +332,7 @@ _mcp_app = _server_module.mcp.streamable_http_app()
 
 app = Starlette(
     lifespan=lifespan,
-    routes=[
-        Mount("/api", app=api_app),
-        Mount("/mcp", app=_mcp_app),
-    ],
+    routes=_base_routes,
     middleware=[
         Middleware(
             CORSMiddleware,
@@ -193,29 +345,6 @@ app = Starlette(
         Middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes),
     ],
 )
-
-
-class _AuthedMCPWrapper:
-    """Wrap the MCP ASGI app with ApiKeyMiddleware after startup."""
-
-    def __init__(self, inner_app, starlette_app: Starlette) -> None:
-        self._inner = inner_app
-        self._starlette_app = starlette_app
-        self._authed: ApiKeyMiddleware | None = None
-
-    async def __call__(self, scope, receive, send):
-        if self._authed is None and scope["type"] == "http":
-            user_store = self._starlette_app.state.user_store
-            cache = self._starlette_app.state.auth_key_cache
-            self._authed = ApiKeyMiddleware(self._inner, user_store=user_store, cache=cache)
-        if self._authed is not None:
-            await self._authed(scope, receive, send)
-        else:
-            await self._inner(scope, receive, send)
-
-
-# Replace the plain MCP mount with the auth-wrapped version
-app.routes[1] = Mount("/mcp", app=_AuthedMCPWrapper(_mcp_app, app))
 
 
 if __name__ == "__main__":
