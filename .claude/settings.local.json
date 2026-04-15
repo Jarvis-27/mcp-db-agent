@@ -6,7 +6,8 @@
       "Bash(xargs ls:*)",
       "Bash(sort -k2)",
       "Bash(xargs wc:*)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "Bash(uv run:*)"
     ]
   }
 }
