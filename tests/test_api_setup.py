@@ -93,6 +93,9 @@ def app_state():
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
         mock_settings.user_session_ttl_hours = 24
+        mock_settings.mcp_auth_mode = "api_key_only"
+        mock_settings.oauth_is_configured.return_value = False
+        mock_settings.oauth_link_is_configured.return_value = False
         yield
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -125,6 +128,9 @@ def test_setup_payload_returns_user_scoped_payload_and_no_secret_leaks(client):
     assert data["user_id"] == user_id
     assert data["mcp_url"] == "http://localhost:8000/mcp"
     assert data["plan_code"] == "free"
+    assert data["mcp_auth_mode"] == "api_key_only"
+    assert data["oauth_enabled_for_mcp"] is False
+    assert data["api_keys_enabled_for_mcp"] is True
     assert data["quota_summary"]["daily_limit"] == 25
     assert data["api_key_state"]["raw_key_included"] is True
     assert data["api_key_state"]["requires_manual_key_entry"] is False
@@ -238,3 +244,41 @@ def test_setup_payload_reports_live_pro_quota(client):
     assert data["quota_summary"]["daily_used"] == 120
     assert data["quota_summary"]["daily_remaining"] == 380
     assert data["quota_summary"]["reset_at"] == next_reset.isoformat()
+
+
+def test_setup_payload_prefers_oauth_templates_in_hybrid_mode(client):
+    _user_id, session_token = _register_and_get_session(client, "oauth-hybrid@example.com")
+    _activate_via_api(client, session_token)
+
+    with patch("src.api.app.settings") as mock_settings:
+        mock_settings.registration_open = True
+        mock_settings.allow_sqlite_user_dbs = False
+        mock_settings.billing_gate_enabled = False
+        mock_settings.mfa_gate_enabled = False
+        mock_settings.register_rate_limit = "100/minute"
+        mock_settings.app_base_url = "http://localhost:8000"
+        mock_settings.frontend_base_url = "http://localhost:3000"
+        mock_settings.user_session_ttl_hours = 24
+        mock_settings.mcp_auth_mode = "hybrid"
+        mock_settings.oauth_is_configured.return_value = True
+        mock_settings.oauth_link_is_configured.return_value = True
+
+        resp = client.post(
+            "/v1/account/setup-payloads",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["mcp_auth_mode"] == "hybrid"
+    assert data["oauth_enabled_for_mcp"] is True
+    assert data["oauth_link_enabled"] is True
+    assert data["clients"]["chatgpt_developer_mode"]["status"] == "ready"
+    assert data["clients"]["vs_code"]["auth_method"] == "oauth_2_1"
+    assert data["clients"]["cursor"]["auth_method"] == "oauth_2_1"
+    assert (
+        data["clients"]["generic_http"]["auth_method"]
+        == "caller_supplied_bearer_token"
+    )

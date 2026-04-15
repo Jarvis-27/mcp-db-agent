@@ -41,10 +41,16 @@ class SetupPayloadService:
         user_store: UserStore,
         *,
         app_base_url: str,
+        mcp_auth_mode: str = "api_key_only",
+        oauth_configured: bool = False,
+        oauth_link_configured: bool = False,
         entitlements: EntitlementService | None = None,
     ) -> None:
         self._user_store = user_store
         self._app_base_url = app_base_url.rstrip("/")
+        self._mcp_auth_mode = mcp_auth_mode
+        self._oauth_configured = oauth_configured
+        self._oauth_link_configured = oauth_link_configured
         self._entitlements = entitlements or EntitlementService()
 
     def build_payload(self, user_id: str, *, raw_api_key: str | None = None) -> SetupPayload:
@@ -80,6 +86,11 @@ class SetupPayloadService:
         )
         mcp_url = f"{self._app_base_url}/mcp"
         raw_key = selected_key.raw_key
+        oauth_enabled_for_mcp = self._oauth_configured and self._mcp_auth_mode in {
+            "hybrid",
+            "oauth_only",
+        }
+        api_keys_enabled_for_mcp = self._mcp_auth_mode in {"api_key_only", "hybrid"}
         return SetupPayload(
             user_id=user_id,
             status=str(user.onboarding_status),
@@ -87,13 +98,35 @@ class SetupPayloadService:
             plan_code=str(user.plan_code),
             billing_status=str(user.billing_status),
             mcp_url=mcp_url,
+            mcp_auth_mode=self._mcp_auth_mode,
+            oauth_enabled_for_mcp=oauth_enabled_for_mcp,
+            oauth_link_enabled=self._oauth_link_configured,
+            api_keys_enabled_for_mcp=api_keys_enabled_for_mcp,
             quota_summary=quota_summary,
             api_key_state=key_state,
             sample_prompts=_SAMPLE_PROMPTS,
-            vs_code=build_vs_code_payload(mcp_url, raw_key),
-            cursor=build_cursor_payload(mcp_url, raw_key),
-            chatgpt_developer_mode=build_chatgpt_payload(mcp_url),
-            generic_http=build_generic_http_payload(mcp_url, raw_key),
+            vs_code=build_vs_code_payload(
+                mcp_url,
+                raw_key,
+                oauth_configured=oauth_enabled_for_mcp,
+                api_keys_enabled=api_keys_enabled_for_mcp,
+            ),
+            cursor=build_cursor_payload(
+                mcp_url,
+                raw_key,
+                oauth_configured=oauth_enabled_for_mcp,
+                api_keys_enabled=api_keys_enabled_for_mcp,
+            ),
+            chatgpt_developer_mode=build_chatgpt_payload(
+                mcp_url,
+                oauth_configured=oauth_enabled_for_mcp,
+            ),
+            generic_http=build_generic_http_payload(
+                mcp_url,
+                raw_key,
+                oauth_configured=oauth_enabled_for_mcp,
+                api_keys_enabled=api_keys_enabled_for_mcp,
+            ),
         )
 
     def _ensure_eligible(self, user: User) -> None:

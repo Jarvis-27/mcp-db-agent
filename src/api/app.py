@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 from typing import Annotated
 
@@ -23,6 +24,9 @@ from src.api.schemas import (
     DashboardSummaryResponse,
     DatabaseResponse,
     GenericAcceptedResponse,
+    OAuthLinkStartResponse,
+    OAuthLinkStatusResponse,
+    OAuthUnlinkResponse,
     QuotaSummary,
     RecentQueryItem,
     RequestLoginLinkRequest,
@@ -47,7 +51,6 @@ from src.auth.onboarding import (
     PENDING_DB_CONNECTION,
     PENDING_EMAIL_VERIFICATION,
     SETUP_COMPLETE,
-    TRIGGER_DB_SUBMITTED,
     TRIGGER_EMAIL_VERIFIED,
 )
 from src.auth.token_store import (
@@ -555,7 +558,13 @@ async def get_setup_payloads(
     session: AuthedSession,
 ) -> SetupPayloadResponse:
     user_store: UserStore = request.app.state.user_store
-    service = SetupPayloadService(user_store, app_base_url=settings.app_base_url)
+    service = SetupPayloadService(
+        user_store,
+        app_base_url=settings.app_base_url,
+        mcp_auth_mode=settings.mcp_auth_mode,
+        oauth_configured=settings.oauth_is_configured(),
+        oauth_link_configured=settings.oauth_link_is_configured(),
+    )
     try:
         payload = service.build_payload(session.user_id, raw_api_key=body.raw_api_key)
     except LookupError:
@@ -572,6 +581,10 @@ async def get_setup_payloads(
         plan_code=payload.plan_code,
         billing_status=payload.billing_status,
         mcp_url=payload.mcp_url,
+        mcp_auth_mode=payload.mcp_auth_mode,
+        oauth_enabled_for_mcp=payload.oauth_enabled_for_mcp,
+        oauth_link_enabled=payload.oauth_link_enabled,
+        api_keys_enabled_for_mcp=payload.api_keys_enabled_for_mcp,
         quota_summary=SetupQuotaSummaryResponse(
             daily_limit=payload.quota_summary.daily_limit,
             daily_used=payload.quota_summary.daily_used,
@@ -687,6 +700,238 @@ async def get_account(request: Request, session: AuthedSession) -> AccountRespon
         plan_code=str(row.plan_code),
         billing_status=str(row.billing_status),
     )
+
+
+# ---------------------------------------------------------------------------
+# OAuth MCP account-linking endpoints
+# ---------------------------------------------------------------------------
+
+_OAUTH_LINK_STATE_TTL_SECONDS = 600
+
+
+def _oauth_frontend_url(*, linked: bool | None = None, error: str | None = None) -> str:
+    base = f"{settings.frontend_base_url.rstrip('/')}/setup/clients"
+    if linked:
+        return f"{base}?oauth=linked"
+    if error:
+        return f"{base}?oauth_error={error}"
+    return base
+
+
+def _issue_oauth_link_state(request: Request, *, user_id: str, code_verifier: str) -> str:
+    cipher = request.app.state.cipher
+    payload = json.dumps({"user_id": user_id, "code_verifier": code_verifier})
+    return cipher.encrypt(payload)
+
+
+def _consume_oauth_link_state(request: Request, *, state: str) -> tuple[str, str] | None:
+    cipher = request.app.state.cipher
+    try:
+        payload = cipher.decrypt_with_ttl(state, _OAUTH_LINK_STATE_TTL_SECONDS)
+        data = json.loads(payload)
+        user_id = str(data["user_id"])
+        code_verifier = str(data["code_verifier"])
+    except Exception:
+        return None
+    return user_id, code_verifier
+
+
+def _require_oauth_link_configured() -> None:
+    if not settings.oauth_link_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OAuth account linking is not configured on this deployment. "
+                "Set OAUTH_CLIENT_ID, OAUTH_ISSUER_URL, and OAUTH_LINK_REDIRECT_URI."
+            ),
+        )
+
+
+@api_app.get("/v1/account/mcp-oauth/status", response_model=OAuthLinkStatusResponse)
+async def oauth_link_status(
+    session: AuthedSession, request: Request
+) -> OAuthLinkStatusResponse:
+    """Return the current OAuth identity linkage status for the authenticated user."""
+    user_store: UserStore = request.app.state.user_store
+    link_status = user_store.get_oauth_link_status(session.user_id)
+    if link_status is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return OAuthLinkStatusResponse(
+        linked=link_status.linked,
+        issuer=link_status.issuer,
+        oauth_email=link_status.oauth_email,
+        oauth_last_login_at=(
+            link_status.oauth_last_login_at.isoformat()
+            if link_status.oauth_last_login_at is not None
+            else None
+        ),
+    )
+
+
+@api_app.post("/v1/account/mcp-oauth/start", response_model=OAuthLinkStartResponse)
+@limiter.limit("10/minute")
+async def oauth_link_start(
+    request: Request, session: AuthedSession
+) -> OAuthLinkStartResponse:
+    """Start the OAuth account-linking flow.
+
+    Returns an ``authorization_url`` that the frontend should redirect the user
+    to.  After the user authenticates with the OAuth provider the provider
+    redirects back to the configured callback URL, which calls
+    ``oauth_link_callback``.
+    """
+    _require_oauth_link_configured()
+
+    import base64
+    import hashlib
+    import os
+    from urllib.parse import urlencode
+
+    # Generate PKCE code verifier + challenge
+    code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+    code_challenge = (
+        base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+
+    state = _issue_oauth_link_state(
+        request,
+        user_id=session.user_id,
+        code_verifier=code_verifier,
+    )
+
+    # Build the authorization URL
+    issuer = settings.oauth_issuer_url.rstrip("/")
+    params = {
+        "response_type": "code",
+        "client_id": settings.oauth_client_id,
+        "redirect_uri": settings.oauth_link_redirect_uri,
+        "scope": "openid email profile",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    if settings.oauth_audience:
+        params["audience"] = settings.oauth_audience
+
+    authorization_url = f"{issuer}/authorize?{urlencode(params)}"
+    return OAuthLinkStartResponse(authorization_url=authorization_url, state=state)
+
+
+@api_app.get("/v1/account/mcp-oauth/callback")
+@limiter.limit("20/minute")
+async def oauth_link_callback(
+    request: Request,
+    code: str = Query(..., description="Authorization code from the OAuth provider"),
+    state: str = Query(..., description="State token matching the start request"),
+) -> Response:
+    """Handle the OAuth callback after the user authenticates with the provider.
+
+    Exchanges the authorization code for tokens, validates the identity, links
+    it to the local account, and redirects the browser to the frontend.
+    """
+    _require_oauth_link_configured()
+
+    import httpx
+
+    pending = _consume_oauth_link_state(request, state=state)
+    if pending is None:
+        return Response(
+            status_code=302,
+            headers={"location": _oauth_frontend_url(error="invalid_state")},
+        )
+
+    user_id, code_verifier = pending
+
+    # Exchange code for tokens
+    issuer = settings.oauth_issuer_url.rstrip("/")
+    token_url = f"{issuer}/oauth/token"
+    token_payload: dict = {
+        "grant_type": "authorization_code",
+        "client_id": settings.oauth_client_id,
+        "code": code,
+        "redirect_uri": settings.oauth_link_redirect_uri,
+        "code_verifier": code_verifier,
+    }
+    if settings.oauth_client_secret:
+        token_payload["client_secret"] = settings.oauth_client_secret
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.oauth_http_timeout_seconds) as client:
+            resp = await client.post(token_url, json=token_payload)
+        resp.raise_for_status()
+        token_data = resp.json()
+    except Exception as exc:
+        logger.warning("OAuth token exchange failed for user %s: %s", user_id, exc)
+        return Response(
+            status_code=302,
+            headers={"location": _oauth_frontend_url(error="token_exchange_failed")},
+        )
+
+    # Verify the access token to extract identity
+    if not settings.oauth_is_configured():
+        return Response(
+            status_code=302,
+            headers={"location": _oauth_frontend_url(error="oauth_not_configured")},
+        )
+
+    from src.auth.oauth_verifier import OAuthVerifier, OAuthVerificationError
+
+    verifier = OAuthVerifier(
+        issuer_url=settings.oauth_issuer_url,
+        audience=settings.oauth_audience,
+        required_scopes=[],  # no scope requirement for linking
+        jwks_url=settings.oauth_jwks_url,
+        jwks_cache_ttl=settings.oauth_jwks_cache_seconds,
+    )
+
+    access_token = token_data.get("access_token") or token_data.get("id_token", "")
+    try:
+        claims = verifier.verify(access_token)
+    except OAuthVerificationError as exc:
+        logger.warning("OAuth token verification failed for user %s: %s", user_id, exc)
+        return Response(
+            status_code=302,
+            headers={"location": _oauth_frontend_url(error="token_invalid")},
+        )
+
+    from src.auth.user_store import StateTransitionError
+
+    user_store: UserStore = request.app.state.user_store
+    try:
+        user_store.link_user_oauth_identity(
+            user_id,
+            issuer=claims.issuer,
+            subject=claims.subject,
+            oauth_email=claims.email,
+        )
+    except StateTransitionError as exc:
+        logger.warning("OAuth link conflict for user %s: %s", user_id, exc)
+        return Response(
+            status_code=302,
+            headers={"location": _oauth_frontend_url(error="identity_conflict")},
+        )
+
+    # Bust caches so the new linkage is picked up immediately
+    _bust_user_caches(request, user_id)
+
+    return Response(status_code=302, headers={"location": _oauth_frontend_url(linked=True)})
+
+
+@api_app.delete("/v1/account/mcp-oauth/link", response_model=OAuthUnlinkResponse)
+async def oauth_unlink(
+    request: Request, session: AuthedSession
+) -> OAuthUnlinkResponse:
+    """Remove the OAuth identity binding from the authenticated user's account."""
+    user_store: UserStore = request.app.state.user_store
+    unlinked = user_store.unlink_oauth_identity(session.user_id)
+    if not unlinked:
+        raise HTTPException(status_code=404, detail="User not found")
+    _bust_user_caches(request, session.user_id)
+    return OAuthUnlinkResponse(message="OAuth identity unlinked successfully.")
 
 
 # ---------------------------------------------------------------------------

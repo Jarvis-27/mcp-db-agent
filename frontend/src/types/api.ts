@@ -106,6 +106,10 @@ export interface SetupPayloadResponse {
   plan_code: string
   billing_status: string
   mcp_url: string
+  mcp_auth_mode: 'api_key_only' | 'hybrid' | 'oauth_only'
+  oauth_enabled_for_mcp: boolean
+  oauth_link_enabled: boolean
+  api_keys_enabled_for_mcp: boolean
   quota_summary: SetupQuotaSummaryResponse
   api_key_state: {
     active_key_count: number
@@ -122,6 +126,13 @@ export interface SetupPayloadResponse {
     chatgpt_developer_mode: ClientSetupPayloadResponse
     generic_http: ClientSetupPayloadResponse
   }
+}
+
+export interface OAuthLinkStatusResponse {
+  linked: boolean
+  issuer: string | null
+  oauth_email: string | null
+  oauth_last_login_at: string | null
 }
 
 export interface ApiError {

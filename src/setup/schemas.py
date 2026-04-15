@@ -45,6 +45,10 @@ class SetupPayload:
     plan_code: str
     billing_status: str
     mcp_url: str
+    mcp_auth_mode: str
+    oauth_enabled_for_mcp: bool
+    oauth_link_enabled: bool
+    api_keys_enabled_for_mcp: bool
     quota_summary: SetupQuotaSummary
     api_key_state: SetupApiKeyState
     sample_prompts: tuple[str, ...]

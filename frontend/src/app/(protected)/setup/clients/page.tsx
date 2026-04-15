@@ -1,12 +1,18 @@
 import Link from 'next/link'
 import { backendFetch } from '@/lib/api/backend'
+import { getMcpOauthLinkStatusOrRedirect } from '@/lib/api/mcp-oauth'
 import { getOnboardingStatusOrRedirect } from '@/lib/api/owner'
 import { redirect } from 'next/navigation'
 import { resolveStatusResponseDestination } from '@/lib/onboarding'
 import type { SetupPayloadResponse } from '@/types/api'
 import { ClientConfigDisplay } from './client-config-display'
+import { McpOauthCard } from './mcp-oauth-card'
 
-export default async function SetupClientsPage() {
+interface Props {
+  searchParams: Promise<{ oauth?: string; oauth_error?: string }>
+}
+
+export default async function SetupClientsPage({ searchParams }: Props) {
   const status = await getOnboardingStatusOrRedirect()
   const destination = resolveStatusResponseDestination(status)
 
@@ -14,11 +20,20 @@ export default async function SetupClientsPage() {
     redirect(destination)
   }
 
-  const res = await backendFetch('/v1/account/setup-payloads', {
-    method: 'POST',
-    body: JSON.stringify({ raw_api_key: null }),
-    cache: 'no-store',
-  })
+  const [{ oauth, oauth_error: oauthError }, res, oauthLinkStatus] = await Promise.all([
+    searchParams,
+    backendFetch('/v1/account/setup-payloads', {
+      method: 'POST',
+      body: JSON.stringify({ raw_api_key: null }),
+      cache: 'no-store',
+    }),
+    getMcpOauthLinkStatusOrRedirect().catch((error: Error) => {
+      if (error.message === 'UNAUTHORIZED') {
+        redirect('/login')
+      }
+      throw error
+    }),
+  ])
 
   if (res.status === 401) redirect('/login')
 
@@ -88,6 +103,16 @@ export default async function SetupClientsPage() {
         </div>
       </div>
 
+      <McpOauthCard
+        authMode={payload.mcp_auth_mode}
+        oauthEnabledForMcp={payload.oauth_enabled_for_mcp}
+        oauthLinkEnabled={payload.oauth_link_enabled}
+        apiKeysEnabledForMcp={payload.api_keys_enabled_for_mcp}
+        linkStatus={oauthLinkStatus}
+        oauthResult={oauth === 'linked' ? 'linked' : null}
+        oauthError={oauthError ?? null}
+      />
+
       <ClientConfigDisplay clients={clients} />
 
       {payload.sample_prompts.length > 0 && (
@@ -106,7 +131,7 @@ export default async function SetupClientsPage() {
         </div>
       )}
 
-      {!hasActiveKey && (
+      {!hasActiveKey && payload.mcp_auth_mode === 'api_key_only' && (
         <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-sm">
           <strong>API key required:</strong> No active API key was found.{' '}
           <Link
@@ -119,7 +144,7 @@ export default async function SetupClientsPage() {
         </div>
       )}
 
-      {hasActiveKey && apiKeyState.requires_manual_key_entry && (
+      {hasActiveKey && apiKeyState.requires_manual_key_entry && payload.mcp_auth_mode === 'api_key_only' && (
         <div className="rounded-md border border-sky-300 bg-sky-50 dark:bg-sky-950/20 px-4 py-3 text-sm">
           <strong>Paste your API key when prompted:</strong>{' '}
           {selectedKeyLabel ? (

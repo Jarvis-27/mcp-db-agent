@@ -154,6 +154,10 @@ class SetupPayloadResponse(BaseModel):
     plan_code: str
     billing_status: str
     mcp_url: str
+    mcp_auth_mode: str
+    oauth_enabled_for_mcp: bool
+    oauth_link_enabled: bool
+    api_keys_enabled_for_mcp: bool
     quota_summary: SetupQuotaSummaryResponse
     api_key_state: SetupApiKeyStateResponse
     sample_prompts: list[str]
@@ -201,3 +205,26 @@ class RecentQueryItem(BaseModel):
 class UsageRecentResponse(BaseModel):
     items: list[RecentQueryItem]
     total: int
+
+
+# ── OAuth MCP account-linking schemas ─────────────────────────────────────────
+
+
+class OAuthLinkStartResponse(BaseModel):
+    """Returned by the start endpoint; the frontend must redirect to authorization_url."""
+
+    authorization_url: str
+    state: str  # opaque value; included here for debugging only
+
+
+class OAuthLinkStatusResponse(BaseModel):
+    """Current OAuth linkage state for the authenticated user."""
+
+    linked: bool
+    issuer: str | None = None
+    oauth_email: str | None = None
+    oauth_last_login_at: str | None = None  # ISO-8601
+
+
+class OAuthUnlinkResponse(BaseModel):
+    message: str
