@@ -20,6 +20,8 @@ dependencies = [
     "slowapi>=0.1.9",
     "alembic>=1.14.0",
     "starlette>=0.46.0",
+    "httpx>=0.28.0",
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [dependency-groups]

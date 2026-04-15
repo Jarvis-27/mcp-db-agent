@@ -68,6 +68,17 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
     suspended_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
+    # OAuth identity linkage (nullable; populated via the "Connect MCP account" flow)
+    oauth_issuer = Column(String(255), nullable=True)
+    oauth_subject = Column(String(255), nullable=True)
+    oauth_email = Column(String(254), nullable=True)
+    oauth_email_verified_at = Column(DateTime(timezone=True), nullable=True)
+    oauth_last_login_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_users_oauth_issuer_subject", "oauth_issuer", "oauth_subject", unique=True),
+        Index("ix_users_oauth_email", "oauth_email"),
+    )
 
 
 class UserSession(Base):
@@ -195,6 +206,18 @@ class DailyQuotaSnapshot:
     plan_code: str
     daily_count: int
     daily_quota_reset_at: datetime
+
+
+@dataclass(frozen=True)
+class OAuthLinkStatus:
+    """Snapshot of the OAuth identity bound to a local user account."""
+
+    linked: bool
+    issuer: str | None = None
+    subject: str | None = None
+    oauth_email: str | None = None
+    oauth_email_verified_at: datetime | None = None
+    oauth_last_login_at: datetime | None = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -641,6 +664,116 @@ class UserStore:
         if str(user.onboarding_status) != SETUP_COMPLETE:
             return False
         return user.db_url_enc is not None
+
+    # ------------------------------------------------------------------
+    # OAuth identity linkage
+    # ------------------------------------------------------------------
+
+    def get_user_by_oauth_subject(self, issuer: str, subject: str) -> UserConfig | None:
+        """Return a UserConfig for the account linked to (issuer, subject), or None."""
+        with Session(self._engine) as session:
+            user = (
+                session.query(User)
+                .filter(User.oauth_issuer == issuer, User.oauth_subject == subject)
+                .first()
+            )
+            if user is None:
+                return None
+            return self._user_config_from_user(user)
+
+    def get_oauth_link_status(self, user_id: str) -> OAuthLinkStatus | None:
+        """Return the OAuth linkage state for the given user, or None if the user is not found."""
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return None
+            linked = user.oauth_issuer is not None and user.oauth_subject is not None
+            return OAuthLinkStatus(
+                linked=linked,
+                issuer=str(user.oauth_issuer) if user.oauth_issuer is not None else None,
+                subject=str(user.oauth_subject) if user.oauth_subject is not None else None,
+                oauth_email=str(user.oauth_email) if user.oauth_email is not None else None,
+                oauth_email_verified_at=(
+                    _ensure_utc(user.oauth_email_verified_at)
+                    if user.oauth_email_verified_at is not None
+                    else None
+                ),
+                oauth_last_login_at=(
+                    _ensure_utc(user.oauth_last_login_at)
+                    if user.oauth_last_login_at is not None
+                    else None
+                ),
+            )
+
+    def link_user_oauth_identity(
+        self,
+        user_id: str,
+        *,
+        issuer: str,
+        subject: str,
+        oauth_email: str | None = None,
+        oauth_email_verified_at: datetime | None = None,
+    ) -> bool:
+        """Bind an OAuth (issuer, subject) identity to the given local user.
+
+        Returns True on success. Raises StateTransitionError if (issuer, subject)
+        is already linked to a *different* account.
+        """
+        now = _utcnow()
+        with Session(self._engine) as session:
+            # Check whether this (issuer, subject) pair is already claimed
+            existing = (
+                session.query(User)
+                .filter(User.oauth_issuer == issuer, User.oauth_subject == subject)
+                .first()
+            )
+            if existing is not None and str(existing.id) != user_id:
+                raise StateTransitionError(
+                    "This OAuth identity is already linked to a different account."
+                )
+
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.oauth_issuer = issuer  # type: ignore[assignment]
+            user.oauth_subject = subject  # type: ignore[assignment]
+            user.oauth_email = oauth_email  # type: ignore[assignment]
+            user.oauth_email_verified_at = oauth_email_verified_at  # type: ignore[assignment]
+            user.oauth_last_login_at = now  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def unlink_oauth_identity(self, user_id: str) -> bool:
+        """Remove the OAuth identity binding from the given user. Returns True on success."""
+        now = _utcnow()
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.oauth_issuer = None  # type: ignore[assignment]
+            user.oauth_subject = None  # type: ignore[assignment]
+            user.oauth_email = None  # type: ignore[assignment]
+            user.oauth_email_verified_at = None  # type: ignore[assignment]
+            user.oauth_last_login_at = None  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def update_oauth_last_login(self, issuer: str, subject: str) -> None:
+        """Update oauth_last_login_at for the user with the given (issuer, subject)."""
+        now = _utcnow()
+        with Session(self._engine) as session:
+            user = (
+                session.query(User)
+                .filter(User.oauth_issuer == issuer, User.oauth_subject == subject)
+                .first()
+            )
+            if user is None:
+                return
+            user.oauth_last_login_at = now  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
 
     # ------------------------------------------------------------------
     # Quota

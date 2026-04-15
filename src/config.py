@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,6 +76,32 @@ class Settings(BaseSettings):
     # ── Frontend base URL (used for email verification/login link redirects) ──
     frontend_base_url: str = "http://localhost:3000"
 
+    # ── MCP OAuth resource-server settings ────────────────────────────────────
+    # Controls which auth methods are accepted on the public /mcp endpoint.
+    #   api_key_only  – current behaviour; bearer API keys only
+    #   hybrid        – accepts both OAuth access tokens and API keys (rollout)
+    #   oauth_only    – OAuth access tokens only (production target)
+    mcp_auth_mode: Literal["api_key_only", "hybrid", "oauth_only"] = "api_key_only"
+
+    # Canonical public URL of this MCP resource server (e.g. https://app.example.com/mcp).
+    # Required when mcp_auth_mode != api_key_only.
+    mcp_resource_url: str = ""
+
+    # ── OAuth provider settings (issuer = authorization server base URL) ──────
+    oauth_issuer_url: str = ""       # e.g. https://YOUR_DOMAIN.auth0.com/
+    oauth_audience: str = ""         # expected aud claim / resource indicator
+    oauth_jwks_url: str = ""         # optional override; defaults to {issuer}/.well-known/jwks.json
+    oauth_required_scopes: str = "mcp:access"   # comma-separated
+    oauth_http_timeout_seconds: int = 10
+    oauth_jwks_cache_seconds: int = 300
+
+    # ── OAuth client for the account-linking flow ─────────────────────────────
+    # These are only needed for the "Connect MCP account" UI flow that lets an
+    # authenticated web-app user bind their local account to an OAuth identity.
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""    # leave empty for PKCE-only (public client)
+    oauth_link_redirect_uri: str = ""   # backend callback URL, e.g. https://app.example.com/api/v1/account/mcp-oauth/callback
+
     @field_validator("credential_encryption_keys")
     @classmethod
     def _check_keys(cls, v: str, info) -> str:
@@ -100,6 +126,31 @@ class Settings(BaseSettings):
 
     def credential_encryption_keys_list(self) -> list[str]:
         return [k.strip() for k in self.credential_encryption_keys.split(",") if k.strip()]
+
+    def oauth_required_scopes_list(self) -> list[str]:
+        return [s.strip() for s in self.oauth_required_scopes.split(",") if s.strip()]
+
+    def effective_mcp_resource_url(self) -> str:
+        """Return the canonical MCP resource URL, defaulting to app_base_url/mcp."""
+        if self.mcp_resource_url:
+            return self.mcp_resource_url.rstrip("/")
+        return f"{self.app_base_url.rstrip('/')}/mcp"
+
+    def oauth_is_configured(self) -> bool:
+        """Return True when the minimum OAuth settings are present."""
+        return bool(self.oauth_issuer_url and self.mcp_resource_url)
+
+    def oauth_link_is_configured(self) -> bool:
+        """Return True when the account-linking OAuth client is fully configured."""
+        return bool(self.oauth_client_id and self.oauth_link_redirect_uri and self.oauth_issuer_url)
+
+    def mcp_oauth_enabled(self) -> bool:
+        """Return True when /mcp is actively accepting OAuth bearer tokens."""
+        return self.mcp_auth_mode in {"hybrid", "oauth_only"} and self.oauth_is_configured()
+
+    def mcp_api_keys_enabled(self) -> bool:
+        """Return True when /mcp is actively accepting API keys."""
+        return self.mcp_auth_mode in {"api_key_only", "hybrid"}
 
 
 settings: Settings = Settings()

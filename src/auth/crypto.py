@@ -36,3 +36,10 @@ class CredentialCipher:
             return self._fernet.decrypt(ciphertext.encode()).decode()
         except (InvalidToken, Exception) as exc:
             raise CredentialDecryptError("Failed to decrypt credential") from exc
+
+    def decrypt_with_ttl(self, ciphertext: str, ttl_seconds: int) -> str:
+        """Decrypt ciphertext and enforce a maximum token age."""
+        try:
+            return self._fernet.decrypt(ciphertext.encode(), ttl=ttl_seconds).decode()
+        except (InvalidToken, Exception) as exc:
+            raise CredentialDecryptError("Failed to decrypt credential") from exc
