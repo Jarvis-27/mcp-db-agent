@@ -2,221 +2,371 @@
 
 ## Scope
 
-This document is the implementation reference for adding OAuth support to the hosted MCP deployment in this repository so it works with:
+This document is the implementation reference for adding production-grade OAuth to the hosted MCP deployment in this repository.
 
-- ChatGPT
-- OpenAI API MCP usage
-- Claude MCP connector
-- other OAuth-capable HTTPS MCP clients
+It replaces the earlier tenant/member-oriented OAuth plan. The current codebase is a single-user account system, so this plan is written against the actual repository state as of April 15, 2026.
 
-This plan reflects the agreed architecture as of April 15, 2026.
+Goals:
+
+- make the public `/mcp` endpoint work with OAuth-capable remote MCP clients
+- support ChatGPT remote MCP connectivity
+- support VS Code remote MCP connectivity
+- support Cursor remote MCP connectivity
+- support bearer-token-based MCP consumers such as Claude's MCP connector and OpenAI API remote MCP usage
+- keep the existing web app auth flow stable during this project
+
+Non-goals for this phase:
+
+- replacing the current magic-link account login flow in the web app
+- reintroducing tenant, membership, or organization concepts
+- building a custom OAuth authorization server in this repository
 
 ## Final Decisions
 
-- Use one shared MCP URL for all customers.
-- Use Auth0 as the external identity provider.
-- Use Auth0 Free for the first rollout.
-- Use per-user sign-in.
-- Allow all tenant members to use MCP tools.
-- Protect all MCP tools with OAuth.
-- Keep this app's database as the source of truth for tenant membership and database access.
-- Keep API keys only as a secondary/manual auth path for non-OAuth clients.
-- Treat the first Auth0 Free rollout as pilot-grade production.
+- The product model remains single-user and account-scoped.
+- The web app keeps its current passwordless email verification and login-link flow.
+- OAuth is added to the hosted `/mcp` surface only.
+- The MCP server acts as an OAuth 2.1 protected resource and validates bearer tokens on every request.
+- The architecture should be standards-based and provider-agnostic at the core.
+- Auth0 is the first concrete identity provider documented in this plan.
+- Production target state for the public `/mcp` endpoint is `oauth_only`.
+- Existing API-key support may remain temporarily for rollout and rollback, but it is not the target production posture for public MCP access.
+
+## Current Repo State
+
+### Product model
+
+The repository is no longer multi-tenant.
+
+Current core data model:
+
+- `users`
+- `user_sessions`
+- `api_keys`
+- one inlined active database per user
+
+Relevant files:
+
+- [src/auth/user_store.py](src/auth/user_store.py)
+- [alembic/versions/0007_single_user_schema.py](alembic/versions/0007_single_user_schema.py)
+- [SINGLE_USER_ACCOUNT_REFACTOR_PLAN.md](SINGLE_USER_ACCOUNT_REFACTOR_PLAN.md)
+
+### Current auth model
+
+The current app has two auth surfaces:
+
+1. Web app and account APIs:
+   - passwordless email verification
+   - login-link session auth
+   - session token required for `/api/v1/account/*`
+2. Hosted `/mcp`:
+   - bearer API-key auth only
+
+Relevant files:
+
+- [src/api/app.py](src/api/app.py)
+- [src/app.py](src/app.py)
+- [src/auth/middleware.py](src/auth/middleware.py)
+- [src/setup/config_templates.py](src/setup/config_templates.py)
+
+### Current MCP setup limitation
+
+The setup payload generator correctly marks ChatGPT as unavailable until OAuth exists.
+
+Relevant files:
+
+- [src/setup/config_templates.py](src/setup/config_templates.py)
+- [tests/test_setup_payloads.py](tests/test_setup_payloads.py)
+
+### Current MCP SDK state
+
+The pinned `mcp==1.26.0` package already includes resource-server auth primitives that this implementation should use rather than replacing:
+
+- `AuthSettings`
+- bearer token verification hooks
+- `WWW-Authenticate` challenge handling
+- protected resource metadata routes
+
+This means the plan can build on the current package instead of assuming a custom MCP auth layer.
+
+## Production Recommendation
+
+### Recommended architecture
+
+Production-grade for this codebase means:
+
+- keep the current app login/session flow unchanged
+- add OAuth only to `/mcp`
+- make `/mcp` the OAuth-protected resource
+- treat API keys as transitional or internal-only, not as the primary auth path for public remote MCP clients
+
+### Why this is the recommended scope
+
+Replacing the existing app login flow with Auth0 in the same project would create a second large auth migration:
+
+- signup and verification flow changes
+- session issuance changes
+- frontend auth callback changes
+- email delivery and onboarding changes
+
+That work is not required to make remote MCP clients connect securely. The external requirement is that the MCP server implements the MCP authorization model correctly. The production-safe path is to isolate OAuth work to `/mcp` first.
+
+### Target production posture
+
+Recommended target:
+
+- public `/mcp` runs in `oauth_only`
+- account APIs continue to use the current session model
+- API keys remain available only as a temporary migration aid, rollback tool, or internal path if explicitly retained
 
 ## Target Architecture
 
 ### External shape
 
-- Shared MCP endpoint:
+- Public MCP endpoint:
   - `https://app.example.com/mcp`
-- Frontend app:
-  - existing public HTTPS frontend URL
-- Auth issuer:
-  - Auth0 tenant issuer URL, for example `https://your-tenant.us.auth0.com/`
+- Existing frontend:
+  - unchanged
+- Existing account API:
+  - unchanged
+- Authorization server:
+  - external IdP, first implementation documented with Auth0
 
 ### Authentication model
 
-- OAuth 2.1 is the primary auth mechanism for hosted MCP.
-- Clients authenticate users through Auth0.
-- The MCP server validates the bearer token on every request.
-- The MCP server resolves the authenticated user to a local tenant membership.
-- Local tenant membership determines which tenant and database the request runs against.
+1. A remote MCP client connects to `/mcp`.
+2. If the request is unauthenticated, the server returns a proper `401` challenge with `WWW-Authenticate`.
+3. The client discovers protected resource metadata from the MCP server.
+4. The client discovers OAuth metadata from the authorization server.
+5. The client performs OAuth authorization code + PKCE where supported.
+6. The client sends `Authorization: Bearer <access-token>` to `/mcp`.
+7. The MCP server validates the token and resolves it to exactly one local `User`.
+8. The request is executed against that user's single connected database.
 
 ### Authorization model
 
-- All MCP tools require OAuth.
-- Authorization is tenant-scoped through local membership lookup.
-- A user may call tools only if:
-  - the token is valid
-  - the token audience matches the MCP resource
-  - the token contains required scopes
-  - the Auth0 subject is linked to a local tenant membership
-  - the tenant is active and has an active database
+The bearer token must pass all of the following checks:
 
-## Why Local Membership Remains the Source of Truth
+- valid signature
+- valid issuer
+- valid audience or resource
+- valid lifetime
+- required scopes present
+- OAuth identity linked to a local active user account
+- local user account is `active`
+- local user onboarding state is `setup_complete`
+- local user has an active connected database
 
-Auth0 Free is suitable for authentication, but Auth0 Organizations should not be treated as the core tenant model for this project because:
+### Internal identity model
 
-- Organizations availability varies by Auth0 plan.
-- The SaaS tenant and member model already exists in this repository.
-- The app already stores:
-  - tenants
-  - memberships
-  - owner sessions
-  - tenant databases
-  - API keys
-- Local membership lookup gives tighter control over:
-  - tenant isolation
-  - onboarding state
-  - account status
-  - database assignment
-  - future billing/entitlements
+The internal execution path should still resolve to `UserConfig`, so the tool layer remains user-scoped and unaware of whether the caller arrived through:
 
-Recommended mapping:
+- API key during transitional rollout
+- OAuth bearer token in the final architecture
 
-- Auth0 authenticates the user.
-- Local DB decides what that user can access.
+## What Changes and What Does Not
 
-## Production Recommendation
+### Stays unchanged in this phase
 
-### Recommended auth posture
+- account signup
+- email verification
+- login-link flow
+- session token auth for `/api/v1/account/*`
+- account onboarding state machine
+- one connected database per user
+- user-scoped quota and query history model
 
-- Primary: OAuth for all hosted user-facing MCP access.
-- Secondary: API keys for manual HTTP clients, internal tooling, dev workflows, and non-OAuth environments.
+### Changes in this phase
 
-### Why not API keys as primary auth
+- `/mcp` gains OAuth resource-server behavior
+- local users gain an OAuth identity linkage model
+- setup payloads stop presenting ChatGPT as unavailable
+- setup payloads become OAuth-aware for supported clients
+- public MCP auth target shifts from API keys to OAuth
 
-- ChatGPT's current MCP/App flow expects OAuth.
-- OAuth provides per-user identity, revocation, consent, and auditability.
-- API keys are not the right primary auth for a shared hosted MCP service exposed to end users.
+## Standards Requirements
 
-## Known Constraints
+The implementation should follow the MCP authorization model now expected by current clients and documentation:
 
-### ChatGPT and MCP authorization requirements
-
-The current OpenAI and MCP guidance requires the server to support:
-
-- OAuth 2.1
-- protected resource metadata
+- OAuth 2.1 protected resource behavior
+- OAuth 2.0 Protected Resource Metadata
 - `WWW-Authenticate` challenge responses
-- PKCE
-- dynamic client registration
-- audience/resource validation
+- PKCE with `S256`
+- Resource Indicators (`resource` parameter)
+- dynamic client registration where the client expects it
 
-### Auth0 Free limitation
+Operational meaning for this repository:
 
-The main risk in this rollout is dynamic client registration hardening.
+- the MCP server is the resource server
+- the external IdP is the authorization server
+- this repository should not implement its own general-purpose OAuth authorization server
 
-- ChatGPT currently expects DCR.
-- Auth0 supports DCR.
-- Auth0's stronger protections for DCR are limited compared with higher-tier setups.
-- This is acceptable for the agreed pilot-grade production rollout.
+## Provider Strategy
 
-## Existing Repo State
+### Core design
 
-### Current auth path
+The design should stay provider-agnostic at the architecture and code level:
 
-The current hosted `/mcp` path is bearer-API-key authenticated, not OAuth authenticated.
+- issuer URL
+- OAuth discovery metadata
+- JWKS
+- audience or resource validation
+- scopes
+- subject linkage
 
-Relevant files:
+The code should not be tightly named around Auth0 internals unless required by a specific setup helper.
 
-- [src/app.py](src/app.py)
-- [src/auth/middleware.py](src/auth/middleware.py)
-- [src/server.py](src/server.py)
-- [src/setup/config_templates.py](src/setup/config_templates.py)
-- [src/setup/service.py](src/setup/service.py)
-- [src/auth/user_store.py](src/auth/user_store.py)
-- [src/config.py](src/config.py)
+### First provider
 
-### Current setup limitation
+Auth0 is the first provider documented in this plan because:
 
-The setup payload generator explicitly marks ChatGPT as unsupported until OAuth exists.
+- it can serve as the authorization server
+- it publishes discovery metadata and JWKS
+- it can support the MCP OAuth pattern required by ChatGPT and other clients
+
+### What not to use from the old plan
+
+Do not carry forward any tenant- or organization-based assumptions:
+
+- no tenant membership lookup
+- no Auth0 Organizations dependency
+- no per-tenant authorization logic
+- no member invite/link flow
+
+This repository now authorizes exactly one local account per OAuth identity.
+
+## Recommended Local Data Model Changes
+
+### Current problem
+
+The current local identity is email-based and session-based. There is no durable OAuth identity linkage on `users`.
+
+### Recommended first rollout shape
+
+Add OAuth linkage fields directly to `users`.
+
+Recommended fields:
+
+- `oauth_issuer`
+- `oauth_subject`
+- `oauth_email`
+- `oauth_email_verified_at`
+- `oauth_last_login_at`
+
+Recommended constraints:
+
+- unique index on `(oauth_issuer, oauth_subject)`
+- searchable index on `oauth_email`
+
+These fields should be nullable initially so the migration is backward-compatible.
+
+### Why direct fields on `users`
+
+For this codebase, direct linkage on `users` is the simplest production-ready design because:
+
+- there is one account per user
+- there is no membership layer anymore
+- this avoids introducing a new identity-link table unless there is a real multi-provider requirement
+
+If multi-provider login becomes a real product requirement later, this can be normalized into a dedicated identity-link table in a future migration.
+
+## Recommended Linking Strategy
+
+### Production-safe recommendation
+
+Do not auto-link a local user purely from the first bearer token sent to `/mcp`.
+
+Recommended flow:
+
+1. User signs into the web app with the existing session flow.
+2. User explicitly starts a "Connect MCP account" flow from the authenticated app.
+3. The app completes one OAuth sign-in round-trip with the chosen provider.
+4. The callback binds `(issuer, subject)` to the currently signed-in `users.id`.
+5. Future `/mcp` bearer tokens resolve by subject, not by email.
+
+### Why explicit linking is recommended
+
+This is safer than blind first-login matching because it avoids:
+
+- accidental linkage to the wrong account
+- ambiguous email-based linking
+- linking from an unauthenticated `/mcp` request with no app session context
+
+### Email usage
+
+Email may still be used as a one-time safety check during explicit linking, but it should not be the primary runtime identity key. Runtime resolution should use:
+
+- `issuer`
+- `sub`
 
 ## Recommended Libraries
 
-### Keep
+### Keep using
 
 - `mcp`
-  - use the existing FastMCP auth primitives already present in the installed SDK
+  - use FastMCP auth support already present in the installed package
 
-### Add
+### Add or promote to runtime dependency
 
 - `PyJWT[crypto]`
-  - for JWT verification against Auth0 JWKS
+  - JWT validation against JWKS
 - `httpx`
-  - move to runtime dependency if used by JWKS/discovery fetch logic at runtime
+  - runtime fetches for discovery and JWKS if not already available at runtime
 
 ### Do not build
 
-- do not build a custom OAuth authorization server in this repo
-
-## High-Level Implementation Strategy
-
-### Core idea
-
-Use Auth0 as the issuer and FastMCP as the resource server surface.
-
-Implementation flow:
-
-1. Client connects to `/mcp`.
-2. If unauthenticated, server returns proper auth challenge and metadata.
-3. Client completes OAuth with Auth0.
-4. Client sends bearer token on every MCP request.
-5. Server verifies the token.
-6. Server resolves Auth0 user identity to a local tenant membership.
-7. Existing pipeline logic runs using the resolved tenant database configuration.
+- do not build a custom OAuth authorization server in this repository
+- do not build a custom MCP auth transport when FastMCP already supports the needed resource-server pieces
 
 ## Detailed Repo Work Plan
 
-## 1. Add OAuth configuration
+## 1. Add MCP OAuth configuration
 
 File:
 
 - [src/config.py](src/config.py)
 
-Add settings for:
+Add settings for the MCP OAuth surface, recommended names:
 
-- `AUTH_MODE`
-  - values: `hybrid`, `oauth_only`, `api_key_only`
+- `MCP_AUTH_MODE`
+  - values: `api_key_only`, `hybrid`, `oauth_only`
 - `MCP_RESOURCE_URL`
-  - canonical shared MCP URL, for example `https://app.example.com/mcp`
-- `AUTH0_ISSUER`
-  - Auth0 issuer base URL
-- `AUTH0_AUDIENCE`
-  - should match the configured MCP API audience
-- `AUTH0_JWKS_URL`
+  - canonical public URL for `/mcp`
+- `OAUTH_ISSUER_URL`
+  - provider issuer URL
+- `OAUTH_AUDIENCE`
+  - expected audience or resource value
+- `OAUTH_JWKS_URL`
   - optional override
-- `AUTH0_REQUIRED_SCOPES`
-  - comma-separated scopes
-- optional cache/timeout settings:
-  - `AUTH0_JWKS_CACHE_SECONDS`
-  - `AUTH0_HTTP_TIMEOUT_SECONDS`
+- `OAUTH_REQUIRED_SCOPES`
+  - comma-separated required scopes
+- `OAUTH_HTTP_TIMEOUT_SECONDS`
+- `OAUTH_JWKS_CACHE_SECONDS`
 
-Recommended defaults:
+Recommended posture:
 
-- `AUTH_MODE=hybrid` for first rollout
-- `AUTH0_REQUIRED_SCOPES=mcp:access`
+- staging rollout may use `MCP_AUTH_MODE=hybrid`
+- production target should be `MCP_AUTH_MODE=oauth_only`
 
-## 2. Extend tenant membership model for OAuth identity linkage
+## 2. Add OAuth linkage fields to `users`
 
 File:
 
 - [src/auth/user_store.py](src/auth/user_store.py)
 
-Add fields to `TenantMembership`:
+Add nullable columns for:
 
-- `auth_provider`
-  - for now expected value: `auth0`
-- `auth_subject`
-  - Auth0 user subject from token `sub`
-- optional `last_login_at`
+- `oauth_issuer`
+- `oauth_subject`
+- `oauth_email`
+- `oauth_email_verified_at`
+- `oauth_last_login_at`
 
-Add constraints/indexing:
+Add store methods for:
 
-- unique index on `(auth_provider, auth_subject)`
-- searchable index on `auth_subject`
-
-These fields must be nullable initially for backward compatibility.
+- loading a user by `(issuer, subject)`
+- linking a user to `(issuer, subject)`
+- updating last OAuth login timestamps
 
 ## 3. Add Alembic migration
 
@@ -226,439 +376,391 @@ Folder:
 
 Add a migration that:
 
-- adds new columns to `tenant_memberships`
-- creates the unique index
-- preserves existing data
-- is safe to run on existing environments
-
-No destructive backfill assumptions.
+- extends `users`
+- creates the unique index on `(oauth_issuer, oauth_subject)`
+- preserves existing users
+- assumes no destructive backfill
 
 ## 4. Add OAuth token verification module
 
-Create a new module, recommended:
+Create:
 
 - `src/auth/oauth_verifier.py`
 
 Responsibilities:
 
-- fetch JWKS from Auth0
+- fetch provider discovery metadata if needed
+- fetch JWKS
 - cache JWKS
 - verify JWT signature
 - verify `iss`
-- verify `aud`
+- verify `aud` or resource
 - verify `exp`
 - verify `nbf` if present
 - verify required scopes
-- extract `sub`
-- return a normalized auth context for downstream user lookup
+- extract normalized identity claims
 
-Recommended approach:
+Return a normalized auth context containing at least:
 
-- use `PyJWT[crypto]`
-- use `PyJWKClient` or equivalent JWKS lookup flow
-- cache keys and tolerate key rotation
+- issuer
+- subject
+- email if present
+- scopes
+- token expiry
 
-The verifier must reject:
+Reject:
 
 - missing bearer token
 - malformed token
 - invalid signature
 - wrong issuer
-- wrong audience
-- expired token
+- wrong audience or resource
+- expired or not-yet-valid token
 - insufficient scopes
 
 ## 5. Add OAuth identity resolution module
 
-Create a new module, recommended:
+Create:
 
 - `src/auth/oauth_identity.py`
 
 Responsibilities:
 
 - take verified token claims
-- resolve `sub` to local `TenantMembership`
-- fetch tenant
-- fetch active database
-- construct the same internal request-scoped user configuration used by existing tool execution
-
-Output should align with current `UserConfig` expectations so the tool layer does not need to know whether the caller used:
-
-- API key auth
-- OAuth auth
+- resolve `(issuer, subject)` to a local `User`
+- verify local account status and onboarding status
+- verify a connected database exists
+- return the same internal `UserConfig` shape used by the tool execution path
 
 Failure cases:
 
-- user not linked to any membership
-- tenant inactive
+- no linked user
+- user suspended or closed
 - setup incomplete
 - no active database
 
-## 6. Replace API-key-only MCP wrapping with FastMCP auth support
+## 6. Add explicit account-linking flow
 
-File:
+Recommended files:
 
-- [src/app.py](src/app.py)
+- [src/api/app.py](src/api/app.py)
+- [src/api/schemas.py](src/api/schemas.py)
+- frontend authenticated setup/account pages as needed
 
-Current state:
+Add a small authenticated flow that lets the currently signed-in user bind their local account to the OAuth identity used for MCP.
 
-- `/mcp` is mounted with a custom API-key wrapper
+This flow should:
 
-Target state:
+- require an existing session-authenticated app user
+- start provider sign-in
+- receive callback
+- validate returned identity
+- bind `(issuer, subject)` to the current `users.id`
 
-- use FastMCP auth support with:
-  - `auth=AuthSettings(...)`
-  - `token_verifier=<oauth verifier>`
+Do not make the first `/mcp` request perform automatic account creation or ambiguous account linking.
 
-Required behavior:
-
-- publish protected resource metadata
-- return proper `401` and `WWW-Authenticate` challenge
-- advertise the canonical MCP resource URL
-- validate bearer tokens on every request
-
-Keep hybrid support:
-
-- in `hybrid` mode, preserve API-key auth path for manual and legacy clients
-- in `oauth_only` mode, reject API-key-only MCP access
-
-Design note:
-
-- REST management APIs may continue using current owner-session and API-key logic
-- this plan is focused on hosted MCP auth
-
-## 7. Unify request-scoped identity handling
+## 7. Replace API-key-only MCP wrapping with FastMCP auth support
 
 Files:
 
 - [src/server.py](src/server.py)
+- [src/app.py](src/app.py)
+
+Current state:
+
+- `/mcp` is wrapped by custom API-key middleware
+
+Target state:
+
+- build the FastMCP app with `auth=AuthSettings(...)`
+- provide a `token_verifier`
+- let FastMCP expose protected resource metadata routes
+- let FastMCP emit proper `WWW-Authenticate` challenge behavior
+
+Recommended implementation approach:
+
+- instantiate the FastMCP server with OAuth auth settings when MCP auth mode includes OAuth
+- make `MCP_RESOURCE_URL` the canonical `resource_server_url`
+- use FastMCP middleware and route generation instead of continuing the custom wrapper as the long-term path
+
+## 8. Unify internal request-scoped identity
+
+Files:
+
 - [src/auth/middleware.py](src/auth/middleware.py)
+- [src/server.py](src/server.py)
 
 Goal:
 
-- both API-key auth and OAuth auth should resolve to the same internal request context model
+- both transitional API-key auth and final OAuth auth resolve to the same internal `UserConfig`
 
-Recommended direction:
+The MCP tools should remain user-scoped and should not care whether the caller authenticated with:
 
-- keep `UserConfig` as the canonical internal auth object
-- ensure OAuth requests populate the same fields needed by:
-  - pipeline factory
-  - query log
-  - entitlements
-  - quota enforcement
-
-`src.server` should not care whether auth came from:
-
-- API key
-- OAuth bearer token
-
-## 8. Add member management APIs
-
-This is required because the selected product model is:
-
-- per-user sign-in
-- all tenant members can use MCP tools
-
-Current repo state is owner-centric. A usable OAuth rollout needs member lifecycle support.
-
-Recommended additions in [src/api/app.py](src/api/app.py) and [src/api/schemas.py](src/api/schemas.py):
-
-- invite member by email
-- list members
-- remove member
-- view membership linkage status
-- optionally resend invite/link instructions
-
-Minimum pilot behavior:
-
-1. Owner invites member by email.
-2. A local membership record is created.
-3. Member signs in through Auth0.
-4. On first successful authenticated app flow, that Auth0 subject is linked to the pending membership.
-
-Possible matching strategies:
-
-- safest initial strategy:
-  - match Auth0 email to an invited membership email
-  - require exact email match
-- after match:
-  - set `auth_provider=auth0`
-  - set `auth_subject=<sub>`
-
-Avoid automatic tenant creation from OAuth login.
+- an API key during rollout
+- an OAuth access token in target state
 
 ## 9. Update setup payload generation
 
 Files:
 
-- [src/setup/config_templates.py](src/setup/config_templates.py)
 - [src/setup/service.py](src/setup/service.py)
+- [src/setup/config_templates.py](src/setup/config_templates.py)
+- tests under [tests/test_setup_payloads.py](tests/test_setup_payloads.py)
 
 Required changes:
 
-- ChatGPT should no longer be marked unsupported
-- setup payloads should explain OAuth-based connection
-- Claude setup should document OAuth bearer token usage instead of only raw API keys
-- generic HTTP payload should explain:
-  - OAuth path
-  - API-key fallback path if `AUTH_MODE=hybrid`
+- ChatGPT should no longer be marked unsupported once OAuth is live
+- VS Code payloads should describe OAuth-capable connection setup
+- Cursor payloads should describe OAuth-capable connection setup
+- generic HTTP payloads should clearly distinguish:
+  - OAuth-capable clients
+  - unsupported non-OAuth clients on the production public endpoint
 
-The setup UX should clearly distinguish:
+Important nuance:
 
-- user-facing OAuth clients
-- manual header-based API-key clients
+- ChatGPT and VS Code can drive OAuth against a compliant MCP server
+- Cursor documents OAuth support for remote SSE and Streamable HTTP MCP servers
+- Claude's MCP connector and OpenAI API remote MCP usage can consume bearer access tokens, but the calling application obtains and refreshes those tokens
 
-## 10. Update docs and environment examples
+That means setup UX should stop assuming a raw API key is the universal answer.
+
+## 10. Reposition existing API-key features
+
+Files:
+
+- [src/api/app.py](src/api/app.py)
+- [src/setup/service.py](src/setup/service.py)
+- frontend API-key screens and copy
+- [README.md](README.md)
+
+Recommended target posture:
+
+- keep API-key management temporarily if needed for rollout
+- stop presenting API keys as the preferred public MCP setup path
+- document them as transitional, internal, or rollback-only if they remain enabled
+
+If production is truly `oauth_only`, customer-facing setup payloads for public `/mcp` should not embed raw API keys as the primary path.
+
+## 11. Update docs and environment examples
 
 Files:
 
 - [README.md](README.md)
 - [.env.example](.env.example)
 
-Add:
+Document:
 
-- Auth0 configuration instructions
-- MCP resource URL guidance
-- shared URL architecture explanation
-- local membership linkage explanation
-- supported-client matrix
-- rollout limitations for Auth0 Free pilot
+- current app auth stays as-is
+- `/mcp` becomes OAuth-protected
+- canonical resource URL requirements
+- explicit account-linking step
+- Auth0 first-provider setup
+- supported client matrix
+- transitional API-key policy if retained during rollout
 
-## 11. Add tests
+## 12. Add tests
 
-Test areas:
+Recommended test areas:
 
 - protected resource metadata route
-- `401` challenge with `WWW-Authenticate`
-- token verification success
-- token verification failure cases
-- scope failure
-- Auth0 subject to membership resolution
-- tenant isolation
-- hybrid mode compatibility
+- `401` responses with correct `WWW-Authenticate`
+- token verification success and failure cases
+- wrong issuer rejection
+- wrong audience or resource rejection
+- scope rejection
+- subject-to-user resolution
+- suspended and setup-incomplete user rejection
+- explicit link flow
+- `hybrid` compatibility during rollout
+- `oauth_only` behavior in target state
 - setup payload correctness
 
-Recommended test files:
+Recommended locations:
 
 - new tests under `tests/auth/`
-- setup-related tests under `tests/setup/`
-- API tests for member management under `tests/api/`
+- API tests under `tests/api/`
+- setup payload tests under `tests/setup/` or the existing setup test files
 
-## Auth0 Configuration Plan
+## Auth0 First-Provider Plan
+
+This section is implementation-specific to the first provider. The core architecture above should remain generic.
 
 ## 1. Create Auth0 tenant
 
-Use Auth0 Free for initial rollout.
+Use an Auth0 tenant that will act as the authorization server for the MCP resource.
 
-## 2. Create frontend application
+## 2. Create an Auth0 application for the account-linking flow
 
 Purpose:
 
-- user sign-in for the frontend
-- support Authorization Code + PKCE
+- explicit "Connect MCP account" flow from the signed-in web app
+- authorization code + PKCE
+
+This is only for linking the local app account to the OAuth identity. It does not replace the app's main login system in this phase.
 
 ## 3. Create an Auth0 API for the MCP resource
 
-This API represents the MCP server as the protected resource.
+This API represents the protected resource:
 
-Set:
+- recommended identifier: the canonical MCP resource URL
+- example: `https://app.example.com/mcp`
 
-- identifier / audience:
-  - recommended to match the canonical MCP resource URL
-  - example: `https://app.example.com/mcp`
-
-Define scopes:
+Define scopes, for example:
 
 - `mcp:access`
 
-Optional future scopes:
+## 4. Configure discovery, JWKS, and audience
 
-- `mcp:read`
-- `mcp:admin`
+The implementation will validate tokens using:
 
-For the current design, one shared scope is enough.
+- issuer
+- JWKS
+- audience or resource matching the MCP resource
 
-## 4. Enable DCR
+## 5. Configure dynamic client registration posture
 
-This is required for ChatGPT compatibility under current MCP/OpenAI guidance.
+Current client expectations still make DCR relevant for some MCP clients, especially ChatGPT.
 
-Security note:
+For Auth0, verify:
 
-- this is the main pilot risk on Auth0 Free
-- monitor and restrict as much as possible within free-plan limits
+- registration endpoint exposure
+- allowed redirect URI policy
+- PKCE support
+- resource parameter handling
 
-## 5. Configure redirect URIs
+## 6. Configure allowed redirect URIs
 
-Need:
+At minimum:
 
-- frontend app callback URL
-- any logout URLs required by frontend
-- ChatGPT connector/app redirect URI shown during ChatGPT setup
+- the account-linking callback URL in your web app
+- the ChatGPT connector redirect URI shown during setup
+- any provider-specific localhost or VS Code redirect URIs required by supported clients during their OAuth flow
 
-## 6. Issuer and discovery
+## Rollout Strategy
 
-Your Auth0 issuer will be the auth server metadata source.
+### Recommended rollout phases
 
-Example issuer:
+## Phase 1: foundation
 
-- `https://your-tenant.us.auth0.com/`
+- config surface
+- `users` schema extension
+- Alembic migration
+- token verifier
+- identity resolution
 
-Clients will discover:
+## Phase 2: account linking
 
-- `/.well-known/oauth-authorization-server`
-- or OIDC discovery endpoint as supported
+- explicit authenticated link flow
+- callback handling
+- local subject binding
 
-## OAuth Flow to Support
+## Phase 3: MCP auth wiring
 
-### ChatGPT / OpenAI app flow
+- FastMCP auth settings
+- protected resource metadata
+- `WWW-Authenticate`
+- request-context unification
 
-1. ChatGPT calls MCP without valid token.
-2. MCP server returns `401` with `WWW-Authenticate`.
-3. ChatGPT fetches protected resource metadata.
-4. Metadata points to Auth0 issuer.
-5. ChatGPT performs DCR.
-6. ChatGPT performs Authorization Code + PKCE.
-7. ChatGPT receives token for the MCP resource.
-8. ChatGPT calls `/mcp` with `Authorization: Bearer <token>`.
-9. Server verifies token and resolves tenant membership.
+## Phase 4: setup UX and docs
 
-### Claude MCP connector flow
+- setup payload changes
+- frontend copy changes
+- README and `.env.example` updates
 
-Claude's connector supports OAuth bearer tokens for authenticated servers.
+## Phase 5: transitional rollout
 
-Operationally:
+- run `hybrid` in non-production if needed
+- validate rollback path
+- verify client compatibility
 
-- bearer token must be valid for the MCP resource
-- server must validate it on every request
+## Phase 6: production cutover
 
-### Generic OAuth-capable MCP clients
+- switch public `/mcp` to `oauth_only`
+- remove public-facing API-key setup guidance
+- keep API-key support only if explicitly needed for rollback or internal usage
 
-They should work with the same protected resource metadata and bearer-token validation model.
+## Client Support Matrix to Plan Against
 
-## Internal Data Model Changes
+### ChatGPT
 
-### Existing model to keep
+Target support:
 
-- `Tenant`
-- `TenantMembership`
-- `TenantDatabase`
-- `OwnerSession`
-- `ApiKey`
+- full OAuth-driven remote MCP connection
 
-### New linkage fields
+Requirements to satisfy:
 
-On `TenantMembership`:
+- protected resource metadata
+- `WWW-Authenticate`
+- authorization server discovery
+- DCR
+- PKCE `S256`
+- resource parameter support
 
-- `auth_provider`
-- `auth_subject`
-- optional `last_login_at`
+### VS Code
 
-### Optional future additions
+Target support:
 
-Not required for the first rollout, but may be useful later:
+- OAuth-driven remote MCP connection
 
-- `invite_status`
-- `invited_at`
-- `joined_at`
-- `role`
-- `auth_email_verified_at`
+Planning note:
 
-## Error Handling Requirements
+- current VS Code documentation explicitly supports OAuth for MCP servers and documents DCR-first behavior with fallback handling
 
-### MCP HTTP auth errors
+### Cursor
 
-When auth is missing or invalid:
+Target support:
 
-- return `401 Unauthorized`
-- include `WWW-Authenticate`
-- include protected resource metadata URL
+- OAuth-driven remote MCP connection for remote SSE and Streamable HTTP MCP servers
 
-When scopes are insufficient:
+Planning note:
 
-- return `403 Forbidden` or the appropriate challenge behavior supported by FastMCP
+- current Cursor docs state OAuth support for remote HTTP/SSE MCP servers
 
-### User-resolution failures
+### Claude MCP connector
 
-Examples:
+Target support:
 
-- token valid but no linked membership
-- linked user belongs to no active tenant
-- tenant setup incomplete
-- tenant has no active database
+- bearer access token supplied by the caller after completing OAuth externally
 
-These must fail cleanly and not leak tenant information.
+Planning note:
 
-## Backward Compatibility
+- Claude's connector accepts an `authorization_token`
+- the API consumer owns token acquisition and refresh
 
-### First rollout mode
+### OpenAI API remote MCP usage
 
-Recommended:
+Target support:
 
-- `AUTH_MODE=hybrid`
+- bearer access token supplied by the caller when using remote MCP through the API
 
-Meaning:
+Planning note:
 
-- OAuth works for ChatGPT, OpenAI MCP, Claude, and future user-facing clients
-- API keys still work for manual clients and internal testing
-
-### Future direction
-
-After the pilot stabilizes:
-
-- consider moving hosted `/mcp` to `oauth_only`
-- retain API keys only for management APIs or internal service paths if desired
+- current OpenAI remote MCP docs say the caller may need to pass an OAuth authorization token depending on the server
 
 ## Security Checklist
 
 - validate JWT signature against JWKS
 - validate issuer exactly
-- validate audience exactly
-- validate expiration
-- validate scopes
-- never trust token claims without signature verification
-- do not resolve tenant from user-supplied headers or query params
-- resolve tenant only from verified identity plus local membership
-- ensure all MCP requests stay tenant-isolated
+- validate audience or resource exactly
+- validate expiration and `nbf`
+- validate required scopes
+- never trust unsigned token claims
+- never resolve users from headers, query params, or email alone at request time
+- resolve the local user from verified `(issuer, subject)`
+- require explicit local account linking
+- ensure all MCP execution remains user-scoped
 - log auth failures without logging raw tokens
 - cache JWKS safely
-- handle JWKS rotation
-- ensure canonical resource URL is stable and consistent
+- handle key rotation
+- keep `MCP_RESOURCE_URL` canonical and stable
+- require HTTPS in production
 
-## Rollout Plan
+## Open Questions to Resolve During Implementation
 
-## Phase 1: foundation
-
-- config settings
-- membership schema changes
-- Alembic migration
-- JWT verifier
-
-## Phase 2: MCP auth wiring
-
-- FastMCP auth integration
-- metadata publication
-- challenge responses
-- request-scoped identity unification
-
-## Phase 3: membership enablement
-
-- invite/list/remove member APIs
-- first-login subject linkage flow
-
-## Phase 4: setup UX and docs
-
-- setup payload changes
-- README changes
-- `.env.example` changes
-
-## Phase 5: validation
-
-- automated tests
-- manual validation with:
-  - MCP Inspector
-  - ChatGPT
-  - OpenAI API MCP usage
-  - Claude MCP connector
+- whether the account-linking callback should live in the backend, frontend, or both
+- exact UI placement for the "Connect MCP account" flow in the authenticated app
+- whether API-key issuance should be fully hidden once production `/mcp` is `oauth_only`
+- whether a future phase should replace the app's current login flow with provider-based login as a separate project
 
 ## Recommended File Change List
 
@@ -678,62 +780,47 @@ Likely files to edit:
 - `alembic/versions/<new_migration>.py`
 - `src/auth/oauth_verifier.py`
 - `src/auth/oauth_identity.py`
-- new test files under `tests/`
-
-## Open Questions to Resolve During Implementation
-
-- whether pinned `mcp==1.26.0` is sufficient for the exact tool-level auth metadata ChatGPT expects, or whether a stable v1.x upgrade is needed
-- exact member invite/link UX in the frontend
-- whether email-match linking is enough for the first rollout or if explicit invite acceptance is needed
-- whether OAuth should eventually replace API-key auth entirely on `/mcp`
-
-## Execution Order
-
-Recommended order of implementation:
-
-1. schema changes for membership linkage
-2. config surface
-3. JWT verifier
-4. OAuth identity resolution
-5. FastMCP auth wiring on `/mcp`
-6. hybrid auth compatibility
-7. member management APIs
-8. setup payload updates
-9. docs
-10. tests
+- optional frontend auth-linking files
+- new tests under `tests/`
 
 ## Acceptance Criteria
 
 OAuth support is complete when all of the following are true:
 
-- `/mcp` exposes valid MCP/OAuth auth discovery metadata
-- unauthenticated requests produce correct auth challenges
-- Auth0-issued bearer tokens are accepted only when valid for this MCP resource
-- authenticated users are mapped to the correct local tenant membership
-- all tenant members can use MCP tools
-- tenant isolation holds across requests
+- `/mcp` exposes valid OAuth protected resource metadata
+- unauthenticated `/mcp` requests produce correct `401` responses with `WWW-Authenticate`
+- valid provider-issued bearer tokens are accepted only when minted for this MCP resource
+- OAuth identities resolve to exactly one linked local `User`
+- unlinked, inactive, suspended, closed, or setup-incomplete users are rejected cleanly
+- MCP execution still resolves to the same user-scoped `UserConfig`
 - ChatGPT can connect through OAuth
-- OpenAI API MCP usage can connect through OAuth
-- Claude MCP connector can connect with OAuth bearer tokens
-- API-key fallback still works in hybrid mode
+- VS Code can connect through OAuth
+- Cursor can connect through OAuth
+- Claude and OpenAI API remote MCP usage can call the server with valid access tokens obtained externally
+- production public `/mcp` can run in `oauth_only`
 
 ## Sources
 
-- OpenAI MCP guide:
-  - https://developers.openai.com/api/docs/mcp
-- OpenAI Apps SDK auth:
+External references used for this plan:
+
+- OpenAI Apps SDK authentication:
   - https://developers.openai.com/apps-sdk/build/auth
+- OpenAI remote MCP guide:
+  - https://developers.openai.com/api/docs/guides/tools-connectors-mcp
 - MCP authorization specification:
-  - https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
-- Anthropic MCP connector:
+  - https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+- Claude MCP connector:
   - https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
-- Auth0 MCP overview:
-  - https://auth0.com/ai/docs/mcp/intro/overview
-- Auth0 MCP client registration guide:
-  - https://auth0.com/ai/docs/mcp/guides/registering-your-mcp-client-application
-- Auth0 Organizations docs:
-  - https://auth0.com/docs/organizations
-- Auth0 pricing:
-  - https://auth0.com/pricing
-- PyJWT docs:
-  - https://pyjwt.readthedocs.io/
+- VS Code MCP developer guide:
+  - https://code.visualstudio.com/api/extension-guides/mcp
+- Cursor MCP documentation:
+  - https://docs.cursor.com/en/context/mcp
+
+Local repository references used for this plan:
+
+- [src/auth/user_store.py](src/auth/user_store.py)
+- [src/api/app.py](src/api/app.py)
+- [src/app.py](src/app.py)
+- [src/auth/middleware.py](src/auth/middleware.py)
+- [src/setup/config_templates.py](src/setup/config_templates.py)
+- [alembic/versions/0007_single_user_schema.py](alembic/versions/0007_single_user_schema.py)
