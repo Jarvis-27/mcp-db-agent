@@ -39,6 +39,7 @@ class OAuthClaims:
     scopes: frozenset[str]
     expires_at: int  # Unix timestamp
     email: str | None = None
+    email_verified: bool | None = None
     audience: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -129,7 +130,7 @@ class OAuthVerifier:
         decode_options: dict[str, bool] = {
             "verify_exp": True,
             "verify_nbf": True,
-            "verify_iss": True,
+            "verify_iss": False,  # checked manually in _extract_claims to handle trailing-slash variants
             "verify_aud": bool(self._audience),
         }
         try:
@@ -137,18 +138,14 @@ class OAuthVerifier:
                 raw_token,
                 signing_key.key,
                 algorithms=self._ACCEPTED_ALGORITHMS,
-                issuer=self._issuer,
                 audience=self._audience if self._audience else None,
                 options=decode_options,
+                leeway=30,  # tolerate up to 30s clock skew between IdP and server
             )
         except jwt.ExpiredSignatureError:
             raise OAuthVerificationError("Token has expired")
         except jwt.ImmatureSignatureError:
             raise OAuthVerificationError("Token is not yet valid (nbf check failed)")
-        except jwt.InvalidIssuerError:
-            raise OAuthVerificationError(
-                f"Token issuer does not match expected issuer '{self._issuer}'"
-            )
         except jwt.InvalidAudienceError:
             raise OAuthVerificationError(
                 f"Token audience does not match expected audience '{self._audience}'"
@@ -162,6 +159,14 @@ class OAuthVerifier:
         return payload
 
     def _extract_claims(self, payload: dict) -> OAuthClaims:
+        # Manual issuer check — strips trailing slashes from both sides so that
+        # "https://example.auth0.com/" and "https://example.auth0.com" compare equal.
+        token_issuer = str(payload.get("iss", "")).rstrip("/")
+        if token_issuer != self._issuer:
+            raise OAuthVerificationError(
+                f"Token issuer does not match expected issuer '{self._issuer}'"
+            )
+
         subject = payload.get("sub")
         if not subject:
             raise OAuthVerificationError("Token is missing the 'sub' claim")
@@ -187,11 +192,15 @@ class OAuthVerifier:
         else:
             audience = ()
 
+        raw_email_verified = payload.get("email_verified")
+        email_verified: bool | None = bool(raw_email_verified) if raw_email_verified is not None else None
+
         return OAuthClaims(
             issuer=str(payload.get("iss", self._issuer)),
             subject=str(subject),
             scopes=scopes,
             expires_at=int(payload.get("exp", int(time.time()) + 3600)),
             email=payload.get("email") or None,
+            email_verified=email_verified,
             audience=audience,
         )

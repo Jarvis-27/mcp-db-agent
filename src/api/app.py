@@ -814,9 +814,6 @@ async def oauth_link_start(
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
-    if settings.oauth_audience:
-        params["audience"] = settings.oauth_audience
-
     authorization_url = f"{issuer}/authorize?{urlencode(params)}"
     return OAuthLinkStartResponse(authorization_url=authorization_url, state=state)
 
@@ -861,7 +858,7 @@ async def oauth_link_callback(
 
     try:
         async with httpx.AsyncClient(timeout=settings.oauth_http_timeout_seconds) as client:
-            resp = await client.post(token_url, json=token_payload)
+            resp = await client.post(token_url, data=token_payload)
         resp.raise_for_status()
         token_data = resp.json()
     except Exception as exc:
@@ -880,15 +877,18 @@ async def oauth_link_callback(
 
     from src.auth.oauth_verifier import OAuthVerifier, OAuthVerificationError
 
+    # For linking we only need identity claims (issuer + sub), not resource access.
+    # id_token is always a signed JWT; access_token may be opaque when no audience
+    # was requested, so prefer id_token here and skip audience verification.
     verifier = OAuthVerifier(
         issuer_url=settings.oauth_issuer_url,
-        audience=settings.oauth_audience,
-        required_scopes=[],  # no scope requirement for linking
+        audience="",  # no audience check — id_token aud is the client_id, not the MCP resource
+        required_scopes=[],
         jwks_url=settings.oauth_jwks_url,
         jwks_cache_ttl=settings.oauth_jwks_cache_seconds,
     )
 
-    access_token = token_data.get("access_token") or token_data.get("id_token", "")
+    access_token = token_data.get("id_token") or token_data.get("access_token", "")
     try:
         claims = verifier.verify(access_token)
     except OAuthVerificationError as exc:
@@ -899,14 +899,17 @@ async def oauth_link_callback(
         )
 
     from src.auth.user_store import StateTransitionError
+    from datetime import UTC, datetime
 
     user_store: UserStore = request.app.state.user_store
+    email_verified_at = datetime.now(UTC) if claims.email_verified else None
     try:
         user_store.link_user_oauth_identity(
             user_id,
             issuer=claims.issuer,
             subject=claims.subject,
             oauth_email=claims.email,
+            oauth_email_verified_at=email_verified_at,
         )
     except StateTransitionError as exc:
         logger.warning("OAuth link conflict for user %s: %s", user_id, exc)

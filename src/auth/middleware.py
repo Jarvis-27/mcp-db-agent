@@ -126,10 +126,13 @@ class ApiKeyMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# OAuth-only middleware
+# OAuth-only middleware (DEPRECATED)
 # ---------------------------------------------------------------------------
 
-
+# DEPRECATED: Use src.auth.mcp_token_verifiers.OAuthMCPTokenVerifier with FastMCP
+# native auth (token_verifier + AuthSettings) instead.  This class is retained
+# only so that tests/auth/test_oauth_middleware.py continues to pass during the
+# transition.  It will be deleted once test_mcp_token_verifiers.py is confirmed.
 class OAuthMCPMiddleware:
     """ASGI middleware that enforces OAuth 2.1 bearer tokens at /mcp.
 
@@ -203,10 +206,11 @@ class OAuthMCPMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# Hybrid middleware (OAuth preferred, API keys as fallback)
+# Hybrid middleware (OAuth preferred, API keys as fallback) (DEPRECATED)
 # ---------------------------------------------------------------------------
 
-
+# DEPRECATED: Use src.auth.mcp_token_verifiers.HybridMCPTokenVerifier with FastMCP
+# native auth instead.  Retained for test continuity during transition.
 class HybridMCPMiddleware:
     """ASGI middleware that accepts both OAuth tokens and mdbk_* API keys.
 

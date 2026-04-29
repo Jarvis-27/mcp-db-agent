@@ -23,7 +23,12 @@ from starlette.routing import Mount
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
-from src.auth.middleware import ApiKeyMiddleware, HybridMCPMiddleware, OAuthMCPMiddleware
+from src.auth.mcp_token_verifiers import (
+    HybridMCPTokenVerifier,
+    OAuthMCPTokenVerifier,
+    UserConfigResetMiddleware,
+)
+from src.auth.middleware import ApiKeyMiddleware
 from src.auth.token_store import TokenStore
 from src.auth.user_store import UserStore
 from src.config import settings
@@ -198,17 +203,16 @@ async def lifespan(app: Starlette):
     server_module._query_log = query_log  # type: ignore[attr-defined]
     server_module._user_store = user_store  # type: ignore[attr-defined]
 
-    # 8. Wire MCP auth middleware now that UserStore is available
+    # 8. Build the auth-wired MCP ASGI app now that UserStore is available
     mcp_mount_index = _find_mcp_mount_index(app)
     if mcp_mount_index is not None:
         auth_mode = settings.mcp_auth_mode
-        wrapped = _wrap_mcp_app(
-            _mcp_app,
+        mcp_asgi = _build_mcp_asgi(
             auth_mode=auth_mode,
             user_store=user_store,
             api_key_cache=auth_key_cache,
         )
-        app.routes[mcp_mount_index] = Mount("/mcp", app=wrapped)
+        app.routes[mcp_mount_index] = Mount("/mcp", app=mcp_asgi)
         log.info("MCP auth mode: %s", auth_mode)
 
     log.info("MCP Database Analytics Agent started (hosted single-account HTTP mode)")
@@ -235,44 +239,62 @@ def _find_mcp_mount_index(app: Starlette) -> int | None:
     return None
 
 
-def _wrap_mcp_app(mcp_app, *, auth_mode: str, user_store: UserStore, api_key_cache: TTLCache):
-    """Return the appropriate auth-wrapping ASGI app for *mcp_app*."""
-    meta_url = _resource_metadata_url()
+def _build_mcp_asgi(*, auth_mode: str, user_store: UserStore, api_key_cache: TTLCache):
+    """Build the auth-wired MCP ASGI app for the given auth mode.
+
+    For ``api_key_only`` (or OAuth modes where OAuth is not yet configured),
+    the existing ``ApiKeyLazyWrapper`` path is used unchanged.
+
+    For ``oauth_only`` and ``hybrid``, we inject a ``TokenVerifier`` adapter
+    and ``AuthSettings`` into the FastMCP instance before calling
+    ``streamable_http_app()``.  FastMCP then handles ``BearerAuthBackend``,
+    ``RequireAuthMiddleware``, and ``WWW-Authenticate`` challenge responses
+    natively.  A thin ``UserConfigResetMiddleware`` wrapper resets
+    ``user_config_var`` after each request.
+
+    Note: ``streamable_http_app()`` is deferred to this function (called in
+    the lifespan) so that the ``UserStore`` is available when building the
+    token verifier.  Calling this function twice on the same ``mcp`` instance
+    is safe — the session manager is reused on the second call.
+    """
+    mcp = _server_module.mcp
+
+    if auth_mode == "api_key_only" or not settings.oauth_is_configured():
+        if auth_mode != "api_key_only":
+            log.warning(
+                "MCP_AUTH_MODE=%s but OAuth is not configured "
+                "(OAUTH_ISSUER_URL and MCP_RESOURCE_URL are required). "
+                "Falling back to api_key_only.",
+                auth_mode,
+            )
+        raw_app = mcp.streamable_http_app()
+        return _api_key_wrapper(raw_app, user_store, api_key_cache)
+
+    verifier, resolver = _make_oauth_components(user_store)
 
     if auth_mode == "oauth_only":
-        if not settings.oauth_is_configured():
-            log.error(
-                "MCP_AUTH_MODE=oauth_only but OAuth is not configured "
-                "(OAUTH_ISSUER_URL and MCP_RESOURCE_URL are required). "
-                "Falling back to api_key_only."
-            )
-            return _api_key_wrapper(mcp_app, user_store, api_key_cache)
-        verifier, resolver = _make_oauth_components(user_store)
-        return OAuthMCPMiddleware(
-            mcp_app,
-            verifier=verifier,
-            resolver=resolver,
-            resource_metadata_url=meta_url,
-        )
-
-    if auth_mode == "hybrid":
-        if not settings.oauth_is_configured():
-            log.warning(
-                "MCP_AUTH_MODE=hybrid but OAuth is not configured — using api_key_only."
-            )
-            return _api_key_wrapper(mcp_app, user_store, api_key_cache)
-        verifier, resolver = _make_oauth_components(user_store)
-        return HybridMCPMiddleware(
-            mcp_app,
+        token_verifier = OAuthMCPTokenVerifier(verifier=verifier, resolver=resolver)
+    else:  # hybrid
+        token_verifier = HybridMCPTokenVerifier(
             verifier=verifier,
             resolver=resolver,
             user_store=user_store,
             api_key_cache=api_key_cache,
-            resource_metadata_url=meta_url,
+            fastmcp_required_scopes=settings.oauth_required_scopes_list(),
         )
 
-    # Default: api_key_only
-    return _api_key_wrapper(mcp_app, user_store, api_key_cache)
+    from mcp.server.auth.settings import AuthSettings
+    from pydantic import AnyHttpUrl
+
+    mcp.settings.auth = AuthSettings(
+        issuer_url=AnyHttpUrl(settings.oauth_issuer_url.rstrip("/")),
+        required_scopes=settings.oauth_required_scopes_list() or None,
+        resource_server_url=AnyHttpUrl(settings.effective_mcp_resource_url()),
+    )
+    mcp._token_verifier = token_verifier
+
+    raw_app = mcp.streamable_http_app()
+    return UserConfigResetMiddleware(raw_app)
 
 
 def _api_key_wrapper(mcp_app, user_store: UserStore, cache: TTLCache) -> "ApiKeyLazyWrapper":
@@ -311,18 +333,21 @@ class ApiKeyLazyWrapper:
 
 
 # ---------------------------------------------------------------------------
-# Build the MCP ASGI app
-# ---------------------------------------------------------------------------
-
-_mcp_app = _server_module.mcp.streamable_http_app()
-
-# ---------------------------------------------------------------------------
 # Build routes (including protected resource metadata if OAuth is configured)
 # ---------------------------------------------------------------------------
 
+# The /mcp mount uses a startup placeholder because streamable_http_app() must
+# be called in the lifespan (after UserStore is available for token verifiers).
+# The lifespan replaces this mount before any requests are served.
+async def _mcp_startup_placeholder(scope, receive, send) -> None:
+    """503 stub — replaced in lifespan before the first request is served."""
+    if scope["type"] == "http":
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b'{"detail":"server starting"}'})
+
 _base_routes = [
     Mount("/api", app=api_app),
-    Mount("/mcp", app=_mcp_app),  # placeholder; replaced in lifespan
+    Mount("/mcp", app=_mcp_startup_placeholder),  # replaced in lifespan
 ]
 _base_routes.extend(_build_protected_resource_routes())
 

@@ -50,13 +50,13 @@ class _FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
 
-    async def post(self, url: str, json: dict) -> _FakeTokenResponse:
+    async def post(self, url: str, data: dict) -> _FakeTokenResponse:
         assert url == "https://issuer.example.com/oauth/token"
-        assert json["grant_type"] == "authorization_code"
-        assert json["client_id"] == "client_123"
-        assert json["redirect_uri"] == "http://localhost:8000/api/v1/account/mcp-oauth/callback"
-        assert json["code"] == "oauth-code"
-        assert json["code_verifier"]
+        assert data["grant_type"] == "authorization_code"
+        assert data["client_id"] == "client_123"
+        assert data["redirect_uri"] == "http://localhost:8000/api/v1/account/mcp-oauth/callback"
+        assert data["code"] == "oauth-code"
+        assert data["code_verifier"]
         return _FakeTokenResponse()
 
 

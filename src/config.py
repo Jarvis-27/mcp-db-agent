@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -123,6 +123,21 @@ class Settings(BaseSettings):
                 "close public registration."
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_oauth_audience(self) -> "Settings":
+        if (
+            self.mcp_auth_mode in {"hybrid", "oauth_only"}
+            and not self.oauth_audience
+            and self.environment != "development"
+        ):
+            raise ValueError(
+                "OAUTH_AUDIENCE must be set when MCP_AUTH_MODE is 'hybrid' or "
+                "'oauth_only' in non-development environments. "
+                "Set it to the resource-server identifier registered with your "
+                "authorization server (e.g. https://app.example.com/mcp)."
+            )
+        return self
 
     def credential_encryption_keys_list(self) -> list[str]:
         return [k.strip() for k in self.credential_encryption_keys.split(",") if k.strip()]
