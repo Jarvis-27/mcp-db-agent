@@ -130,6 +130,44 @@ def test_get_account_missing_session_returns_401(client):
     assert resp.status_code == 401
 
 
+def test_get_database_metadata_returns_safe_connection_summary(client, registered_user):
+    resp = client.get(
+        "/v1/account/database",
+        headers={"x-session-token": registered_user["session_token"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "name": "primary",
+        "db_type": "postgresql",
+        "connected": True,
+        "host": "8.8.8.8",
+        "database_name": "mydb",
+        "last_validated_at": data["last_validated_at"],
+    }
+    assert data["last_validated_at"] is not None
+    assert "pass" not in resp.text
+    assert "postgresql://user" not in resp.text
+
+
+def test_validate_database_connection_rechecks_stored_connection(client, registered_user):
+    with (
+        patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
+        patch("src.api.app._dry_run_connect") as dry_run,
+    ):
+        resp = client.post(
+            "/v1/account/database/validate",
+            headers={"x-session-token": registered_user["session_token"]},
+        )
+
+    assert resp.status_code == 200
+    dry_run.assert_called_once()
+    data = resp.json()
+    assert data["connected"] is True
+    assert data["host"] == "8.8.8.8"
+    assert data["database_name"] == "mydb"
+
+
 def test_bearer_session_token_accepted_on_account(client, registered_user):
     token = registered_user["session_token"]
     resp = client.get("/v1/account", headers={"authorization": f"Bearer {token}"})

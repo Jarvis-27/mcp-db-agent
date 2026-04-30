@@ -57,6 +57,15 @@ class DatabaseResponse(BaseModel):
     next_step: str
 
 
+class DatabaseMetadataResponse(BaseModel):
+    name: str
+    db_type: str | None
+    connected: bool
+    host: str | None
+    database_name: str | None
+    last_validated_at: str | None
+
+
 class AccountStatusResponse(BaseModel):
     user_id: str
     status: str        # onboarding progress state
@@ -194,12 +203,17 @@ class DashboardSummaryResponse(BaseModel):
 class RecentQueryItem(BaseModel):
     id: int
     timestamp: str
+    created_at: str
     question: str
     sql: str | None
     success: bool
     row_count: int | None
     duration_ms: int | None
     error: str | None
+    attempts: int
+    warning_level: str | None
+    api_key_id: str | None
+    api_key_name: str | None = None
 
 
 class UsageRecentResponse(BaseModel):

@@ -489,6 +489,25 @@ class UserStore:
                 validation_status=str(user.db_validation_status or "validated"),
             )
 
+    def set_user_database_validation_status(
+        self,
+        user_id: str,
+        *,
+        validation_status: str,
+        validation_error: str | None,
+    ) -> bool:
+        now = _utcnow()
+        with Session(self._engine) as session:
+            user = session.get(User, user_id)
+            if user is None or user.db_url_enc is None:
+                return False
+            user.db_validation_status = validation_status  # type: ignore[assignment]
+            user.db_last_validation_at = now  # type: ignore[assignment]
+            user.db_last_validation_error = validation_error  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
+            return True
+
     # ------------------------------------------------------------------
     # Machine API key lifecycle
     # ------------------------------------------------------------------

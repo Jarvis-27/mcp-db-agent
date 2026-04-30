@@ -1,8 +1,14 @@
-export type ReturnToRoute = '/api-keys' | '/setup/clients'
+export type ReturnToRoute =
+  | '/api-keys'
+  | '/setup/clients'
+  | '/app/api-keys'
+  | '/app/setup/clients'
 
 const ALLOWED_RETURN_TO: ReadonlySet<ReturnToRoute> = new Set([
   '/api-keys',
   '/setup/clients',
+  '/app/api-keys',
+  '/app/setup/clients',
 ])
 
 export function sanitizeReturnTo(value: string | undefined): ReturnToRoute | null {

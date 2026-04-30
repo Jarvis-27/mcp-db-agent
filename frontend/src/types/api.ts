@@ -56,6 +56,15 @@ export interface AccountDatabaseResponse {
   next_step: string
 }
 
+export interface DatabaseMetadataResponse {
+  name: string
+  db_type: string | null
+  connected: boolean
+  host: string | null
+  database_name: string | null
+  last_validated_at: string | null
+}
+
 export interface CreatedApiKeyResponse {
   id: string
   name: string
@@ -133,6 +142,27 @@ export interface OAuthLinkStatusResponse {
   issuer: string | null
   oauth_email: string | null
   oauth_last_login_at: string | null
+}
+
+export interface RecentQueryItem {
+  id: number
+  timestamp: string
+  created_at: string
+  question: string
+  sql: string | null
+  success: boolean
+  row_count: number | null
+  duration_ms: number | null
+  error: string | null
+  attempts: number
+  warning_level: string | null
+  api_key_id: string | null
+  api_key_name: string | null
+}
+
+export interface RecentQueriesResponse {
+  items: RecentQueryItem[]
+  total: number
 }
 
 export interface ApiError {

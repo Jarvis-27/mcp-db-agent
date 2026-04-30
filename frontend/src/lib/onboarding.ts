@@ -5,7 +5,16 @@ import type {
   OnboardingStatus,
 } from '@/types/api'
 
-export type ProtectedRoute = '/api-keys' | '/setup/api-key' | '/setup/clients' | '/setup/database' | '/setup/status'
+export type ProtectedRoute =
+  | '/api-keys'
+  | '/setup/api-key'
+  | '/setup/clients'
+  | '/setup/database'
+  | '/setup/status'
+  | '/app/dashboard'
+  | '/app/setup/database'
+  | '/app/setup/clients'
+  | '/app/api-keys'
 
 export function resolveOnboardingDestination(
   status: OnboardingStatus,
@@ -17,9 +26,9 @@ export function resolveOnboardingDestination(
 
   switch (status) {
     case 'setup_complete':
-      return '/setup/clients'
+      return '/app/dashboard'
     case 'pending_db_connection':
-      return '/setup/database'
+      return '/app/setup/database'
     case 'pending_email_verification':
     default:
       return '/setup/status'

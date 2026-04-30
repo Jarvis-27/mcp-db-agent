@@ -1,5 +1,7 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { AlertCircle } from 'lucide-react'
+import { BrandMark } from '@/components/brand-mark'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
@@ -12,46 +14,72 @@ export default async function VerifyEmailPage({ searchParams }: Props) {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>Verification failed</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-            <p className="text-sm text-muted-foreground">
-              The link may have expired (valid for 60 minutes) or already been used.{' '}
-              <Link href="/signup" className="underline underline-offset-4">Sign up</Link>{' '}
-              to get a new one.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <AuthErrorShell
+        title="Verification failed"
+        description="The link could not be used."
+        message={error}
+        actionHref="/signup"
+        actionLabel="Create a new account"
+      />
     )
   }
 
   if (!token) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>Invalid link</CardTitle>
-            <CardDescription>This verification link is missing a token.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Alert variant="destructive">
-              <AlertDescription>
-                Please use the full link from your verification email, or{' '}
-                <Link href="/signup" className="underline">sign up again</Link>.
-              </AlertDescription>
-            </Alert>
-          </CardContent>
-        </Card>
-      </div>
+      <AuthErrorShell
+        title="Invalid verification link"
+        description="This verification link is missing a token."
+        message="Please use the full link from your verification email."
+        actionHref="/signup"
+        actionLabel="Back to signup"
+      />
     )
   }
 
   redirect(`/auth/verify/complete?token=${encodeURIComponent(token)}`)
+}
+
+function AuthErrorShell({
+  title,
+  description,
+  message,
+  actionHref,
+  actionLabel,
+}: {
+  title: string
+  description: string
+  message: string
+  actionHref: string
+  actionLabel: string
+}) {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="w-full max-w-md">
+        <div className="mb-8 text-center">
+          <BrandMark className="justify-center" />
+        </div>
+        <Card className="rounded-3xl shadow-xl shadow-primary/10">
+          <CardHeader>
+            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-700 ring-1 ring-red-200">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <CardTitle className="text-2xl">{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Alert variant="destructive">
+              <AlertDescription>{message}</AlertDescription>
+            </Alert>
+            <p className="text-sm leading-6 text-muted-foreground">
+              Verification links expire after 60 minutes and can only be used once.{' '}
+              <Link href={actionHref} className="font-medium text-primary underline-offset-4 hover:underline">
+                {actionLabel}
+              </Link>
+              .
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </main>
+  )
 }

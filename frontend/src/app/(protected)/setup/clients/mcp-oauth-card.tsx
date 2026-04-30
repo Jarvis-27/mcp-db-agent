@@ -2,9 +2,10 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { Link2, ShieldCheck, Unlink } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { StatusBadge } from '@/components/status-badge'
 import { startMcpOauthLinkAction, unlinkMcpOauthLinkAction } from '@/lib/api/mcp-oauth'
 import type { OAuthLinkStatusResponse } from '@/types/api'
 
@@ -16,6 +17,7 @@ interface Props {
   linkStatus: OAuthLinkStatusResponse
   oauthResult?: 'linked' | null
   oauthError?: string | null
+  returnPath?: string
 }
 
 const OAUTH_ERROR_COPY: Record<string, string> = {
@@ -35,6 +37,7 @@ export function McpOauthCard({
   linkStatus,
   oauthResult = null,
   oauthError = null,
+  returnPath = '/app/setup/clients',
 }: Props) {
   const router = useRouter()
   const [error, setError] = useState<string | null>(
@@ -71,28 +74,38 @@ export function McpOauthCard({
         setError(result.error)
         return
       }
-      router.replace('/setup/clients')
+      router.replace(returnPath)
       router.refresh()
     })
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">OAuth access for remote MCP clients</CardTitle>
-        <CardDescription>
-          {oauthEnabledForMcp
-            ? 'Use this to link your signed-in account to the OAuth identity that ChatGPT, Cursor, and other OAuth-capable MCP clients will use.'
-            : 'This deployment is currently exposing API-key MCP access only.'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex items-center gap-3">
+            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <ShieldCheck className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-semibold">OAuth access</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Best for remote clients that can complete the MCP OAuth flow.
+              </p>
+            </div>
+          </div>
+        </div>
+        <StatusBadge
+          variant={linkStatus.linked ? 'connected' : oauthEnabledForMcp ? 'warning' : 'inactive'}
+          label={linkStatus.linked ? 'Linked' : oauthEnabledForMcp ? 'Not linked' : 'API keys only'}
+        />
+      </div>
+
+      <div className="mt-5 space-y-4">
         {oauthResult === 'linked' && (
           <Alert>
             <AlertTitle>OAuth account linked</AlertTitle>
-            <AlertDescription>
-              Your MCP OAuth identity is now connected to this account.
-            </AlertDescription>
+            <AlertDescription>Your MCP OAuth identity is now connected to this account.</AlertDescription>
           </Alert>
         )}
 
@@ -104,11 +117,11 @@ export function McpOauthCard({
 
         {!oauthEnabledForMcp && (
           <Alert>
-            <AlertTitle>API keys only</AlertTitle>
+            <AlertTitle>API-key MCP access is active</AlertTitle>
             <AlertDescription>
               {authMode === 'api_key_only'
-                ? 'The public /mcp endpoint is not yet accepting OAuth bearer tokens, so ChatGPT remains unavailable and OAuth-capable clients should use the API-key instructions below.'
-                : 'OAuth is not fully configured for the public /mcp endpoint yet.'}
+                ? 'This deployment is currently accepting API-key MCP auth. ChatGPT requires OAuth before it can connect directly.'
+                : 'OAuth is not fully configured for the public MCP endpoint yet.'}
             </AlertDescription>
           </Alert>
         )}
@@ -117,23 +130,21 @@ export function McpOauthCard({
           <Alert variant="destructive">
             <AlertTitle>Linking flow unavailable</AlertTitle>
             <AlertDescription>
-              OAuth is active on /mcp, but the web-app linking client is not configured.
-              Existing linked accounts can still use OAuth, but new links cannot be created
-              from this page.
+              OAuth is active on the MCP endpoint, but web-app account linking is not configured.
             </AlertDescription>
           </Alert>
         )}
 
         {oauthEnabledForMcp && (
           <>
-            <div className="rounded-md border bg-muted/40 px-3 py-3 text-sm">
+            <div className="rounded-2xl bg-background p-4 ring-1 ring-border">
               <p className="font-medium">
                 {linkStatus.linked ? 'Linked OAuth identity' : 'No OAuth identity linked yet'}
               </p>
-              <p className="mt-1 text-muted-foreground">
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
                 {linkStatus.linked
                   ? linkStatus.oauth_email ?? linkStatus.issuer ?? 'Linked without an email claim.'
-                  : 'Complete the link flow once in the web app before connecting ChatGPT or other OAuth-based MCP clients.'}
+                  : 'Complete this once before connecting ChatGPT or another OAuth-capable MCP client.'}
               </p>
               {linkStatus.linked && linkStatus.oauth_last_login_at && (
                 <p className="mt-2 text-xs text-muted-foreground">
@@ -146,9 +157,11 @@ export function McpOauthCard({
               {!linkStatus.linked && (
                 <Button
                   type="button"
+                  className="h-10"
                   disabled={!oauthLinkEnabled || isStarting}
                   onClick={handleStart}
                 >
+                  <Link2 className="h-4 w-4" />
                   {isStarting ? 'Redirecting...' : 'Connect MCP account'}
                 </Button>
               )}
@@ -156,23 +169,25 @@ export function McpOauthCard({
                 <Button
                   type="button"
                   variant="outline"
+                  className="h-10"
                   disabled={isUnlinking}
                   onClick={handleUnlink}
                 >
+                  <Unlink className="h-4 w-4" />
                   {isUnlinking ? 'Unlinking...' : 'Unlink OAuth identity'}
                 </Button>
               )}
             </div>
 
             {apiKeysEnabledForMcp && (
-              <p className="text-xs text-muted-foreground">
-                This deployment still accepts API keys on /mcp, but OAuth is the preferred
-                path for remote clients that support it.
+              <p className="text-sm leading-6 text-muted-foreground">
+                API keys remain available during rollout, but OAuth is the preferred path
+                for remote clients that support it.
               </p>
             )}
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }

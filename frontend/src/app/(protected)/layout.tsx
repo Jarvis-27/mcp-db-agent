@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { BrandMark } from '@/components/brand-mark'
 
 export default async function ProtectedLayout({
   children,
@@ -14,26 +15,22 @@ export default async function ProtectedLayout({
   }
 
   return (
-    <div className="min-h-screen bg-muted/20">
-      <header className="border-b bg-background px-6 py-4 flex items-center justify-between">
-        <span className="font-semibold text-sm">MCP Database Agent</span>
-        <LogoutButton />
+    <div className="min-h-screen bg-background">
+      <header className="border-b bg-background/90 px-4 py-4 backdrop-blur sm:px-6">
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
+          <BrandMark />
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
       </header>
-      <main className="mx-auto max-w-3xl px-4 py-10">{children}</main>
+      <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">{children}</main>
     </div>
-  )
-}
-
-function LogoutButton() {
-  return (
-    <form action={logoutAction}>
-      <button
-        type="submit"
-        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-      >
-        Sign out
-      </button>
-    </form>
   )
 }
 
@@ -46,7 +43,7 @@ async function logoutAction() {
     await fetch(`${backendUrl}/api/v1/auth/logout`, {
       method: 'POST',
       headers: { 'x-session-token': session },
-    }).catch(() => {/* ignore network errors on logout */})
+    }).catch(() => {})
   }
   cookieStore.delete('mdb_session')
   redirect('/login')

@@ -12,6 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from src.api.schemas import (
     AccountResponse,
@@ -22,6 +23,7 @@ from src.api.schemas import (
     CreateApiKeyRequest,
     CreatedApiKeyResponse,
     DashboardSummaryResponse,
+    DatabaseMetadataResponse,
     DatabaseResponse,
     GenericAcceptedResponse,
     OAuthLinkStartResponse,
@@ -242,6 +244,24 @@ def _client_setup_response(payload) -> ClientSetupPayloadResponse:
     )
 
 
+def _database_metadata_response(user, cipher) -> DatabaseMetadataResponse:
+    raw_url = cipher.decrypt(str(user.db_url_enc))
+    url = make_url(raw_url)
+    db_type = url.drivername.split("+", 1)[0] if url.drivername else None
+    return DatabaseMetadataResponse(
+        name=str(user.db_name or "primary"),
+        db_type=db_type,
+        connected=str(user.db_validation_status or "") == "validated",
+        host=url.host,
+        database_name=url.database,
+        last_validated_at=(
+            user.db_last_validation_at.isoformat()
+            if user.db_last_validation_at is not None
+            else None
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -416,6 +436,64 @@ async def account_status(session: AuthedSession, request: Request) -> AccountSta
         blockers=_build_blockers(onboarding_st, account_st),
         can_issue_api_key=user_store.user_can_issue_api_keys(session.user_id),
     )
+
+
+@api_app.get("/v1/account/database", response_model=DatabaseMetadataResponse)
+async def get_database_metadata(
+    request: Request, session: AuthedSession
+) -> DatabaseMetadataResponse:
+    user_store: UserStore = request.app.state.user_store
+    user = user_store.get_user_row(session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.db_url_enc is None:
+        raise HTTPException(status_code=404, detail="No database connected")
+    return _database_metadata_response(user, request.app.state.cipher)
+
+
+@api_app.post("/v1/account/database/validate", response_model=DatabaseMetadataResponse)
+async def validate_database_connection(
+    request: Request, session: AuthedSession
+) -> DatabaseMetadataResponse:
+    user_store: UserStore = request.app.state.user_store
+    user = user_store.get_user_row(session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.db_url_enc is None:
+        raise HTTPException(status_code=404, detail="No database connected")
+
+    raw_url = request.app.state.cipher.decrypt(str(user.db_url_enc))
+    try:
+        sanitized_url = validate_database_url(
+            raw_url, allow_sqlite=settings.allow_sqlite_user_dbs
+        )
+        sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
+        await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
+    except InvalidDatabaseURL as exc:
+        user_store.set_user_database_validation_status(
+            session.user_id,
+            validation_status="error",
+            validation_error=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException as exc:
+        user_store.set_user_database_validation_status(
+            session.user_id,
+            validation_status="error",
+            validation_error=str(exc.detail),
+        )
+        raise
+
+    user_store.set_user_database_validation_status(
+        session.user_id,
+        validation_status="validated",
+        validation_error=None,
+    )
+    _bust_user_caches(request, session.user_id)
+    refreshed = user_store.get_user_row(session.user_id)
+    if refreshed is None or refreshed.db_url_enc is None:
+        raise HTTPException(status_code=404, detail="No database connected")
+    return _database_metadata_response(refreshed, request.app.state.cipher)
 
 
 @api_app.put("/v1/account/database", response_model=DatabaseResponse)
@@ -665,12 +743,19 @@ async def usage_recent(
             RecentQueryItem(
                 id=int(r["id"]),
                 timestamp=str(r["timestamp"]),
+                created_at=str(r["timestamp"]),
                 question=str(r["question"]),
                 sql=str(r["sql"]) if r["sql"] is not None else None,
                 success=bool(r["success"]),
                 row_count=int(r["row_count"]) if r["row_count"] is not None else None,
                 duration_ms=int(r["duration_ms"]) if r["duration_ms"] is not None else None,
                 error=str(r["error"]) if r["error"] is not None else None,
+                attempts=int(r["attempts"]),
+                warning_level=(
+                    str(r["warning_level"]) if r["warning_level"] is not None else None
+                ),
+                api_key_id=str(r["api_key_id"]) if r["api_key_id"] is not None else None,
+                api_key_name=None,
             )
             for r in rows
         ],

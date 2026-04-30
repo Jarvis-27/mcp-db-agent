@@ -204,5 +204,9 @@ def test_usage_recent_respects_limit(client):
     item = data["items"][0]
     assert "id" in item
     assert "timestamp" in item
+    assert "created_at" in item
     assert "question" in item
     assert "success" in item
+    assert item["attempts"] == 1
+    assert item["warning_level"] is None
+    assert item["api_key_id"] is None

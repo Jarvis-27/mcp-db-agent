@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react'
 import Link from 'next/link'
+import { ArrowRight, Mail, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,66 +18,86 @@ export default function LoginPage() {
     null,
   )
 
-  if (state?.success) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Check your email</CardTitle>
-          <CardDescription>
-            If an account exists for that address, we sent a sign-in link. Click
-            it to continue.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            The link expires in 30&nbsp;minutes. If you don&apos;t see it, check your
-            spam folder.
-          </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Sign in</CardTitle>
-        <CardDescription>
-          We&apos;ll email you a sign-in link — no password required.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form action={formAction} className="space-y-4">
-          {state?.error && (
-            <Alert variant="destructive">
-              <AlertDescription>{state.error}</AlertDescription>
-            </Alert>
-          )}
-
-          <div className="space-y-1.5">
-            <Label htmlFor="email">Email address</Label>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              placeholder="you@example.com"
-              required
-              autoComplete="email"
-            />
-          </div>
-
-          <Button type="submit" className="w-full" disabled={isPending}>
-            {isPending ? 'Sending link…' : 'Send sign-in link'}
-          </Button>
-        </form>
-
-        <p className="text-center text-sm text-muted-foreground mt-4">
-          Don&apos;t have an account?{' '}
-          <Link href="/signup" className="underline underline-offset-4 hover:text-primary">
-            Sign up
-          </Link>
+    <main className="mx-auto grid min-h-[calc(100vh-8rem)] max-w-5xl items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[0.85fr_1fr] lg:px-8">
+      <section className="max-w-lg">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Welcome back
         </p>
-      </CardContent>
-    </Card>
+        <h1 className="mt-4 text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+          Return to your database control room.
+        </h1>
+        <p className="mt-5 text-base leading-7 text-muted-foreground">
+          We use secure email links for the web app. Your raw session token stays
+          in an HTTP-only cookie and is never exposed to client-side JavaScript.
+        </p>
+      </section>
+
+      {state?.success ? (
+        <Card className="rounded-3xl shadow-xl shadow-primary/10">
+          <CardHeader>
+            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+              <Mail className="h-5 w-5" />
+            </div>
+            <CardTitle className="text-2xl">Check your email</CardTitle>
+            <CardDescription className="text-base leading-7">
+              If an account exists for that address, we sent a sign-in link.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm leading-6 text-muted-foreground">
+              The link expires in 30 minutes. If you do not see it, check your
+              spam folder.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="rounded-3xl shadow-xl shadow-primary/10">
+          <CardHeader>
+            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <ShieldCheck className="h-5 w-5" />
+            </div>
+            <CardTitle className="text-2xl">Sign in</CardTitle>
+            <CardDescription className="text-base leading-7">
+              Enter your email and we will send a password-free sign-in link.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form action={formAction} className="space-y-4">
+              {state?.error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{state.error}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="email">Email address</Label>
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  placeholder="you@example.com"
+                  required
+                  autoComplete="email"
+                  className="h-11"
+                />
+              </div>
+
+              <Button type="submit" className="h-11 w-full" disabled={isPending}>
+                {isPending ? 'Sending link...' : 'Send sign-in link'}
+                {!isPending && <ArrowRight className="h-4 w-4" />}
+              </Button>
+            </form>
+
+            <p className="mt-5 text-center text-sm text-muted-foreground">
+              New to PlainQuery?{' '}
+              <Link href="/signup" className="font-medium text-primary underline-offset-4 hover:underline">
+                Create an account
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </main>
   )
 }
