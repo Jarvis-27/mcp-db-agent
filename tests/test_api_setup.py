@@ -278,7 +278,4 @@ def test_setup_payload_prefers_oauth_templates_in_hybrid_mode(client):
     assert data["clients"]["chatgpt_developer_mode"]["status"] == "ready"
     assert data["clients"]["vs_code"]["auth_method"] == "oauth_2_1"
     assert data["clients"]["cursor"]["auth_method"] == "oauth_2_1"
-    assert (
-        data["clients"]["generic_http"]["auth_method"]
-        == "caller_supplied_bearer_token"
-    )
+    assert data["clients"]["generic_http"]["auth_method"] == "caller_supplied_bearer_token"

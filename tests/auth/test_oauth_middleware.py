@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import time
 from unittest.mock import MagicMock
 
-import pytest
 from cachetools import TTLCache
 
 from src.auth.middleware import HybridMCPMiddleware, OAuthMCPMiddleware, user_config_var
@@ -148,7 +146,9 @@ async def test_oauth_middleware_missing_token_returns_401():
     )
     status, body, headers = await _run(mw, [])
     assert status == 401
-    assert b"www-authenticate" in bytes(str(headers).lower(), "utf-8") or "www-authenticate" in {k.lower() for k in headers}
+    assert b"www-authenticate" in bytes(str(headers).lower(), "utf-8") or "www-authenticate" in {
+        k.lower() for k in headers
+    }
 
 
 async def test_oauth_middleware_invalid_token_returns_401():

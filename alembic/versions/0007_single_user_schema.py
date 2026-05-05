@@ -280,9 +280,7 @@ def upgrade() -> None:
     with op.batch_alter_table("api_keys", recreate="always") as batch_op:
         batch_op.add_column(sa.Column("user_id", sa.String(36), nullable=True))
 
-    conn.execute(
-        text("UPDATE api_keys SET user_id = tenant_id WHERE user_id IS NULL")
-    )
+    conn.execute(text("UPDATE api_keys SET user_id = tenant_id WHERE user_id IS NULL"))
     with op.batch_alter_table("api_keys", recreate="always") as batch_op:
         batch_op.drop_index("ix_api_keys_tenant_id")
         batch_op.drop_column("tenant_id")
@@ -321,6 +319,5 @@ def downgrade() -> None:
     # A full downgrade is complex and unlikely to be needed in practice.
     # This stub raises to prevent accidental rollback.
     raise NotImplementedError(
-        "Downgrade from 0007 is not supported. "
-        "Restore from a backup taken before the migration."
+        "Downgrade from 0007 is not supported. Restore from a backup taken before the migration."
     )

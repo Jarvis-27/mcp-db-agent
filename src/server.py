@@ -4,7 +4,6 @@ import json
 import logging
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 from pathlib import Path
 
@@ -80,8 +79,7 @@ async def _get_pipeline() -> PipelineComponents:
 
     if _factory is None:
         raise RuntimeError(
-            "PipelineFactory not initialised. "
-            "Start the server with `uvicorn src.app:app`."
+            "PipelineFactory not initialised. Start the server with `uvicorn src.app:app`."
         )
 
     if user_config is None:
@@ -105,9 +103,7 @@ def _current_api_key_id() -> str | None:
 def _get_query_log():
     global _query_log
     if _query_log is None:
-        raise RuntimeError(
-            "QueryLog not initialised. Start the server with `uvicorn src.app:app`."
-        )
+        raise RuntimeError("QueryLog not initialised. Start the server with `uvicorn src.app:app`.")
     return _query_log
 
 

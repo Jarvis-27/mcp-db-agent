@@ -50,7 +50,9 @@ def _extract_bearer(headers: list[tuple[bytes, bytes]]) -> str | None:
     return None
 
 
-async def _send_json(send: Callable, *, status: int, body: dict, extra_headers: list | None = None) -> None:
+async def _send_json(
+    send: Callable, *, status: int, body: dict, extra_headers: list | None = None
+) -> None:
     encoded = json.dumps(body).encode()
     headers = [
         (b"content-type", b"application/json"),
@@ -128,6 +130,7 @@ class ApiKeyMiddleware:
 # ---------------------------------------------------------------------------
 # OAuth-only middleware (DEPRECATED)
 # ---------------------------------------------------------------------------
+
 
 # DEPRECATED: Use src.auth.mcp_token_verifiers.OAuthMCPTokenVerifier with FastMCP
 # native auth (token_verifier + AuthSettings) instead.  This class is retained
@@ -208,6 +211,7 @@ class OAuthMCPMiddleware:
 # ---------------------------------------------------------------------------
 # Hybrid middleware (OAuth preferred, API keys as fallback) (DEPRECATED)
 # ---------------------------------------------------------------------------
+
 
 # DEPRECATED: Use src.auth.mcp_token_verifiers.HybridMCPTokenVerifier with FastMCP
 # native auth instead.  Retained for test continuity during transition.

@@ -63,7 +63,8 @@ def _load_migration():
 
 def _build_legacy_schema(conn) -> None:
     """Recreate the pre-0007 four-table schema the migration expects to find."""
-    conn.execute(text("""
+    conn.execute(
+        text("""
         CREATE TABLE tenants (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'pending_email_verification',
@@ -77,8 +78,10 @@ def _build_legacy_schema(conn) -> None:
             suspended_at TEXT,
             closed_at TEXT
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE tenant_memberships (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -87,8 +90,10 @@ def _build_legacy_schema(conn) -> None:
             email_verified_at TEXT,
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE tenant_databases (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -100,8 +105,10 @@ def _build_legacy_schema(conn) -> None:
             is_active INTEGER NOT NULL DEFAULT 1,
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE owner_sessions (
             id TEXT PRIMARY KEY,
             tenant_membership_id TEXT NOT NULL,
@@ -112,8 +119,10 @@ def _build_legacy_schema(conn) -> None:
             created_at TEXT NOT NULL,
             FOREIGN KEY (tenant_membership_id) REFERENCES tenant_memberships(id)
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE verification_tokens (
             id TEXT PRIMARY KEY,
             membership_id TEXT NOT NULL,
@@ -123,8 +132,10 @@ def _build_legacy_schema(conn) -> None:
             used_at TEXT,
             FOREIGN KEY (membership_id) REFERENCES tenant_memberships(id)
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE api_keys (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -138,8 +149,10 @@ def _build_legacy_schema(conn) -> None:
             created_at TEXT NOT NULL,
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
-    """))
-    conn.execute(text("""
+    """)
+    )
+    conn.execute(
+        text("""
         CREATE TABLE query_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -156,54 +169,75 @@ def _build_legacy_schema(conn) -> None:
             daily_limit INTEGER,
             warning_level TEXT
         )
-    """))
+    """)
+    )
     # Indices the migration drops by name — must exist for batch_alter_table.
-    conn.execute(text(
-        "CREATE INDEX ix_verification_tokens_membership_id ON verification_tokens(membership_id)"
-    ))
+    conn.execute(
+        text(
+            "CREATE INDEX ix_verification_tokens_membership_id ON verification_tokens(membership_id)"
+        )
+    )
     conn.execute(text("CREATE INDEX ix_api_keys_tenant_id ON api_keys(tenant_id)"))
-    conn.execute(text(
-        "CREATE INDEX ix_query_history_tenant_id_desc ON query_history(tenant_id, id)"
-    ))
+    conn.execute(
+        text("CREATE INDEX ix_query_history_tenant_id_desc ON query_history(tenant_id, id)")
+    )
     conn.commit()
 
 
 def _seed_full_tenant(conn) -> None:
     """Seed one complete tenant: owner membership, active DB, session, token, key, history row."""
-    conn.execute(text(
-        "INSERT INTO tenants VALUES"
-        " (:id, 'setup_complete', 'active', 'free', 'free', 42, :fut, :now, :now, NULL, NULL)"
-    ), {"id": TENANT_ID, "fut": FUTURE, "now": NOW})
+    conn.execute(
+        text(
+            "INSERT INTO tenants VALUES"
+            " (:id, 'setup_complete', 'active', 'free', 'free', 42, :fut, :now, :now, NULL, NULL)"
+        ),
+        {"id": TENANT_ID, "fut": FUTURE, "now": NOW},
+    )
 
-    conn.execute(text(
-        "INSERT INTO tenant_memberships VALUES (:id, :tid, 'owner', 'owner@example.com', :now)"
-    ), {"id": MEMBERSHIP_ID, "tid": TENANT_ID, "now": NOW})
+    conn.execute(
+        text(
+            "INSERT INTO tenant_memberships VALUES (:id, :tid, 'owner', 'owner@example.com', :now)"
+        ),
+        {"id": MEMBERSHIP_ID, "tid": TENANT_ID, "now": NOW},
+    )
 
-    conn.execute(text(
-        "INSERT INTO tenant_databases VALUES"
-        " (:id, :tid, 'primary', 'enc_url_xyz', 'validated', :now, NULL, 1)"
-    ), {"id": DB_ID, "tid": TENANT_ID, "now": NOW})
+    conn.execute(
+        text(
+            "INSERT INTO tenant_databases VALUES"
+            " (:id, :tid, 'primary', 'enc_url_xyz', 'validated', :now, NULL, 1)"
+        ),
+        {"id": DB_ID, "tid": TENANT_ID, "now": NOW},
+    )
 
-    conn.execute(text(
-        "INSERT INTO owner_sessions VALUES"
-        " (:id, :mid, 'hash_abc', :fut, NULL, NULL, :now)"
-    ), {"id": SESSION_ID, "mid": MEMBERSHIP_ID, "fut": FUTURE, "now": NOW})
+    conn.execute(
+        text("INSERT INTO owner_sessions VALUES (:id, :mid, 'hash_abc', :fut, NULL, NULL, :now)"),
+        {"id": SESSION_ID, "mid": MEMBERSHIP_ID, "fut": FUTURE, "now": NOW},
+    )
 
-    conn.execute(text(
-        "INSERT INTO verification_tokens VALUES"
-        " (:id, :mid, 'tok_hash_xyz', 'email_verification', :fut, NULL)"
-    ), {"id": TOKEN_ID, "mid": MEMBERSHIP_ID, "fut": FUTURE})
+    conn.execute(
+        text(
+            "INSERT INTO verification_tokens VALUES"
+            " (:id, :mid, 'tok_hash_xyz', 'email_verification', :fut, NULL)"
+        ),
+        {"id": TOKEN_ID, "mid": MEMBERSHIP_ID, "fut": FUTURE},
+    )
 
-    conn.execute(text(
-        "INSERT INTO api_keys VALUES"
-        " (:id, :tid, :mid, 'default', 'mdbk_pre', 'key_hash_xyz', 'mcp_read', NULL, NULL, :now)"
-    ), {"id": KEY_ID, "tid": TENANT_ID, "mid": MEMBERSHIP_ID, "now": NOW})
+    conn.execute(
+        text(
+            "INSERT INTO api_keys VALUES"
+            " (:id, :tid, :mid, 'default', 'mdbk_pre', 'key_hash_xyz', 'mcp_read', NULL, NULL, :now)"
+        ),
+        {"id": KEY_ID, "tid": TENANT_ID, "mid": MEMBERSHIP_ID, "now": NOW},
+    )
 
-    conn.execute(text(
-        "INSERT INTO query_history"
-        " (timestamp, tenant_id, question, sql, success, row_count, attempts, duration_ms)"
-        " VALUES (:now, :tid, 'How many rows?', 'SELECT COUNT(*) FROM foo', 1, 1, 1, 42)"
-    ), {"now": NOW, "tid": TENANT_ID})
+    conn.execute(
+        text(
+            "INSERT INTO query_history"
+            " (timestamp, tenant_id, question, sql, success, row_count, attempts, duration_ms)"
+            " VALUES (:now, :tid, 'How many rows?', 'SELECT COUNT(*) FROM foo', 1, 1, 1, 42)"
+        ),
+        {"now": NOW, "tid": TENANT_ID},
+    )
 
     conn.commit()
 
@@ -341,15 +375,20 @@ def test_tenant_without_active_db_gets_null_db_fields(monkeypatch):
     with engine.connect() as conn:
         _build_legacy_schema(conn)
         # Tenant with no tenant_databases row
-        conn.execute(text(
-            "INSERT INTO tenants VALUES"
-            " ('tid-no-db', 'pending_db_connection', 'active', 'free', 'free',"
-            "  0, :fut, :now, :now, NULL, NULL)"
-        ), {"fut": FUTURE, "now": NOW})
-        conn.execute(text(
-            "INSERT INTO tenant_memberships VALUES"
-            " ('mid-no-db', 'tid-no-db', 'owner', 'nodb@example.com', NULL)"
-        ))
+        conn.execute(
+            text(
+                "INSERT INTO tenants VALUES"
+                " ('tid-no-db', 'pending_db_connection', 'active', 'free', 'free',"
+                "  0, :fut, :now, :now, NULL, NULL)"
+            ),
+            {"fut": FUTURE, "now": NOW},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO tenant_memberships VALUES"
+                " ('mid-no-db', 'tid-no-db', 'owner', 'nodb@example.com', NULL)"
+            )
+        )
         conn.commit()
 
         _run_migration(conn, monkeypatch)
@@ -378,13 +417,19 @@ def test_preflight_rejects_duplicate_owner_emails(monkeypatch):
         for suffix in ("A", "B"):
             tid = f"tid-dup-{suffix}"
             mid = f"mid-dup-{suffix}"
-            conn.execute(text(
-                "INSERT INTO tenants VALUES"
-                " (:id, 'setup_complete', 'active', 'free', 'free', 0, :fut, :now, :now, NULL, NULL)"
-            ), {"id": tid, "fut": FUTURE, "now": NOW})
-            conn.execute(text(
-                "INSERT INTO tenant_memberships VALUES (:id, :tid, 'owner', 'same@example.com', NULL)"
-            ), {"id": mid, "tid": tid})
+            conn.execute(
+                text(
+                    "INSERT INTO tenants VALUES"
+                    " (:id, 'setup_complete', 'active', 'free', 'free', 0, :fut, :now, :now, NULL, NULL)"
+                ),
+                {"id": tid, "fut": FUTURE, "now": NOW},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO tenant_memberships VALUES (:id, :tid, 'owner', 'same@example.com', NULL)"
+                ),
+                {"id": mid, "tid": tid},
+            )
         conn.commit()
 
         migration = _load_migration()

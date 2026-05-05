@@ -11,6 +11,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from sqlalchemy import (
     Boolean,
@@ -449,9 +450,7 @@ class UserStore:
         token_hash = _hash_session(raw_token)
         now = _utcnow()
         with Session(self._engine) as session:
-            user_session = (
-                session.query(UserSession).filter_by(session_hash=token_hash).first()
-            )
+            user_session = session.query(UserSession).filter_by(session_hash=token_hash).first()
             if user_session is None or user_session.revoked_at is not None:
                 return False
             user_session.revoked_at = now  # type: ignore[assignment]
@@ -548,9 +547,7 @@ class UserStore:
                 .filter(ApiKey.user_id == user_id, ApiKey.revoked_at.is_(None))
                 .count()
             )
-            entitlement = self._entitlements.check_api_key_quota(
-                str(user.plan_code), active_count
-            )
+            entitlement = self._entitlements.check_api_key_quota(str(user.plan_code), active_count)
             if not entitlement.allowed:
                 plan = self._entitlements.get_plan(entitlement.plan_code)
                 raise EntitlementExceededError(
@@ -647,9 +644,7 @@ class UserStore:
             session.expunge(api_key)
             return api_key
 
-    def get_active_api_key_for_user_by_raw_key(
-        self, user_id: str, raw_key: str
-    ) -> ApiKey | None:
+    def get_active_api_key_for_user_by_raw_key(self, user_id: str, raw_key: str) -> ApiKey | None:
         key_hash = _hash_key(raw_key)
         with Session(self._engine) as session:
             api_key = (
@@ -713,12 +708,12 @@ class UserStore:
                 subject=str(user.oauth_subject) if user.oauth_subject is not None else None,
                 oauth_email=str(user.oauth_email) if user.oauth_email is not None else None,
                 oauth_email_verified_at=(
-                    _ensure_utc(user.oauth_email_verified_at)
+                    _ensure_utc(cast(datetime, user.oauth_email_verified_at))
                     if user.oauth_email_verified_at is not None
                     else None
                 ),
                 oauth_last_login_at=(
-                    _ensure_utc(user.oauth_last_login_at)
+                    _ensure_utc(cast(datetime, user.oauth_last_login_at))
                     if user.oauth_last_login_at is not None
                     else None
                 ),
@@ -859,7 +854,7 @@ class UserStore:
             onboarding_status=onboarding_status,
             account_status=account_status,
             is_active=is_active,
-            created_at=_ensure_utc(user.created_at),
+            created_at=_ensure_utc(cast(datetime, user.created_at)),
             plan_code=str(user.plan_code),
             billing_status=str(user.billing_status),
         )

@@ -108,7 +108,9 @@ def test_oauth_link_start_and_callback_link_user(mock_settings):
     mock_settings.oauth_issuer_url = "https://issuer.example.com/"
     mock_settings.oauth_client_id = "client_123"
     mock_settings.oauth_client_secret = ""
-    mock_settings.oauth_link_redirect_uri = "http://localhost:8000/api/v1/account/mcp-oauth/callback"
+    mock_settings.oauth_link_redirect_uri = (
+        "http://localhost:8000/api/v1/account/mcp-oauth/callback"
+    )
     mock_settings.oauth_audience = "https://api.example.com/mcp"
     mock_settings.oauth_jwks_url = ""
     mock_settings.oauth_jwks_cache_seconds = 300
@@ -179,6 +181,5 @@ def test_oauth_link_callback_rejects_invalid_state(mock_settings):
 
     assert resp.status_code == 302
     assert (
-        resp.headers["location"]
-        == "http://localhost:3000/setup/clients?oauth_error=invalid_state"
+        resp.headers["location"] == "http://localhost:3000/setup/clients?oauth_error=invalid_state"
     )

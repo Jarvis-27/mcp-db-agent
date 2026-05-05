@@ -53,8 +53,6 @@ def _enable_sqlite_wal(engine) -> None:
         cur.close()
 
 
-
-
 def _resource_metadata_url() -> str | None:
     """Return the RFC 9728 protected resource metadata URL for WWW-Authenticate headers."""
     if not settings.oauth_is_configured():
@@ -62,9 +60,12 @@ def _resource_metadata_url() -> str | None:
     resource_url = settings.effective_mcp_resource_url()
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(resource_url)
         resource_path = parsed.path if parsed.path != "/" else ""
-        return f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource{resource_path}"
+        return (
+            f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource{resource_path}"
+        )
     except Exception:
         return None
 
@@ -272,6 +273,7 @@ def _build_mcp_asgi(*, auth_mode: str, user_store: UserStore, api_key_cache: TTL
 
     verifier, resolver = _make_oauth_components(user_store)
 
+    token_verifier: OAuthMCPTokenVerifier | HybridMCPTokenVerifier
     if auth_mode == "oauth_only":
         token_verifier = OAuthMCPTokenVerifier(verifier=verifier, resolver=resolver)
     else:  # hybrid
@@ -336,6 +338,7 @@ class ApiKeyLazyWrapper:
 # Build routes (including protected resource metadata if OAuth is configured)
 # ---------------------------------------------------------------------------
 
+
 # The /mcp mount uses a startup placeholder because streamable_http_app() must
 # be called in the lifespan (after UserStore is available for token verifiers).
 # The lifespan replaces this mount before any requests are served.
@@ -344,6 +347,7 @@ async def _mcp_startup_placeholder(scope, receive, send) -> None:
     if scope["type"] == "http":
         await send({"type": "http.response.start", "status": 503, "headers": []})
         await send({"type": "http.response.body", "body": b'{"detail":"server starting"}'})
+
 
 _base_routes = [
     Mount("/api", app=api_app),

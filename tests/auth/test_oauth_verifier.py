@@ -165,7 +165,7 @@ def test_verify_no_required_scopes():
 def test_expired_token_raises():
     priv, pub = _generate_rsa_key_pair()
     verifier = _make_verifier(priv, pub)
-    token = _make_token(priv, exp_offset=-10)  # already expired
+    token = _make_token(priv, exp_offset=-60)  # beyond the verifier's 30s leeway
     with pytest.raises(OAuthVerificationError, match="expired"):
         verifier.verify(token)
 
@@ -246,6 +246,7 @@ def test_jwks_fetch_failure_raises():
     class _FailingJWKSClient:
         def get_signing_key_from_jwt(self, token):
             from jwt import PyJWKClientError
+
             raise PyJWKClientError("connection refused")
 
     priv, pub = _generate_rsa_key_pair()

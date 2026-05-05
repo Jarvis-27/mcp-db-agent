@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
@@ -139,7 +140,7 @@ class OAuthVerifier:
                 signing_key.key,
                 algorithms=self._ACCEPTED_ALGORITHMS,
                 audience=self._audience if self._audience else None,
-                options=decode_options,
+                options=cast(Any, decode_options),
                 leeway=30,  # tolerate up to 30s clock skew between IdP and server
             )
         except jwt.ExpiredSignatureError:
@@ -193,7 +194,9 @@ class OAuthVerifier:
             audience = ()
 
         raw_email_verified = payload.get("email_verified")
-        email_verified: bool | None = bool(raw_email_verified) if raw_email_verified is not None else None
+        email_verified: bool | None = (
+            bool(raw_email_verified) if raw_email_verified is not None else None
+        )
 
         return OAuthClaims(
             issuer=str(payload.get("iss", self._issuer)),

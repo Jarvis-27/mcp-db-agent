@@ -88,10 +88,10 @@ class Settings(BaseSettings):
     mcp_resource_url: str = ""
 
     # ── OAuth provider settings (issuer = authorization server base URL) ──────
-    oauth_issuer_url: str = ""       # e.g. https://YOUR_DOMAIN.auth0.com/
-    oauth_audience: str = ""         # expected aud claim / resource indicator
-    oauth_jwks_url: str = ""         # optional override; defaults to {issuer}/.well-known/jwks.json
-    oauth_required_scopes: str = "mcp:access"   # comma-separated
+    oauth_issuer_url: str = ""  # e.g. https://YOUR_DOMAIN.auth0.com/
+    oauth_audience: str = ""  # expected aud claim / resource indicator
+    oauth_jwks_url: str = ""  # optional override; defaults to {issuer}/.well-known/jwks.json
+    oauth_required_scopes: str = "mcp:access"  # comma-separated
     oauth_http_timeout_seconds: int = 10
     oauth_jwks_cache_seconds: int = 300
 
@@ -99,8 +99,10 @@ class Settings(BaseSettings):
     # These are only needed for the "Connect MCP account" UI flow that lets an
     # authenticated web-app user bind their local account to an OAuth identity.
     oauth_client_id: str = ""
-    oauth_client_secret: str = ""    # leave empty for PKCE-only (public client)
-    oauth_link_redirect_uri: str = ""   # backend callback URL, e.g. https://app.example.com/api/v1/account/mcp-oauth/callback
+    oauth_client_secret: str = ""  # leave empty for PKCE-only (public client)
+    oauth_link_redirect_uri: str = (
+        ""  # backend callback URL, e.g. https://app.example.com/api/v1/account/mcp-oauth/callback
+    )
 
     @field_validator("credential_encryption_keys")
     @classmethod

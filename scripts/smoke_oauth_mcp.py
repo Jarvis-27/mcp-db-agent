@@ -28,6 +28,7 @@ import httpx
 # Load settings from .env
 # ---------------------------------------------------------------------------
 
+
 def _load_env() -> dict[str, str]:
     env: dict[str, str] = {}
     env_file = Path(__file__).parent.parent / ".env"
@@ -40,22 +41,31 @@ def _load_env() -> dict[str, str]:
     env.update(os.environ)
     return env
 
+
 env = _load_env()
 
-ISSUER        = env.get("OAUTH_ISSUER_URL", "").rstrip("/")
-CLIENT_ID     = env.get("OAUTH_CLIENT_ID", "")
+ISSUER = env.get("OAUTH_ISSUER_URL", "").rstrip("/")
+CLIENT_ID = env.get("OAUTH_CLIENT_ID", "")
 CLIENT_SECRET = env.get("OAUTH_CLIENT_SECRET", "")
-AUDIENCE      = env.get("OAUTH_AUDIENCE", "")
-MCP_URL       = env.get("MCP_RESOURCE_URL", "http://localhost:8000/mcp").rstrip("/") + "/"
+AUDIENCE = env.get("OAUTH_AUDIENCE", "")
+MCP_URL = env.get("MCP_RESOURCE_URL", "http://localhost:8000/mcp").rstrip("/") + "/"
 
 CALLBACK_PORT = 9999
-REDIRECT_URI  = f"http://localhost:{CALLBACK_PORT}/callback"
+REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
 
 # ---------------------------------------------------------------------------
 # Validate config
 # ---------------------------------------------------------------------------
 
-missing = [k for k, v in {"OAUTH_ISSUER_URL": ISSUER, "OAUTH_CLIENT_ID": CLIENT_ID, "OAUTH_AUDIENCE": AUDIENCE}.items() if not v]
+missing = [
+    k
+    for k, v in {
+        "OAUTH_ISSUER_URL": ISSUER,
+        "OAUTH_CLIENT_ID": CLIENT_ID,
+        "OAUTH_AUDIENCE": AUDIENCE,
+    }.items()
+    if not v
+]
 if missing:
     raise SystemExit(f"Missing required .env values: {', '.join(missing)}")
 
@@ -65,9 +75,7 @@ if missing:
 
 code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
 code_challenge = (
-    base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
-    .rstrip(b"=")
-    .decode()
+    base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
 )
 
 # ---------------------------------------------------------------------------
@@ -86,7 +94,11 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
-        msg = "Authorization complete — return to your terminal." if _result["code"] else f"Error: {_result['error']}"
+        msg = (
+            "Authorization complete — return to your terminal."
+            if _result["code"]
+            else f"Error: {_result['error']}"
+        )
         self.wfile.write(f"<h2>{msg}</h2>".encode())
         _done.set()
 
@@ -113,7 +125,7 @@ auth_params = {
 }
 auth_url = f"{ISSUER}/authorize?{urllib.parse.urlencode(auth_params)}"
 
-print(f"\nOpening browser for OAuth login...")
+print("\nOpening browser for OAuth login...")
 print(f"Auth URL:\n  {auth_url}\n")
 webbrowser.open(auth_url)
 
@@ -152,11 +164,10 @@ if not access_token:
 print(f"Access token: {access_token[:40]}...\n")
 
 # Decode payload without verification just to show what Auth0 put in the token
-import base64 as _b64, json as _json
 _parts = access_token.split(".")
 if len(_parts) == 3:
     _pad = _parts[1] + "=" * (-len(_parts[1]) % 4)
-    _claims = _json.loads(_b64.urlsafe_b64decode(_pad))
+    _claims = json.loads(base64.urlsafe_b64decode(_pad))
     print(f"Token scopes : {_claims.get('scope', '(none)')}")
     print(f"Token aud    : {_claims.get('aud')}")
     print(f"Token sub    : {_claims.get('sub', '')[:30]}...\n")

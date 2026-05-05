@@ -53,6 +53,8 @@ class SQLExecutor:
                 # interrupt() causes any in-progress sqlite3 operation to raise
                 # OperationalError("interrupted"), which exits the thread cleanly.
                 raw_conn = conn.connection.driver_connection
+                if raw_conn is None:
+                    raise RuntimeError("SQLite driver connection is not available.")
                 timer = threading.Timer(float(self._timeout), raw_conn.interrupt)
                 timer.daemon = True
                 timer.start()

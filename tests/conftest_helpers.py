@@ -1,7 +1,7 @@
 """Shared helpers for API integration tests."""
+
 from unittest.mock import patch
 
-import src.auth.url_guard as ug_module
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -39,6 +39,7 @@ def make_app_state(with_query_log: bool = False):
 
     if with_query_log:
         from src.core.query_log import QueryLog
+
         api_app.state.query_log = QueryLog(engine)
 
     return engine, store, token_store, cipher
@@ -63,7 +64,6 @@ def register_and_get_session(client: TestClient, email: str) -> tuple[str, str]:
     assert reg.status_code == 201, reg.text
     user_id = reg.json()["user_id"]
 
-    store: UserStore = api_app.state.user_store
     token_store: TokenStore = api_app.state.token_store
     raw_token = token_store.issue_email_verification_token(user_id)
     verify = client.get(f"/v1/auth/verify-email?token={raw_token}")

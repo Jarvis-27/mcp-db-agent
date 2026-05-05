@@ -24,7 +24,7 @@ def build_vs_code_payload(
     api_keys_enabled: bool = True,
 ) -> ClientSetupPayload:
     if oauth_configured:
-        config: dict[str, object] = {
+        oauth_config: dict[str, object] = {
             "servers": {
                 _SERVER_LABEL: {
                     "type": "http",
@@ -45,7 +45,7 @@ def build_vs_code_payload(
             auth_method="oauth_2_1",
             config_path_hint=".vscode/mcp.json or your VS Code user MCP config",
             snippet_format="application/json",
-            snippet=_json_snippet(config),
+            snippet=_json_snippet(oauth_config),
             api_key_handling=api_key_handling,
             instructions=(
                 "Open your VS Code MCP configuration file.",
@@ -55,7 +55,7 @@ def build_vs_code_payload(
         )
 
     headers = {"Authorization": _bearer_value(raw_api_key, "${input:mcpDbAgentApiKey}")}
-    config: dict[str, object] = {
+    api_key_config: dict[str, object] = {
         "servers": {
             _SERVER_LABEL: {
                 "type": "http",
@@ -70,7 +70,7 @@ def build_vs_code_payload(
         else "VS Code will prompt once for the API key using an input variable."
     )
     if raw_api_key is None:
-        config["inputs"] = [
+        api_key_config["inputs"] = [
             {
                 "type": "promptString",
                 "id": "mcpDbAgentApiKey",
@@ -85,7 +85,7 @@ def build_vs_code_payload(
         auth_method="bearer_api_key",
         config_path_hint=".vscode/mcp.json or your VS Code user MCP config",
         snippet_format="application/json",
-        snippet=_json_snippet(config),
+        snippet=_json_snippet(api_key_config),
         api_key_handling=api_key_handling,
         instructions=(
             "Open your VS Code MCP configuration file.",
@@ -93,6 +93,7 @@ def build_vs_code_payload(
             "Start the server in VS Code and verify list_tables works.",
         ),
     )
+
 
 def build_cursor_payload(
     mcp_url: str,
@@ -102,7 +103,7 @@ def build_cursor_payload(
     api_keys_enabled: bool = True,
 ) -> ClientSetupPayload:
     if oauth_configured:
-        config = {
+        oauth_config: dict[str, object] = {
             "mcpServers": {
                 _SERVER_LABEL: {
                     "url": mcp_url,
@@ -122,7 +123,7 @@ def build_cursor_payload(
             auth_method="oauth_2_1",
             config_path_hint=".cursor/mcp.json or ~/.cursor/mcp.json",
             snippet_format="application/json",
-            snippet=_json_snippet(config),
+            snippet=_json_snippet(oauth_config),
             api_key_handling=api_key_handling,
             instructions=(
                 "Create or update .cursor/mcp.json.",
@@ -131,7 +132,7 @@ def build_cursor_payload(
             ),
         )
 
-    config = {
+    api_key_config: dict[str, object] = {
         "mcpServers": {
             _SERVER_LABEL: {
                 "url": mcp_url,
@@ -153,7 +154,7 @@ def build_cursor_payload(
         auth_method="bearer_api_key",
         config_path_hint=".cursor/mcp.json or ~/.cursor/mcp.json",
         snippet_format="application/json",
-        snippet=_json_snippet(config),
+        snippet=_json_snippet(api_key_config),
         api_key_handling=api_key_handling,
         instructions=(
             "Create or update .cursor/mcp.json.",
@@ -183,8 +184,7 @@ def build_chatgpt_payload(mcp_url: str, *, oauth_configured: bool = False) -> Cl
             snippet_format="text/plain",
             snippet="",
             api_key_handling=(
-                "Do not paste a bearer API key here. "
-                "ChatGPT app connectivity requires OAuth."
+                "Do not paste a bearer API key here. ChatGPT app connectivity requires OAuth."
             ),
             instructions=(
                 "Keep using VS Code, Cursor, or a generic HTTP MCP client for now.",
@@ -218,8 +218,7 @@ def build_chatgpt_payload(mcp_url: str, *, oauth_configured: bool = False) -> Cl
         snippet_format="application/json",
         snippet=_json_snippet(config),
         api_key_handling=(
-            "ChatGPT will obtain an OAuth access token automatically. "
-            "No API key is needed."
+            "ChatGPT will obtain an OAuth access token automatically. No API key is needed."
         ),
         instructions=(
             "In ChatGPT developer mode, add a custom connector.",

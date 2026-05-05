@@ -2,8 +2,6 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
-from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -226,9 +224,7 @@ def test_consume_daily_quota_concurrent_no_lost_updates(tmp_path, cipher):
         user_id, _, _ = _make_active_user(file_store)
         n = 20
         with ThreadPoolExecutor(max_workers=n) as pool:
-            futures = [
-                pool.submit(file_store.consume_daily_query_quota, user_id) for _ in range(n)
-            ]
+            futures = [pool.submit(file_store.consume_daily_query_quota, user_id) for _ in range(n)]
             results = sorted(f.result().daily_count for f in as_completed(futures))
         assert results == list(range(1, n + 1))
     finally:

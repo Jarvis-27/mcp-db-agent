@@ -51,7 +51,7 @@ class SubmitDatabaseRequest(BaseModel):
 
 class DatabaseResponse(BaseModel):
     user_id: str
-    status: str        # onboarding progress state
+    status: str  # onboarding progress state
     account_status: str
     plan_code: str
     next_step: str
@@ -68,7 +68,7 @@ class DatabaseMetadataResponse(BaseModel):
 
 class AccountStatusResponse(BaseModel):
     user_id: str
-    status: str        # onboarding progress state
+    status: str  # onboarding progress state
     account_status: str
     plan_code: str
     billing_status: str
@@ -81,7 +81,7 @@ class AccountResponse(BaseModel):
     user_id: str
     is_active: bool
     created_at: str
-    status: str        # onboarding progress
+    status: str  # onboarding progress
     account_status: str
     plan_code: str
     billing_status: str

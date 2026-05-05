@@ -1,11 +1,10 @@
 """Tests for ApiKeyMiddleware — auth, ContextVar scoping, cache."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
@@ -239,9 +238,7 @@ async def test_suspended_user_loses_mcp_access():
         user_id = store.create_user("mcp-suspend@example.com")
         store.set_email_verified(user_id)
         store.transition_user_state(user_id, "pending_db_connection")
-        store.upsert_user_database(
-            user_id, cipher.encrypt("postgresql://user:pass@8.8.8.8/db")
-        )
+        store.upsert_user_database(user_id, cipher.encrypt("postgresql://user:pass@8.8.8.8/db"))
         store.activate_user(user_id)
         raw_key, _ = store.create_api_key(
             user_id=user_id,

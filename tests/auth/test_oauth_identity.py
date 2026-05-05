@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -13,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from src.auth.crypto import CredentialCipher
 from src.auth.oauth_identity import OAuthIdentityError, OAuthIdentityResolver
 from src.auth.oauth_verifier import OAuthClaims
-from src.auth.user_store import Base, UserConfig, UserStore
+from src.auth.user_store import Base, UserStore
 
 _ISSUER = "https://auth.example.com"
 _SUBJECT = "oauth2|abc123"
@@ -141,6 +140,7 @@ def test_resolve_raises_no_database():
     # Manually clear the database from the user row
     from sqlalchemy.orm import Session as _Session
     from src.auth.user_store import User as _User
+
     with _Session(store._engine) as session:
         u = session.get(_User, user_id)
         u.db_url_enc = None  # type: ignore[assignment]

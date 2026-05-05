@@ -134,7 +134,9 @@ async def test_oauth_verifier_valid_token_returns_access_token():
     resolver = _make_resolver(user=user)
 
     tv = OAuthMCPTokenVerifier(verifier=verifier, resolver=resolver)
-    with patch("src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(side_effect=[claims, user])):
+    with patch(
+        "src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(side_effect=[claims, user])
+    ):
         result = await tv.verify_token("jwt.token.here")
 
     assert result is not None
@@ -146,9 +148,13 @@ async def test_oauth_verifier_valid_token_returns_access_token():
 async def test_oauth_verifier_sets_user_config_var():
     user = _make_user("u-42")
     claims = _make_claims()
-    tv = OAuthMCPTokenVerifier(verifier=_make_verifier(claims=claims), resolver=_make_resolver(user=user))
+    tv = OAuthMCPTokenVerifier(
+        verifier=_make_verifier(claims=claims), resolver=_make_resolver(user=user)
+    )
 
-    with patch("src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(side_effect=[claims, user])):
+    with patch(
+        "src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(side_effect=[claims, user])
+    ):
         result = await tv.verify_token("jwt.token.here")
 
     assert result is not None
@@ -165,7 +171,10 @@ async def test_oauth_verifier_bad_jwt_returns_none():
     resolver = _make_resolver()
 
     tv = OAuthMCPTokenVerifier(verifier=verifier, resolver=resolver)
-    with patch("src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(side_effect=OAuthVerificationError("bad sig"))):
+    with patch(
+        "src.auth.mcp_token_verifiers.asyncio.to_thread",
+        new=AsyncMock(side_effect=OAuthVerificationError("bad sig")),
+    ):
         result = await tv.verify_token("bad.token")
 
     assert result is None
@@ -180,7 +189,9 @@ async def test_oauth_verifier_no_linked_account_returns_none():
     tv = OAuthMCPTokenVerifier(verifier=verifier, resolver=resolver)
     with patch(
         "src.auth.mcp_token_verifiers.asyncio.to_thread",
-        new=AsyncMock(side_effect=[claims, OAuthIdentityError("no account", code="no_linked_account")]),
+        new=AsyncMock(
+            side_effect=[claims, OAuthIdentityError("no account", code="no_linked_account")]
+        ),
     ):
         result = await tv.verify_token("jwt.token.here")
 
@@ -200,7 +211,9 @@ async def test_hybrid_routes_api_key_by_prefix():
     resolver = _make_resolver()
     cache: TTLCache = TTLCache(maxsize=100, ttl=60)
 
-    tv = HybridMCPTokenVerifier(verifier=verifier, resolver=resolver, user_store=store, api_key_cache=cache)
+    tv = HybridMCPTokenVerifier(
+        verifier=verifier, resolver=resolver, user_store=store, api_key_cache=cache
+    )
     with patch("src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(return_value=user)):
         result = await tv.verify_token("mdbk_some_key")
 
@@ -247,7 +260,9 @@ async def test_hybrid_routes_oauth_by_absence_of_prefix():
     resolver = _make_resolver(user=user)
     cache: TTLCache = TTLCache(maxsize=100, ttl=60)
 
-    tv = HybridMCPTokenVerifier(verifier=verifier, resolver=resolver, user_store=store, api_key_cache=cache)
+    tv = HybridMCPTokenVerifier(
+        verifier=verifier, resolver=resolver, user_store=store, api_key_cache=cache
+    )
     with patch(
         "src.auth.mcp_token_verifiers.asyncio.to_thread",
         new=AsyncMock(side_effect=[claims, user]),
@@ -281,7 +296,9 @@ async def test_hybrid_api_key_cache_hit():
     _ucv_reset_token_var.set(None)
 
     # Second call — should hit cache, store NOT called again
-    with patch("src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(return_value=user)) as mock_thread:
+    with patch(
+        "src.auth.mcp_token_verifiers.asyncio.to_thread", new=AsyncMock(return_value=user)
+    ) as mock_thread:
         await tv.verify_token("mdbk_key1")
         mock_thread.assert_not_called()
 

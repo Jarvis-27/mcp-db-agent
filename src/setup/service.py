@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from src.auth.onboarding import ACCOUNT_ACTIVE, SETUP_COMPLETE
 from src.auth.user_store import ApiKey, User, UserStore
@@ -67,7 +68,7 @@ class SetupPayloadService:
             daily_limit=plan.ask_database_per_day,
             daily_used=daily_used,
             daily_remaining=max(plan.ask_database_per_day - daily_used, 0),
-            reset_at=_ensure_utc(user.daily_quota_reset_at),
+            reset_at=_ensure_utc(cast(datetime, user.daily_quota_reset_at)),
             warning_level=self._entitlements.quota_warning_level(str(user.plan_code), daily_used),
         )
         key_state = SetupApiKeyState(

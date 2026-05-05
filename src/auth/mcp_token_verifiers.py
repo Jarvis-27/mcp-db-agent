@@ -135,9 +135,7 @@ class HybridMCPTokenVerifier:
         user_config = self._cache.get(cache_key)
 
         if user_config is None:
-            user_config = await asyncio.to_thread(
-                self._user_store.get_user_by_api_key, raw_key
-            )
+            user_config = await asyncio.to_thread(self._user_store.get_user_by_api_key, raw_key)
             if user_config is None:
                 log.info("Hybrid: API key not found or inactive")
                 return None

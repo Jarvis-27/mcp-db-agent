@@ -20,6 +20,7 @@ frontend/.env.local
 
 # Testing & coverage
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 coverage.xml
@@ -42,3 +43,5 @@ Thumbs.db
 # Frontend build output and dependencies
 frontend/.next/
 frontend/node_modules/
+frontend/package-lock.json
+frontend/*.tsbuildinfo

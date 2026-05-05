@@ -4,7 +4,8 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -178,9 +179,7 @@ def _bust_user_caches(request: Request, user_id: str, api_key_id: str | None = N
         value = auth_cache.get(key)
         if value is None:
             continue
-        if value.user_id == user_id or (
-            api_key_id is not None and value.api_key_id == api_key_id
-        ):
+        if value.user_id == user_id or (api_key_id is not None and value.api_key_id == api_key_id):
             del auth_cache[key]
 
     session_cache = request.app.state.user_session_cache
@@ -464,9 +463,7 @@ async def validate_database_connection(
 
     raw_url = request.app.state.cipher.decrypt(str(user.db_url_enc))
     try:
-        sanitized_url = validate_database_url(
-            raw_url, allow_sqlite=settings.allow_sqlite_user_dbs
-        )
+        sanitized_url = validate_database_url(raw_url, allow_sqlite=settings.allow_sqlite_user_dbs)
         sanitized_url_str = sanitized_url.render_as_string(hide_password=False)
         await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
     except InvalidDatabaseURL as exc:
@@ -523,9 +520,7 @@ async def submit_database(
     await asyncio.to_thread(_dry_run_connect, sanitized_url_str)
 
     encrypted_url = request.app.state.cipher.encrypt(sanitized_url_str)
-    user_store.upsert_user_database(
-        session.user_id, encrypted_url, name=(body.name or "primary")
-    )
+    user_store.upsert_user_database(session.user_id, encrypted_url, name=(body.name or "primary"))
 
     # Activate on first DB submission; on reconnect keep existing status
     if current_status == PENDING_DB_CONNECTION:
@@ -550,7 +545,7 @@ async def create_api_key(
     body: CreateApiKeyRequest,
     request: Request,
     session: AuthedSession,
-) -> CreatedApiKeyResponse:
+) -> CreatedApiKeyResponse | JSONResponse:
     allowed_scopes = {"mcp_read", "api_key_admin"}
     bad_scopes = [scope for scope in body.scopes if scope not in allowed_scopes]
     if bad_scopes:
@@ -600,9 +595,7 @@ async def list_api_keys(request: Request, session: AuthedSession) -> list[ApiKey
 
 
 @api_app.delete("/v1/account/api-keys/{api_key_id}", status_code=204)
-async def revoke_api_key(
-    api_key_id: str, request: Request, session: AuthedSession
-) -> Response:
+async def revoke_api_key(api_key_id: str, request: Request, session: AuthedSession) -> Response:
     user_store: UserStore = request.app.state.user_store
     revoked = user_store.revoke_api_key(session.user_id, api_key_id)
     if not revoked:
@@ -611,13 +604,11 @@ async def revoke_api_key(
     return Response(status_code=204)
 
 
-@api_app.post(
-    "/v1/account/api-keys/{api_key_id}/rotate", response_model=RotateKeyResponse
-)
+@api_app.post("/v1/account/api-keys/{api_key_id}/rotate", response_model=RotateKeyResponse)
 @limiter.limit("10/hour")
 async def rotate_api_key(
     api_key_id: str, request: Request, session: AuthedSession
-) -> RotateKeyResponse:
+) -> RotateKeyResponse | JSONResponse:
     user_store: UserStore = request.app.state.user_store
     try:
         new_raw_key = user_store.rotate_api_key(session.user_id, api_key_id)
@@ -689,9 +680,7 @@ async def get_setup_payloads(
 
 
 @api_app.get("/v1/account/dashboard", response_model=DashboardSummaryResponse)
-async def dashboard_summary(
-    session: AuthedSession, request: Request
-) -> DashboardSummaryResponse:
+async def dashboard_summary(session: AuthedSession, request: Request) -> DashboardSummaryResponse:
     user_store: UserStore = request.app.state.user_store
     user = user_store.get_user_row(session.user_id)
     if user is None:
@@ -724,7 +713,7 @@ async def dashboard_summary(
             daily_limit=plan.ask_database_per_day,
             daily_used=daily_count,
             daily_remaining=max(0, plan.ask_database_per_day - daily_count),
-            reset_at=user.daily_quota_reset_at,
+            reset_at=cast(datetime, user.daily_quota_reset_at),
             warning_level=warning_level,
         ),
     )
@@ -751,9 +740,7 @@ async def usage_recent(
                 duration_ms=int(r["duration_ms"]) if r["duration_ms"] is not None else None,
                 error=str(r["error"]) if r["error"] is not None else None,
                 attempts=int(r["attempts"]),
-                warning_level=(
-                    str(r["warning_level"]) if r["warning_level"] is not None else None
-                ),
+                warning_level=(str(r["warning_level"]) if r["warning_level"] is not None else None),
                 api_key_id=str(r["api_key_id"]) if r["api_key_id"] is not None else None,
                 api_key_name=None,
             )
@@ -833,9 +820,7 @@ def _require_oauth_link_configured() -> None:
 
 
 @api_app.get("/v1/account/mcp-oauth/status", response_model=OAuthLinkStatusResponse)
-async def oauth_link_status(
-    session: AuthedSession, request: Request
-) -> OAuthLinkStatusResponse:
+async def oauth_link_status(session: AuthedSession, request: Request) -> OAuthLinkStatusResponse:
     """Return the current OAuth identity linkage status for the authenticated user."""
     user_store: UserStore = request.app.state.user_store
     link_status = user_store.get_oauth_link_status(session.user_id)
@@ -855,9 +840,7 @@ async def oauth_link_status(
 
 @api_app.post("/v1/account/mcp-oauth/start", response_model=OAuthLinkStartResponse)
 @limiter.limit("10/minute")
-async def oauth_link_start(
-    request: Request, session: AuthedSession
-) -> OAuthLinkStartResponse:
+async def oauth_link_start(request: Request, session: AuthedSession) -> OAuthLinkStartResponse:
     """Start the OAuth account-linking flow.
 
     Returns an ``authorization_url`` that the frontend should redirect the user
@@ -875,9 +858,7 @@ async def oauth_link_start(
     # Generate PKCE code verifier + challenge
     code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
     code_challenge = (
-        base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        )
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
         .rstrip(b"=")
         .decode()
     )
@@ -1010,9 +991,7 @@ async def oauth_link_callback(
 
 
 @api_app.delete("/v1/account/mcp-oauth/link", response_model=OAuthUnlinkResponse)
-async def oauth_unlink(
-    request: Request, session: AuthedSession
-) -> OAuthUnlinkResponse:
+async def oauth_unlink(request: Request, session: AuthedSession) -> OAuthUnlinkResponse:
     """Remove the OAuth identity binding from the authenticated user's account."""
     user_store: UserStore = request.app.state.user_store
     unlinked = user_store.unlink_oauth_identity(session.user_id)
