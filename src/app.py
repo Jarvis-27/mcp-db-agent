@@ -19,7 +19,8 @@ from sqlalchemy import create_engine, event
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.routing import Mount
+from starlette.responses import RedirectResponse
+from starlette.routing import Mount, Route
 
 from src.api.app import api_app
 from src.auth.crypto import CredentialCipher
@@ -78,20 +79,78 @@ def _build_protected_resource_routes():
     if not settings.oauth_is_configured():
         return []
     try:
-        from mcp.server.auth.routes import create_protected_resource_routes
+        from mcp.server.auth.handlers.metadata import ProtectedResourceMetadataHandler
+        from mcp.server.auth.routes import cors_middleware, create_protected_resource_routes
+        from mcp.shared.auth import ProtectedResourceMetadata
         from pydantic import AnyHttpUrl
+        from urllib.parse import urlparse
 
         resource_url = settings.effective_mcp_resource_url()
         issuer_url = settings.oauth_issuer_url.rstrip("/")
         scopes = settings.oauth_required_scopes_list() or None
-        return create_protected_resource_routes(
+
+        routes = create_protected_resource_routes(
             resource_url=AnyHttpUrl(resource_url),
             authorization_servers=[AnyHttpUrl(issuer_url)],
             scopes_supported=scopes,
         )
+
+        metadata = ProtectedResourceMetadata(
+            resource=AnyHttpUrl(resource_url),
+            authorization_servers=[AnyHttpUrl(issuer_url)],
+            scopes_supported=scopes,
+        )
+        handler = ProtectedResourceMetadataHandler(metadata)
+        endpoint = cors_middleware(handler.handle, ["GET", "OPTIONS"])
+
+        parsed = urlparse(resource_url)
+        resource_path = parsed.path.rstrip("/")
+        aliases = {"/.well-known/oauth-protected-resource"}
+        if resource_path:
+            aliases.add(f"{resource_path}/.well-known/oauth-protected-resource")
+
+        existing_paths = {route.path for route in routes if hasattr(route, "path")}
+        for path in sorted(aliases - existing_paths):
+            routes.append(Route(path, endpoint=endpoint, methods=["GET", "OPTIONS"]))
+
+        def redirect_to_issuer_metadata(metadata_name: str):
+            async def _redirect(_request):
+                return RedirectResponse(
+                    f"{issuer_url}/.well-known/{metadata_name}",
+                    status_code=307,
+                )
+
+            return _redirect
+
+        if resource_path:
+            for metadata_name in ("oauth-authorization-server", "openid-configuration"):
+                routes.append(
+                    Route(
+                        f"{resource_path}/.well-known/{metadata_name}",
+                        endpoint=redirect_to_issuer_metadata(metadata_name),
+                        methods=["GET"],
+                    )
+                )
+
+        return routes
     except Exception as exc:
         log.warning("Could not build protected resource metadata routes: %s", exc)
         return []
+
+
+class MCPMountPathMiddleware:
+    """Treat /mcp as the mounted MCP app root without emitting a redirect."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket") and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            if scope.get("raw_path") == b"/mcp":
+                scope["raw_path"] = b"/mcp/"
+        await self._app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -349,11 +408,12 @@ async def _mcp_startup_placeholder(scope, receive, send) -> None:
         await send({"type": "http.response.body", "body": b'{"detail":"server starting"}'})
 
 
+_protected_resource_routes = _build_protected_resource_routes()
 _base_routes = [
     Mount("/api", app=api_app),
+    *_protected_resource_routes,
     Mount("/mcp", app=_mcp_startup_placeholder),  # replaced in lifespan
 ]
-_base_routes.extend(_build_protected_resource_routes())
 
 # ---------------------------------------------------------------------------
 # Parent Starlette app — lifespan lives HERE, not on sub-apps
@@ -370,6 +430,7 @@ app = Starlette(
             allow_methods=["*"],
             allow_headers=["*"],
         ),
+        Middleware(MCPMountPathMiddleware),
         Middleware(RequestIDMiddleware),
         Middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes),
     ],
