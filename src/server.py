@@ -14,6 +14,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Tool as MCPTool, ToolAnnotations
 
 from src.auth.middleware import user_config_var
 from src.config import settings
@@ -41,6 +42,28 @@ CACHE_TTL = 3600
 
 _log = get_logger()
 _entitlements = EntitlementService()
+
+
+def _mcp_oauth_security_schemes() -> list[dict[str, object]]:
+    """Return the Apps-compatible auth scheme advertised on OAuth MCP tools."""
+    if not settings.mcp_oauth_enabled():
+        return []
+    return [{"type": "oauth2", "scopes": settings.oauth_required_scopes_list()}]
+
+
+def _tool_meta(*, invoking: str, invoked: str) -> dict[str, object]:
+    """Build ChatGPT Apps metadata while staying harmless for other MCP clients."""
+    meta: dict[str, object] = {
+        "openai/toolInvocation/invoking": invoking,
+        "openai/toolInvocation/invoked": invoked,
+    }
+    security_schemes = _mcp_oauth_security_schemes()
+    if security_schemes:
+        meta["securitySchemes"] = security_schemes
+    return meta
+
+
+_READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +153,11 @@ async def schema_overview() -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List database tables",
+    annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_tool_meta(invoking="Listing tables", invoked="Tables listed"),
+)
 async def list_tables() -> str:
     """List all tables in the database with their row counts.
 
@@ -142,7 +169,11 @@ async def list_tables() -> str:
     return _list_tables(pipeline.inspector)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Describe database schema",
+    annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_tool_meta(invoking="Reading schema", invoked="Schema ready"),
+)
 async def describe_schema(table_name: str) -> str:
     """Describe the columns, primary keys, foreign keys, and sample values for a table.
 
@@ -159,7 +190,11 @@ async def describe_schema(table_name: str) -> str:
     return _describe_schema(table_name, pipeline.inspector)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Get sample data",
+    annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_tool_meta(invoking="Fetching sample rows", invoked="Sample rows ready"),
+)
 async def get_sample_data(table_name: str, limit: int = 5) -> str:
     """Get sample rows from a table to understand the data format and values.
 
@@ -176,7 +211,11 @@ async def get_sample_data(table_name: str, limit: int = 5) -> str:
     return _get_sample_data(table_name, pipeline.inspector, limit)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Ask database",
+    annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_tool_meta(invoking="Querying database", invoked="Query complete"),
+)
 async def ask_database(question: str) -> str:
     """Ask a natural-language question about the database.
 
@@ -377,7 +416,11 @@ async def ask_database(question: str) -> str:
     return formatted
 
 
-@mcp.tool()
+@mcp.tool(
+    title="View query history",
+    annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_tool_meta(invoking="Loading query history", invoked="Query history ready"),
+)
 async def query_history(limit: int = 10) -> str:
     """See recent questions asked to the database, the SQL generated, and whether they succeeded.
 
@@ -402,3 +445,24 @@ async def query_history(limit: int = 10) -> str:
     query_log = _get_query_log()
     limit = max(1, min(limit, 200))
     return json.dumps(query_log.get_recent_queries(limit, user_id=user_id), indent=2)
+
+
+async def _list_tools_with_app_metadata() -> list[MCPTool]:
+    """Advertise OAuth security schemes at top level and in _meta for Apps clients."""
+    security_schemes = _mcp_oauth_security_schemes()
+    tools = await mcp.list_tools()
+    if not security_schemes:
+        return tools
+
+    enriched: list[MCPTool] = []
+    for tool in tools:
+        payload = tool.model_dump(by_alias=True, exclude_none=True)
+        payload["securitySchemes"] = security_schemes
+        meta = dict(payload.get("_meta") or {})
+        meta.setdefault("securitySchemes", security_schemes)
+        payload["_meta"] = meta
+        enriched.append(MCPTool.model_validate(payload))
+    return enriched
+
+
+mcp._mcp_server.list_tools()(_list_tools_with_app_metadata)  # type: ignore[attr-defined]
