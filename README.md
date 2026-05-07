@@ -145,6 +145,22 @@ uv run pytest tests/ -m integration
 uv run ruff check .
 ```
 
+## Deployment Smoke Test
+
+After each hosted deploy, verify the public MCP OAuth discovery surface:
+
+```bash
+uv run python scripts/smoke_mcp_deployment.py \
+  --mcp-url https://mcp.example.com/mcp \
+  --issuer-url https://YOUR_DOMAIN.auth0.com/
+```
+
+The smoke test checks the unauthenticated `/mcp` challenge, protected resource
+metadata, ChatGPT/Claude well-known discovery routes, and issuer metadata. To
+also verify authenticated MCP `initialize`, `tools/list`, and `resources/list`,
+pass a linked user's access token with `--access-token` or
+`MCP_SMOKE_ACCESS_TOKEN`.
+
 ## Docker
 
 Run the hosted HTTP stack:
