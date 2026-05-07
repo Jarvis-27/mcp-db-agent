@@ -71,6 +71,22 @@ def _resource_metadata_url() -> str | None:
         return None
 
 
+def _mounted_resource_metadata_url() -> str | None:
+    """Return the protected resource metadata alias under the mounted MCP path."""
+    if not settings.oauth_is_configured():
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(settings.effective_mcp_resource_url())
+        resource_path = parsed.path.rstrip("/")
+        if not resource_path:
+            return None
+        return f"{parsed.scheme}://{parsed.netloc}{resource_path}/.well-known/oauth-protected-resource"
+    except Exception:
+        return None
+
+
 def _build_protected_resource_routes():
     """Build RFC 9728 metadata routes for the parent Starlette app.
 
@@ -151,6 +167,48 @@ class MCPMountPathMiddleware:
             if scope.get("raw_path") == b"/mcp":
                 scope["raw_path"] = b"/mcp/"
         await self._app(scope, receive, send)
+
+
+class ResourceMetadataChallengeAliasMiddleware:
+    """Rewrite auth challenges to the metadata route exposed below /mcp."""
+
+    def __init__(self, app, *, resource_metadata_url: str | None) -> None:
+        self._app = app
+        self._resource_metadata_url = resource_metadata_url
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket") or not self._resource_metadata_url:
+            await self._app(scope, receive, send)
+            return
+
+        async def send_with_alias(message):
+            if message["type"] != "http.response.start":
+                await send(message)
+                return
+
+            headers = []
+            for name, value in message.get("headers", []):
+                if name.lower() == b"www-authenticate":
+                    text = value.decode("latin-1")
+                    prefix = 'resource_metadata="'
+                    start = text.find(prefix)
+                    if start != -1:
+                        value_start = start + len(prefix)
+                        value_end = text.find('"', value_start)
+                        if value_end != -1:
+                            text = (
+                                text[:value_start]
+                                + self._resource_metadata_url
+                                + text[value_end:]
+                            )
+                            value = text.encode("latin-1")
+                headers.append((name, value))
+
+            message = dict(message)
+            message["headers"] = headers
+            await send(message)
+
+        await self._app(scope, receive, send_with_alias)
 
 
 @asynccontextmanager
@@ -355,6 +413,10 @@ def _build_mcp_asgi(*, auth_mode: str, user_store: UserStore, api_key_cache: TTL
     mcp._token_verifier = token_verifier
 
     raw_app = mcp.streamable_http_app()
+    raw_app = ResourceMetadataChallengeAliasMiddleware(
+        raw_app,
+        resource_metadata_url=_mounted_resource_metadata_url(),
+    )
     return UserConfigResetMiddleware(raw_app)
 
 

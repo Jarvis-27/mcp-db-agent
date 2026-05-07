@@ -59,6 +59,46 @@ def test_protected_resource_metadata_routes_include_root_alias(monkeypatch):
     assert response.json()["authorization_servers"] == ["https://auth.example.com/"]
 
 
+def test_mounted_resource_metadata_url_uses_mcp_path(monkeypatch):
+    _configure_oauth(monkeypatch)
+
+    assert app_module._mounted_resource_metadata_url() == (
+        "https://mcp.example.com/mcp/.well-known/oauth-protected-resource"
+    )
+
+
+def test_auth_challenge_resource_metadata_uses_mounted_alias():
+    async def protected_app(scope, receive, send) -> None:
+        headers = [
+            (
+                b"www-authenticate",
+                (
+                    b'Bearer error="invalid_token", '
+                    b'error_description="Authentication required", '
+                    b'resource_metadata="https://mcp.example.com/.well-known/'
+                    b'oauth-protected-resource/mcp"'
+                ),
+            )
+        ]
+        await send({"type": "http.response.start", "status": 401, "headers": headers})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    app = app_module.ResourceMetadataChallengeAliasMiddleware(
+        protected_app,
+        resource_metadata_url="https://mcp.example.com/mcp/.well-known/oauth-protected-resource",
+    )
+    client = TestClient(app)
+
+    response = client.post("/mcp")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == (
+        'Bearer error="invalid_token", '
+        'error_description="Authentication required", '
+        'resource_metadata="https://mcp.example.com/mcp/.well-known/oauth-protected-resource"'
+    )
+
+
 def test_chatgpt_auth_server_discovery_probe_redirects_to_issuer(monkeypatch):
     _configure_oauth(monkeypatch)
 
