@@ -11,12 +11,20 @@ interface MetricCardProps {
   className?: string
 }
 
-const toneClasses = {
-  default: 'bg-card',
-  success: 'bg-emerald-50/80 ring-emerald-200/80',
-  warning: 'bg-amber-50/80 ring-amber-200/80',
-  danger: 'bg-red-50/80 ring-red-200/80',
-  info: 'bg-sky-50/80 ring-sky-200/80',
+const TONE_DOT: Record<NonNullable<MetricCardProps['tone']>, string> = {
+  default: 'bg-muted-foreground/40',
+  success: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  danger: 'bg-red-500',
+  info: 'bg-primary',
+}
+
+const TONE_ICON: Record<NonNullable<MetricCardProps['tone']>, string> = {
+  default: 'text-muted-foreground',
+  success: 'text-emerald-700',
+  warning: 'text-amber-700',
+  danger: 'text-red-700',
+  info: 'text-primary',
 }
 
 export function MetricCard({
@@ -30,23 +38,35 @@ export function MetricCard({
   return (
     <div
       className={cn(
-        'rounded-2xl p-5 text-sm shadow-sm ring-1 ring-border transition-transform hover:-translate-y-0.5',
-        toneClasses[tone],
+        'group relative overflow-hidden rounded-xl border border-border bg-card p-5 shadow-sm transition-colors hover:border-foreground/15',
         className,
       )}
     >
+      {/* Tone rail — subtle ground for status without flooding the card */}
+      <span
+        aria-hidden
+        className={cn('absolute inset-y-0 left-0 w-px', TONE_DOT[tone])}
+      />
+
       <div className="flex items-center justify-between gap-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-          {label}
-        </p>
+        <div className="flex items-center gap-2">
+          <span className={cn('h-1.5 w-1.5 rounded-full', TONE_DOT[tone])} />
+          <p className="eyebrow text-muted-foreground">{label}</p>
+        </div>
         {Icon && (
-          <span className="rounded-full bg-background/75 p-2 text-primary ring-1 ring-border">
-            <Icon className="h-4 w-4" />
-          </span>
+          <Icon className={cn('h-4 w-4', TONE_ICON[tone])} />
         )}
       </div>
-      <div className="mt-4 text-2xl font-semibold tracking-tight">{value}</div>
-      {detail && <div className="mt-2 text-sm leading-5 text-muted-foreground">{detail}</div>}
+
+      <div className="mt-4 font-display text-[1.7rem] font-semibold leading-tight -tracking-[0.025em] tabular-nums">
+        {value}
+      </div>
+
+      {detail && (
+        <div className="mt-1.5 text-xs leading-5 text-muted-foreground">
+          {detail}
+        </div>
+      )}
     </div>
   )
 }

@@ -2,8 +2,8 @@
 
 import { useState } from 'react'
 import { Code2, Laptop, MessageSquareText, Terminal } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
 import { CodeBlockWithCopy } from '@/components/code-block-with-copy'
+import { StatusBadge } from '@/components/status-badge'
 import { cn } from '@/lib/utils'
 import type { ClientSetupPayloadResponse } from '@/types/api'
 
@@ -29,96 +29,104 @@ export function ClientConfigPanel({ clients }: ClientConfigPanelProps) {
   const isReady = payload.status === 'ready'
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[0.42fr_0.58fr]">
-      <div className="space-y-2">
-        {TABS.map((tab) => {
+    <div className="grid gap-5 lg:grid-cols-[0.38fr_0.62fr]">
+      <div className="space-y-1">
+        {TABS.map((tab, i) => {
           const Icon = tab.icon
           const clientPayload = clients[tab.key]
           const tabReady = clientPayload.status === 'ready'
+          const isActive = active === tab.key
           return (
             <button
               key={tab.key}
               type="button"
               onClick={() => setActive(tab.key)}
               className={cn(
-                'flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all',
-                active === tab.key
-                  ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                  : 'bg-background hover:bg-muted/50',
+                'group relative flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+                isActive
+                  ? 'border-border bg-card shadow-sm'
+                  : 'border-transparent hover:bg-muted/40',
               )}
             >
               <span
+                aria-hidden
                 className={cn(
-                  'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
-                  active === tab.key ? 'bg-white/15' : 'bg-primary/10 text-primary',
+                  'absolute inset-y-1.5 left-0 w-[2px] rounded-r-full transition-colors',
+                  isActive ? 'bg-primary' : 'bg-transparent',
                 )}
-              >
-                <Icon className="h-5 w-5" />
-              </span>
+              />
+              <Icon
+                className={cn(
+                  'h-4 w-4 shrink-0 transition-colors',
+                  isActive ? 'text-primary' : 'text-muted-foreground',
+                )}
+              />
               <span className="min-w-0 flex-1">
-                <span className="block font-medium">{tab.label}</span>
-                <span
-                  className={cn(
-                    'mt-0.5 block text-xs',
-                    active === tab.key ? 'text-primary-foreground/70' : 'text-muted-foreground',
-                  )}
-                >
-                  {tabReady ? 'Ready to configure' : clientPayload.status.replace(/_/g, ' ')}
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  {tab.label}
+                </span>
+                <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  {String(i + 1).padStart(2, '0')} ·{' '}
+                  {tabReady ? 'ready' : clientPayload.status.replace(/_/g, ' ')}
                 </span>
               </span>
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 shrink-0 rounded-full',
+                  tabReady ? 'bg-emerald-500' : 'bg-muted-foreground/40',
+                )}
+              />
             </button>
           )
         })}
       </div>
 
-      <div className="rounded-3xl border bg-background p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h3 className="text-xl font-semibold">{payload.display_name}</h3>
+            <p className="eyebrow text-primary">target client</p>
+            <h3 className="mt-1 font-display text-base font-semibold -tracking-[0.02em]">
+              {payload.display_name}
+            </h3>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
               {isReady
                 ? 'Copy the generated setup and follow the steps below.'
                 : payload.availability_reason}
             </p>
           </div>
-          <Badge variant={isReady ? 'default' : 'secondary'}>
-            {isReady ? 'Ready' : payload.status.replace(/_/g, ' ')}
-          </Badge>
+          <StatusBadge
+            variant={isReady ? 'connected' : 'inactive'}
+            label={isReady ? 'Ready' : payload.status.replace(/_/g, ' ')}
+          />
         </div>
 
         {!isReady ? (
-          <div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm leading-6 text-amber-900 ring-1 ring-amber-200">
+          <div className="m-5 rounded-lg border border-amber-200/80 bg-amber-50/70 p-4 text-sm leading-6 text-amber-900">
             {payload.availability_reason}
           </div>
         ) : (
-          <div className="mt-6 space-y-5">
+          <div className="space-y-5 px-5 py-5">
             {payload.config_path_hint && (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Config location
-                </p>
-                <code className="mt-2 block rounded-2xl bg-muted/70 px-3 py-2 text-xs font-mono text-muted-foreground">
+                <p className="eyebrow text-muted-foreground">Config location</p>
+                <code className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-[12px] text-foreground">
                   {payload.config_path_hint}
                 </code>
               </div>
             )}
 
             <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Configuration
-              </p>
-              <CodeBlockWithCopy code={payload.snippet} />
+              <p className="eyebrow mb-2 text-muted-foreground">Configuration</p>
+              <CodeBlockWithCopy code={payload.snippet} label="config" />
             </div>
 
             {payload.instructions.length > 0 && (
               <div>
-                <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Steps
-                </p>
-                <ol className="space-y-2">
+                <p className="eyebrow mb-3 text-muted-foreground">Steps</p>
+                <ol className="space-y-2.5">
                   {payload.instructions.map((step, index) => (
                     <li key={step} className="flex gap-3 text-sm leading-6">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 font-mono text-[10px] font-semibold text-primary">
                         {index + 1}
                       </span>
                       <span className="text-muted-foreground">{step}</span>
@@ -128,8 +136,10 @@ export function ClientConfigPanel({ clients }: ClientConfigPanelProps) {
               </div>
             )}
 
-            <div className="rounded-2xl bg-muted/70 px-4 py-3 text-sm leading-6 text-muted-foreground">
-              <span className="font-semibold text-foreground">Auth:</span>{' '}
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm leading-6 text-muted-foreground">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-foreground">
+                Auth ·{' '}
+              </span>
               {payload.api_key_handling}
             </div>
           </div>

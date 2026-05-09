@@ -15,17 +15,20 @@ const hints = [
   {
     icon: Database,
     title: 'Use a read-only database user',
-    description: 'PlainQuery validates SQL as read-only, and a read-only database credential adds another guardrail.',
+    description:
+      'PlainQuery validates SQL as read-only, and a read-only credential adds another guardrail.',
   },
   {
     icon: TestTube2,
     title: 'We test the connection',
-    description: 'The backend performs a live SELECT 1 check before storing the encrypted URL.',
+    description:
+      'The backend performs a live SELECT 1 check before storing the encrypted URL.',
   },
   {
     icon: LockKeyhole,
     title: 'Credentials stay encrypted',
-    description: 'The connection string is encrypted at rest and never returned to the browser.',
+    description:
+      'The connection string is encrypted at rest and never returned to the browser.',
   },
 ]
 
@@ -38,20 +41,25 @@ export default function SetupDatabasePage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Database setup"
+        eyebrow="§ setup · database"
         title="Connect the database people want to ask questions about."
         description="Paste a PostgreSQL or MySQL connection string. PlainQuery validates the host, tests connectivity, and stores the credential encrypted."
       />
 
-      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
-          <h2 className="text-lg font-semibold">Connection string</h2>
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">
-            If you are not sure where to find this, look for your database provider&apos;s
-            connection settings and choose a URL format.
-          </p>
+      <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <section className="rounded-xl border border-border bg-card shadow-sm">
+          <div className="border-b border-border px-6 py-4">
+            <p className="eyebrow text-primary">§ 01 · connection</p>
+            <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
+              Connection string
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              If you&apos;re not sure where to find this, check your provider&apos;s
+              connection settings and choose a URL format.
+            </p>
+          </div>
 
-          <form action={formAction} className="mt-6 space-y-5">
+          <form action={formAction} className="space-y-5 px-6 py-6">
             {state?.error && (
               <Alert variant="destructive">
                 <AlertDescription>{state.error}</AlertDescription>
@@ -59,47 +67,66 @@ export default function SetupDatabasePage() {
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="database_url">Database URL</Label>
+              <Label
+                htmlFor="database_url"
+                className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
+              >
+                Database URL
+              </Label>
               <Input
                 id="database_url"
                 name="database_url"
                 type="text"
                 placeholder="postgresql://user:password@host:5432/dbname"
                 required
-                className="h-11 font-mono text-sm"
+                className="h-11 font-mono text-[13px]"
               />
               <p className="text-xs leading-5 text-muted-foreground">
-                Supports <code>postgresql://</code> and <code>mysql+pymysql://</code>.
-                SQLite is not supported in hosted mode.
+                Supports{' '}
+                <code className="font-mono text-[11px] text-foreground">postgresql://</code>{' '}
+                and{' '}
+                <code className="font-mono text-[11px] text-foreground">
+                  mysql+pymysql://
+                </code>
+                . SQLite is not supported in hosted mode.
               </p>
             </div>
 
             <Button type="submit" className="h-11" disabled={isPending}>
-              {isPending ? 'Testing connection...' : 'Test and connect database'}
+              {isPending ? 'Testing connection…' : 'Test and connect database'}
             </Button>
           </form>
         </section>
 
-        <aside className="space-y-4">
-          {hints.map((hint) => (
-            <div key={hint.title} className="rounded-3xl bg-card p-5 shadow-sm ring-1 ring-border">
+        <aside className="space-y-3">
+          {hints.map((hint, i) => (
+            <div
+              key={hint.title}
+              className="rounded-xl border border-border bg-card p-5 shadow-sm"
+            >
               <div className="flex items-start gap-4">
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                  <hint.icon className="h-5 w-5" />
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <hint.icon className="h-4 w-4" />
                 </span>
-                <div>
-                  <h3 className="font-semibold">{hint.title}</h3>
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">{hint.description}</p>
+                <div className="min-w-0">
+                  <p className="eyebrow text-muted-foreground">
+                    note · {String(i + 1).padStart(2, '0')}
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold">{hint.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    {hint.description}
+                  </p>
                 </div>
               </div>
             </div>
           ))}
-          <div className="rounded-3xl bg-emerald-50 p-5 text-emerald-900 ring-1 ring-emerald-200">
+
+          <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/70 p-5 text-emerald-900">
             <div className="flex items-start gap-3">
-              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
               <p className="text-sm leading-6">
-                URL safety checks block private IPs, path traversal, unsafe hosts,
-                and other server-side request forgery risks before a connection is attempted.
+                URL safety checks block private IPs, path traversal, unsafe hosts, and
+                other server-side request forgery risks before any connection attempt.
               </p>
             </div>
           </div>

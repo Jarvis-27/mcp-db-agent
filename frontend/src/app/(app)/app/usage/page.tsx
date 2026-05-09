@@ -35,29 +35,33 @@ export default async function UsagePage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Usage"
+        eyebrow="§ usage"
         title="Quota and question history"
         description="Understand how often connected clients are asking questions and whether anything is failing."
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-3">
         <MetricCard
-          label="Used today"
-          value={quota ? quota.daily_used : '-'}
-          detail={quota ? `${quota.daily_remaining} questions remaining` : 'Complete setup to activate quota'}
+          label="used today"
+          value={quota ? quota.daily_used : '—'}
+          detail={
+            quota
+              ? `${quota.daily_remaining} remaining`
+              : 'Complete setup to activate quota'
+          }
           icon={MessageSquareText}
           tone={quota && quota.daily_remaining === 0 ? 'danger' : 'success'}
         />
         <MetricCard
-          label="Recent failures"
+          label="recent failures"
           value={failedCount}
           detail="Failed queries in the recent activity list"
           icon={XCircle}
           tone={failedCount > 0 ? 'warning' : 'success'}
         />
         <MetricCard
-          label="Average duration"
-          value={avgDuration == null ? '-' : `${avgDuration}ms`}
+          label="avg duration"
+          value={avgDuration == null ? '—' : `${avgDuration} ms`}
           detail="Measured across recent logged questions"
           icon={Timer}
           tone="info"
@@ -65,22 +69,27 @@ export default async function UsagePage() {
       </div>
 
       {quota ? (
-        <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
+        <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Daily quota</h2>
+              <p className="eyebrow text-primary">§ 01 · daily quota</p>
+              <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
+                Daily quota
+              </h2>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Free plan users can ask 25 database questions per day. Pro will raise this to 500.
+                Free plan users can ask 25 database questions per day. Pro raises this to 500.
               </p>
             </div>
-            <div className="rounded-2xl bg-background px-4 py-3 text-sm ring-1 ring-border">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-2.5">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                 Plan
               </p>
-              <p className="mt-1 font-semibold capitalize">{payload?.plan_code ?? 'free'}</p>
+              <p className="mt-1 font-mono text-sm font-semibold capitalize">
+                {payload?.plan_code ?? 'free'}
+              </p>
             </div>
           </div>
-          <div className="mt-6">
+          <div className="mt-6 rounded-lg border border-border bg-muted/30 p-5">
             <QuotaMeter
               used={quota.daily_used}
               limit={quota.daily_limit}
@@ -97,37 +106,41 @@ export default async function UsagePage() {
         />
       )}
 
-      <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
-        <div>
-          <h2 className="text-lg font-semibold">Recent questions</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Each row reflects one natural-language question handled by the MCP server.
-          </p>
+      <section className="rounded-xl border border-border bg-card shadow-sm">
+        <div className="flex items-end justify-between border-b border-border px-6 py-4">
+          <div>
+            <p className="eyebrow text-primary">§ 02 · activity</p>
+            <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
+              Recent questions
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Each row is one natural-language question handled by the MCP server.
+            </p>
+          </div>
+          {recentQueries && recentQueries.items.length > 0 && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tabular-nums">
+              {recentQueries.items.length} entries
+            </span>
+          )}
         </div>
 
         {recentQueries && recentQueries.items.length > 0 ? (
-          <div className="mt-5 overflow-hidden rounded-2xl border bg-background">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="border-b bg-muted/60">
+              <thead className="border-b border-border bg-muted/40">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                    Time
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                    Question
-                  </th>
-                  <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground md:table-cell">
+                  <Th>Time</Th>
+                  <Th>Question</Th>
+                  <Th align="right" className="hidden md:table-cell">
                     Duration
-                  </th>
-                  <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground md:table-cell">
+                  </Th>
+                  <Th align="right" className="hidden md:table-cell">
                     Attempts
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                    Result
-                  </th>
+                  </Th>
+                  <Th align="right">Result</Th>
                 </tr>
               </thead>
-              <tbody className="divide-y">
+              <tbody className="divide-y divide-border">
                 {recentQueries.items.map((item) => (
                   <UsageRow key={item.id} item={item} />
                 ))}
@@ -139,7 +152,7 @@ export default async function UsagePage() {
             icon={MessageSquareText}
             title="No questions recorded yet"
             description="Query history appears here after you connect a client and ask your first question."
-            className="mt-5"
+            className="m-6"
           />
         )}
       </section>
@@ -150,8 +163,8 @@ export default async function UsagePage() {
 function UsageRow({ item }: { item: RecentQueryItem }) {
   const createdAt = new Date(item.created_at)
   return (
-    <tr className="transition-colors hover:bg-muted/35">
-      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+    <tr className="transition-colors hover:bg-muted/30">
+      <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
         {createdAt.toLocaleString([], {
           month: 'short',
           day: 'numeric',
@@ -162,29 +175,52 @@ function UsageRow({ item }: { item: RecentQueryItem }) {
       <td className="max-w-sm truncate px-4 py-3 text-sm" title={item.question}>
         {item.question}
       </td>
-      <td className="hidden px-4 py-3 text-xs text-muted-foreground md:table-cell">
-        {item.duration_ms != null ? `${item.duration_ms}ms` : 'Not recorded'}
+      <td className="hidden px-4 py-3 text-right font-mono text-xs text-muted-foreground tabular-nums md:table-cell">
+        {item.duration_ms != null ? `${item.duration_ms} ms` : '—'}
       </td>
-      <td className="hidden px-4 py-3 text-xs text-muted-foreground md:table-cell">
-        {item.attempts > 1 ? (
-          <span className="font-semibold text-amber-700">{item.attempts} attempts</span>
-        ) : (
-          '1 attempt'
+      <td
+        className={cn(
+          'hidden px-4 py-3 text-right font-mono text-xs tabular-nums md:table-cell',
+          item.attempts > 1 ? 'text-amber-700 font-semibold' : 'text-muted-foreground',
         )}
+      >
+        {item.attempts}×
       </td>
       <td className="px-4 py-3 text-right">
-        <span
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
-            item.success
-              ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
-              : 'bg-red-50 text-red-700 ring-1 ring-red-200',
-          )}
-        >
-          {item.success ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-          {item.success ? 'Success' : 'Failed'}
-        </span>
+        {item.success ? (
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-700">
+            <CheckCircle2 className="h-3 w-3" />
+            success
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-red-700">
+            <XCircle className="h-3 w-3" />
+            failed
+          </span>
+        )}
       </td>
     </tr>
+  )
+}
+
+function Th({
+  children,
+  align,
+  className,
+}: {
+  children: React.ReactNode
+  align?: 'left' | 'right'
+  className?: string
+}) {
+  return (
+    <th
+      className={cn(
+        'px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground',
+        align === 'right' ? 'text-right' : 'text-left',
+        className,
+      )}
+    >
+      {children}
+    </th>
   )
 }

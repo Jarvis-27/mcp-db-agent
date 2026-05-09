@@ -80,19 +80,20 @@ export function McpOauthCard({
   }
 
   return (
-    <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
+    <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <ShieldCheck className="h-5 w-5" />
-            </span>
-            <div>
-              <h2 className="text-lg font-semibold">OAuth access</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Best for remote clients that can complete the MCP OAuth flow.
-              </p>
-            </div>
+        <div className="flex items-start gap-4">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <ShieldCheck className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="eyebrow text-primary">§ oauth</p>
+            <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
+              OAuth access
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Best for remote clients that can complete the MCP OAuth flow.
+            </p>
           </div>
         </div>
         <StatusBadge
@@ -137,8 +138,8 @@ export function McpOauthCard({
 
         {oauthEnabledForMcp && (
           <>
-            <div className="rounded-2xl bg-background p-4 ring-1 ring-border">
-              <p className="font-medium">
+            <div className="rounded-lg border border-border bg-muted/30 p-4">
+              <p className="text-sm font-semibold">
                 {linkStatus.linked ? 'Linked OAuth identity' : 'No OAuth identity linked yet'}
               </p>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
@@ -147,8 +148,9 @@ export function McpOauthCard({
                   : 'Complete this once before connecting ChatGPT or another OAuth-capable MCP client.'}
               </p>
               {linkStatus.linked && linkStatus.oauth_last_login_at && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Last OAuth MCP use: {new Date(linkStatus.oauth_last_login_at).toLocaleString()}
+                <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  last oauth use ·{' '}
+                  {new Date(linkStatus.oauth_last_login_at).toLocaleString()}
                 </p>
               )}
             </div>

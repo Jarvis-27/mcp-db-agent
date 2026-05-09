@@ -23,29 +23,38 @@ export function DatabaseSettingsForm() {
         </Alert>
       )}
       {state?.success && (
-        <Alert className="border-emerald-200 bg-emerald-50 text-emerald-900">
+        <Alert className="border-emerald-200/80 bg-emerald-50/70 text-emerald-900">
           <AlertDescription>Database connection updated successfully.</AlertDescription>
         </Alert>
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="database_url">New connection string</Label>
+        <Label
+          htmlFor="database_url"
+          className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
+        >
+          New connection string
+        </Label>
         <Input
           id="database_url"
           name="database_url"
           type="text"
           placeholder="postgresql://user:password@host:5432/dbname"
           required
-          className="h-11 font-mono text-sm"
+          className="h-11 font-mono text-[13px]"
         />
         <p className="text-xs leading-5 text-muted-foreground">
-          Supports <code>postgresql://</code> and <code>mysql+pymysql://</code>.
-          The backend validates and tests the connection before replacing the stored credential.
+          Supports{' '}
+          <code className="font-mono text-[11px] text-foreground">postgresql://</code>{' '}
+          and{' '}
+          <code className="font-mono text-[11px] text-foreground">mysql+pymysql://</code>.
+          The backend validates and tests the connection before replacing the stored
+          credential.
         </p>
       </div>
 
       <Button type="submit" className="h-11" disabled={isPending}>
-        {isPending ? 'Testing connection...' : 'Update database'}
+        {isPending ? 'Testing connection…' : 'Update database'}
       </Button>
     </form>
   )

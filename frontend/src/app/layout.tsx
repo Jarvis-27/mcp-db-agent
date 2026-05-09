@@ -1,23 +1,23 @@
 import type { Metadata } from 'next'
-import { JetBrains_Mono, Manrope } from 'next/font/google'
+import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 
-const manrope = Manrope({
-  variable: '--font-manrope',
+const geistSans = Geist({
+  variable: '--font-geist-sans',
   subsets: ['latin'],
   display: 'swap',
 })
 
-const jetBrainsMono = JetBrains_Mono({
-  variable: '--font-jetbrains-mono',
+const geistMono = Geist_Mono({
+  variable: '--font-geist-mono',
   subsets: ['latin'],
   display: 'swap',
 })
 
 export const metadata: Metadata = {
-  title: 'PlainQuery',
+  title: 'PlainQuery — ask your database in plain English',
   description:
-    'Ask your database questions in plain English without writing SQL or waiting on a data specialist.',
+    'PlainQuery is an MCP server that lets ChatGPT, Cursor, and VS Code query your Postgres or MySQL database in plain English. No SQL, no waiting on a data team.',
 }
 
 export default function RootLayout({
@@ -29,7 +29,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${manrope.variable} ${jetBrainsMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body suppressHydrationWarning className="min-h-full bg-background text-foreground">
         {children}

@@ -1,6 +1,13 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { ArrowRight, CheckCircle2, Circle, Database, KeyRound, MailCheck, PlugZap } from 'lucide-react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  Database,
+  KeyRound,
+  MailCheck,
+  PlugZap,
+} from 'lucide-react'
 import { backendFetch } from '@/lib/api/backend'
 import { getOnboardingStatusOrRedirect } from '@/lib/api/owner'
 import { getMcpOauthLinkStatusOrRedirect } from '@/lib/api/mcp-oauth'
@@ -82,38 +89,69 @@ export default async function SetupPage() {
     },
   ]
 
+  const continueHref = dbConnected
+    ? authReady
+      ? '/app/setup/clients'
+      : '/app/api-keys'
+    : '/app/setup/database'
+
+  const continueCopy = dbConnected
+    ? authReady
+      ? 'Copy a client configuration and test list_tables.'
+      : 'Create an API key or link OAuth before connecting a client.'
+    : 'Connect your database and let PlainQuery validate it.'
+
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Setup"
+        eyebrow="§ setup"
         title="Turn PlainQuery on, one step at a time."
         description="Connect the data source, set up client authentication, then copy the client-specific instructions."
       />
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_0.8fr]">
-        <section className="rounded-3xl bg-card p-6 shadow-sm ring-1 ring-border">
-          <div className="space-y-3">
+      <div className="grid gap-5 xl:grid-cols-[1fr_0.8fr]">
+        <section className="rounded-xl border border-border bg-card shadow-sm">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4">
+            <div>
+              <p className="eyebrow text-primary">§ 01 · checklist</p>
+              <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
+                What still needs to be done
+              </h2>
+            </div>
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tabular-nums">
+              {steps.filter((s) => s.done).length} / {steps.length} complete
+            </span>
+          </div>
+
+          <ol className="divide-y divide-border">
             {steps.map((step, index) => {
               const Icon = step.icon
               return (
-                <div
+                <li
                   key={step.id}
-                  className="flex items-start gap-4 rounded-2xl border bg-background/75 p-4"
+                  className="grid grid-cols-[auto_1fr_auto] items-start gap-4 px-6 py-5"
                 >
                   <span
                     className={cn(
-                      'mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl',
+                      'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md font-mono text-xs font-semibold',
                       step.done
                         ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
-                        : 'bg-muted text-muted-foreground',
+                        : 'bg-muted text-muted-foreground ring-1 ring-border',
                     )}
                   >
-                    {step.done ? <CheckCircle2 className="h-5 w-5" /> : <Icon className="h-5 w-5" />}
+                    {step.done ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : (
+                      <Icon className="h-4 w-4" />
+                    )}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-medium">
-                        <span className="mr-2 text-xs text-muted-foreground">{index + 1}.</span>
+
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                      <p className="text-sm font-semibold">
+                        <span className="mr-2 font-mono text-[11px] font-normal text-muted-foreground">
+                          {String(index + 1).padStart(2, '0')}
+                        </span>
                         {step.title}
                       </p>
                       <StatusBadge
@@ -121,46 +159,55 @@ export default async function SetupPage() {
                         label={step.done ? 'Done' : step.manual ? 'Manual' : 'Next'}
                       />
                     </div>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
                       {step.description}
                     </p>
                   </div>
+
                   {step.action ? (
                     <Link
                       href={step.action.href}
-                      className="hidden items-center gap-1 text-sm font-semibold text-primary sm:inline-flex"
+                      className="hidden items-center gap-1.5 self-center font-mono text-[11px] uppercase tracking-[0.14em] text-primary sm:inline-flex"
                     >
                       {step.action.label}
-                      <ArrowRight className="h-4 w-4" />
+                      <ArrowRight className="h-3.5 w-3.5" />
                     </Link>
                   ) : (
-                    <Circle className="mt-3 hidden h-4 w-4 text-transparent sm:block" />
+                    <span aria-hidden className="hidden h-4 w-16 sm:block" />
                   )}
-                </div>
+                </li>
               )
             })}
-          </div>
+          </ol>
         </section>
 
-        <aside className="rounded-3xl bg-primary p-6 text-primary-foreground shadow-xl shadow-primary/15">
-          <h2 className="text-2xl font-semibold tracking-tight">First value is one good question.</h2>
-          <p className="mt-3 text-sm leading-6 text-primary-foreground/80">
+        <aside className="flex flex-col rounded-xl border border-foreground/95 bg-foreground p-6 text-background shadow-sm">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-background/55">
+            § 02 · the goal
+          </p>
+          <h2 className="mt-2 font-display text-2xl font-semibold leading-tight -tracking-[0.025em]">
+            First value is one good question.
+          </h2>
+          <p className="mt-3 text-sm leading-6 text-background/70">
             Once setup is complete, ask something concrete from your client:
             &quot;What were the top customers by revenue last month?&quot;
           </p>
-          <div className="mt-6 rounded-2xl bg-white/12 p-4 text-sm">
-            <p className="font-semibold">Recommended next step</p>
-            <p className="mt-1 text-primary-foreground/75">
-              {dbConnected
-                ? authReady
-                  ? 'Copy a client configuration and test list_tables.'
-                  : 'Create an API key or link OAuth before connecting a client.'
-                : 'Connect your database and let PlainQuery validate the connection.'}
+
+          <div className="mt-5 rounded-lg border border-background/15 bg-background/[0.06] p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-background/55">
+              Recommended next step
+            </p>
+            <p className="mt-2 text-sm leading-6 text-background/85">
+              {continueCopy}
             </p>
           </div>
+
           <Link
-            href={dbConnected ? (authReady ? '/app/setup/clients' : '/app/api-keys') : '/app/setup/database'}
-            className={cn(buttonVariants({ variant: 'secondary', size: 'lg' }), 'mt-6 h-11 w-full')}
+            href={continueHref}
+            className={cn(
+              buttonVariants({ variant: 'secondary', size: 'lg' }),
+              'mt-6 h-11 w-full justify-between',
+            )}
           >
             Continue setup
             <ArrowRight className="h-4 w-4" />

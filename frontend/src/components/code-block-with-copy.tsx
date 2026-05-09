@@ -7,10 +7,16 @@ import { cn } from '@/lib/utils'
 interface CodeBlockWithCopyProps {
   code: string
   inline?: boolean
+  label?: string
   className?: string
 }
 
-export function CodeBlockWithCopy({ code, inline = false, className }: CodeBlockWithCopyProps) {
+export function CodeBlockWithCopy({
+  code,
+  inline = false,
+  label,
+  className,
+}: CodeBlockWithCopyProps) {
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
@@ -32,19 +38,31 @@ export function CodeBlockWithCopy({ code, inline = false, className }: CodeBlock
 
   if (inline) {
     return (
-      <div className={cn('flex items-center gap-2', className)}>
-        <code className="flex-1 rounded-xl border bg-muted/70 px-3 py-2 text-sm font-mono truncate">
+      <div
+        className={cn(
+          'group flex items-stretch overflow-hidden rounded-lg border border-border bg-muted/40',
+          className,
+        )}
+      >
+        <code className="min-w-0 flex-1 truncate px-3 py-2.5 font-mono text-[12.5px] text-foreground">
           {code}
         </code>
         <button
           onClick={handleCopy}
-          className="shrink-0 rounded-xl border bg-background px-3 py-2 text-sm font-medium hover:bg-muted transition-colors flex items-center gap-1.5"
+          className="flex shrink-0 items-center gap-1.5 border-l border-border bg-card px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Copy to clipboard"
+          type="button"
         >
           {copied ? (
-            <><Check className="w-3.5 h-3.5 text-emerald-500" /><span className="text-emerald-600">Copied</span></>
+            <>
+              <Check className="h-3 w-3 text-emerald-600" />
+              <span className="text-emerald-700">copied</span>
+            </>
           ) : (
-            <><Copy className="w-3.5 h-3.5" /><span>Copy</span></>
+            <>
+              <Copy className="h-3 w-3" />
+              <span>copy</span>
+            </>
           )}
         </button>
       </div>
@@ -52,21 +70,40 @@ export function CodeBlockWithCopy({ code, inline = false, className }: CodeBlock
   }
 
   return (
-    <div className={cn('relative rounded-2xl border bg-muted/70 shadow-sm', className)}>
-      <pre className="overflow-x-auto p-3 pr-10 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed">
+    <div
+      className={cn(
+        'overflow-hidden rounded-lg border border-foreground/10 bg-foreground/[0.97] text-background shadow-sm',
+        className,
+      )}
+    >
+      {(label || true) && (
+        <div className="flex items-center justify-between border-b border-white/10 px-3.5 py-2">
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-background/55">
+            {label ?? 'snippet'}
+          </span>
+          <button
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-background/75 transition-colors hover:bg-white/10 hover:text-background"
+            title="Copy to clipboard"
+            type="button"
+          >
+            {copied ? (
+              <>
+                <Check className="h-3 w-3 text-emerald-400" />
+                copied
+              </>
+            ) : (
+              <>
+                <Copy className="h-3 w-3" />
+                copy
+              </>
+            )}
+          </button>
+        </div>
+      )}
+      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all text-background/90">
         {code}
       </pre>
-      <button
-        onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded-lg hover:bg-background transition-colors"
-        title="Copy to clipboard"
-      >
-        {copied ? (
-          <Check className="w-3.5 h-3.5 text-green-500" />
-        ) : (
-          <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-        )}
-      </button>
     </div>
   )
 }
