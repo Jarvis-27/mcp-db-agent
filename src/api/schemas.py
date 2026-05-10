@@ -221,6 +221,36 @@ class UsageRecentResponse(BaseModel):
     total: int
 
 
+class BillingSummaryResponse(BaseModel):
+    user_id: str
+    plan_code: str
+    plan_display_name: str
+    billing_status: str
+    daily_limit: int
+    daily_used: int
+    daily_remaining: int
+    checkout_available: bool
+    portal_available: bool
+    stripe_customer_configured: bool
+    billing_current_period_end: str | None
+
+
+class BillingSessionResponse(BaseModel):
+    id: str
+    url: str
+
+
+class BillingWebhookResponse(BaseModel):
+    received: bool
+    processed: bool
+    duplicate: bool
+    event_id: str
+    event_type: str
+    user_id: str | None = None
+    billing_status: str | None = None
+    plan_code: str | None = None
+
+
 # ── OAuth MCP account-linking schemas ─────────────────────────────────────────
 
 

@@ -13,6 +13,7 @@ import logging
 import src.server as _server_module  # noqa: E402 — must come after sys.path setup in server.py
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from typing import Any
 
 from cachetools import TTLCache  # type: ignore[import-untyped]
 from sqlalchemy import create_engine, event
@@ -376,6 +377,7 @@ def _build_mcp_asgi(*, auth_mode: str, user_store: UserStore, api_key_cache: TTL
     is safe — the session manager is reused on the second call.
     """
     mcp = _server_module.mcp
+    raw_app: Any
 
     if auth_mode == "api_key_only" or not settings.oauth_is_configured():
         if auth_mode != "api_key_only":

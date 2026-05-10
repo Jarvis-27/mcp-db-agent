@@ -28,14 +28,14 @@ const plans = [
     suffix: '/ daily questions',
     description:
       'Higher daily limits and additional keys — for the moment PlainQuery becomes part of your workflow, not a curiosity.',
-    cta: 'Join early access',
+    cta: 'Start free',
     href: '/signup',
     featured: true,
     features: [
       '500 database questions per day',
       '5 active API keys',
       '1 active database',
-      'Upgrade path when billing opens',
+      'Upgrade through Stripe after setup',
     ],
   },
 ]

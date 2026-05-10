@@ -4,7 +4,7 @@ Hosted HTTP MCP server for querying a user-connected database in natural languag
 
 The product model in this repo is now single-account and user-scoped:
 
-`signup -> verify email -> connect database -> link OAuth identity -> use /mcp`
+`signup -> verify email -> connect database -> link OAuth identity -> use /mcp -> upgrade with Stripe`
 
 ## What It Does
 
@@ -12,7 +12,7 @@ The product model in this repo is now single-account and user-scoped:
 - Supports OAuth 2.1 bearer tokens and API keys for MCP client authentication (mode controlled by `MCP_AUTH_MODE`)
 - Stores one connected database per user account
 - Generates SQL with the configured LLM, validates it, executes it, and returns structured results
-- Tracks user-scoped quota usage, query history, and setup state
+- Tracks user-scoped quota usage, query history, setup state, and Stripe-backed billing state
 
 ## Runtime Model
 
@@ -21,6 +21,7 @@ The product model in this repo is now single-account and user-scoped:
 - Auth: passwordless email verification and login links
 - MCP auth: OAuth 2.1 bearer tokens (`oauth_only`), API keys (`api_key_only`), or both (`hybrid`) — set via `MCP_AUTH_MODE`
 - Setup payloads: `POST /api/v1/account/setup-payloads`
+- Billing: Stripe Checkout, Customer Portal, and webhook-confirmed Free/Pro entitlements
 
 Legacy tenant/admin/owner-session flows are removed from the supported product surface.
 
@@ -79,6 +80,10 @@ Open `http://localhost:3000`, sign up, complete setup, link your OAuth identity 
 | `APP_BASE_URL` | Base URL used in setup payloads |
 | `FRONTEND_BASE_URL` | Base URL used in email links |
 | `ALLOW_SQLITE_USER_DBS` | Dev-only escape hatch for user-supplied SQLite databases |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Stripe API and webhook credentials |
+| `STRIPE_PRO_PRICE_ID` | Stripe Price ID that maps to the Pro plan |
+| `STRIPE_CHECKOUT_SUCCESS_URL` / `STRIPE_CHECKOUT_CANCEL_URL` | Optional Checkout redirect overrides |
+| `STRIPE_CUSTOMER_PORTAL_RETURN_URL` | Optional Customer Portal return URL override |
 
 See [.env.example](./.env.example) for the current full set.
 
@@ -109,6 +114,17 @@ All account routes use session token auth:
 - `POST /api/v1/account/setup-payloads`
 - `GET /api/v1/account/dashboard`
 - `GET /api/v1/account/usage/recent`
+
+### Billing
+
+- `GET /api/v1/account/billing`
+- `POST /api/v1/account/billing/checkout-session`
+- `POST /api/v1/account/billing/portal-session`
+- `POST /api/v1/billing/webhook`
+
+Stripe webhooks are the source of truth for plan transitions. Checkout or
+subscription activation moves a user to `plan_code=pro`; canceled, unpaid, or
+past-due states restrict paid entitlements without deleting database setup.
 
 ### OAuth MCP account linking (session-authenticated)
 
@@ -143,6 +159,7 @@ The backend never stores raw API keys after creation. A raw key is only embedded
 uv run pytest tests/ -m "not integration"
 uv run pytest tests/ -m integration
 uv run ruff check .
+uv run mypy src --ignore-missing-imports
 ```
 
 ## Deployment Smoke Test

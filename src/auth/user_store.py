@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Session
 
 from src.auth.crypto import CredentialCipher
@@ -32,7 +33,11 @@ from src.auth.onboarding import (
     ACCOUNT_ACTIVE,
     ACCOUNT_CLOSED,
     ACCOUNT_SUSPENDED,
+    BILLING_ACTIVE_PAID,
+    BILLING_CANCELED,
     BILLING_FREE,
+    BILLING_PAST_DUE,
+    BILLING_TRIALING,
     SETUP_COMPLETE,
 )
 from src.entitlements.service import EntitlementService
@@ -64,6 +69,12 @@ class User(Base):
     db_validation_status = Column(String(40), nullable=True)
     db_last_validation_at = Column(DateTime(timezone=True), nullable=True)
     db_last_validation_error = Column(Text, nullable=True)
+    # Stripe billing linkage. Entitlements are still driven by plan_code/billing_status.
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    stripe_price_id = Column(String(255), nullable=True)
+    billing_current_period_end = Column(DateTime(timezone=True), nullable=True)
+    billing_last_event_id = Column(String(255), nullable=True)
     # Timestamps
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
@@ -79,6 +90,8 @@ class User(Base):
     __table_args__ = (
         Index("ix_users_oauth_issuer_subject", "oauth_issuer", "oauth_subject", unique=True),
         Index("ix_users_oauth_email", "oauth_email"),
+        Index("ix_users_stripe_customer_id", "stripe_customer_id", unique=True),
+        Index("ix_users_stripe_subscription_id", "stripe_subscription_id"),
     )
 
 
@@ -132,6 +145,17 @@ class QueryHistory(Base):
     warning_level = Column(String(20), nullable=True)
 
     __table_args__ = (Index("ix_query_history_user_id_desc", "user_id", "id"),)
+
+
+class BillingWebhookEvent(Base):
+    __tablename__ = "billing_webhook_events"
+
+    event_id = Column(String(255), primary_key=True)
+    event_type = Column(String(120), nullable=False)
+    user_id = Column(String(36), nullable=True, index=True)
+    stripe_customer_id = Column(String(255), nullable=True, index=True)
+    stripe_subscription_id = Column(String(255), nullable=True, index=True)
+    processed_at = Column(DateTime(timezone=True), nullable=False)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +310,11 @@ class UserStore:
             db_validation_status=None,
             db_last_validation_at=None,
             db_last_validation_error=None,
+            stripe_customer_id=None,
+            stripe_subscription_id=None,
+            stripe_price_id=None,
+            billing_current_period_end=None,
+            billing_last_event_id=None,
             created_at=now,
             updated_at=now,
             suspended_at=None,
@@ -678,6 +707,125 @@ class UserStore:
         if str(user.onboarding_status) != SETUP_COMPLETE:
             return False
         return user.db_url_enc is not None
+
+    # ------------------------------------------------------------------
+    # Billing
+    # ------------------------------------------------------------------
+
+    def set_stripe_customer_id(self, user_id: str, stripe_customer_id: str) -> bool:
+        """Attach a Stripe customer to a user, preserving the one-customer-per-user rule."""
+        now = _utcnow()
+        with Session(self._engine) as session:
+            existing = (
+                session.query(User)
+                .filter(User.stripe_customer_id == stripe_customer_id, User.id != user_id)
+                .first()
+            )
+            if existing is not None:
+                raise StateTransitionError("Stripe customer is already linked to another user.")
+
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+            user.stripe_customer_id = stripe_customer_id  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def get_user_by_stripe_customer_id(self, stripe_customer_id: str) -> User | None:
+        with Session(self._engine) as session:
+            user = (
+                session.query(User).filter(User.stripe_customer_id == stripe_customer_id).first()
+            )
+            if user is None:
+                return None
+            session.expunge(user)
+            return user
+
+    def apply_billing_update(
+        self,
+        *,
+        user_id: str,
+        billing_status: str,
+        plan_code: str,
+        stripe_customer_id: str | None = None,
+        stripe_subscription_id: str | None = None,
+        stripe_price_id: str | None = None,
+        billing_current_period_end: datetime | None = None,
+        billing_last_event_id: str | None = None,
+    ) -> bool:
+        """Apply webhook-confirmed billing state and plan entitlements."""
+        allowed_billing = {
+            BILLING_FREE,
+            BILLING_TRIALING,
+            BILLING_ACTIVE_PAID,
+            BILLING_PAST_DUE,
+            BILLING_CANCELED,
+        }
+        if billing_status not in allowed_billing:
+            raise ValueError(f"Unsupported billing_status: {billing_status}")
+
+        now = _utcnow()
+        with Session(self._engine) as session:
+            if stripe_customer_id:
+                existing = (
+                    session.query(User)
+                    .filter(User.stripe_customer_id == stripe_customer_id, User.id != user_id)
+                    .first()
+                )
+                if existing is not None:
+                    raise StateTransitionError(
+                        "Stripe customer is already linked to another user."
+                    )
+
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+
+            user.billing_status = billing_status  # type: ignore[assignment]
+            user.plan_code = plan_code  # type: ignore[assignment]
+            if stripe_customer_id is not None:
+                user.stripe_customer_id = stripe_customer_id  # type: ignore[assignment]
+            if stripe_subscription_id is not None:
+                user.stripe_subscription_id = stripe_subscription_id  # type: ignore[assignment]
+            if stripe_price_id is not None:
+                user.stripe_price_id = stripe_price_id  # type: ignore[assignment]
+            user.billing_current_period_end = billing_current_period_end  # type: ignore[assignment]
+            if billing_last_event_id is not None:
+                user.billing_last_event_id = billing_last_event_id  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
+            session.commit()
+        return True
+
+    def has_processed_billing_event(self, event_id: str) -> bool:
+        with Session(self._engine) as session:
+            return session.get(BillingWebhookEvent, event_id) is not None
+
+    def record_billing_webhook_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        user_id: str | None = None,
+        stripe_customer_id: str | None = None,
+        stripe_subscription_id: str | None = None,
+    ) -> bool:
+        record = BillingWebhookEvent(
+            event_id=event_id,
+            event_type=event_type,
+            user_id=user_id,
+            stripe_customer_id=stripe_customer_id,
+            stripe_subscription_id=stripe_subscription_id,
+            processed_at=_utcnow(),
+        )
+        with Session(self._engine) as session:
+            session.add(record)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # OAuth identity linkage

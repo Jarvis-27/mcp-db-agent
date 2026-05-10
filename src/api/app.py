@@ -20,6 +20,9 @@ from src.api.schemas import (
     AccountStatusResponse,
     ActiveDatabaseSummary,
     ApiKeyResponse,
+    BillingSessionResponse,
+    BillingSummaryResponse,
+    BillingWebhookResponse,
     ClientSetupPayloadResponse,
     CreateApiKeyRequest,
     CreatedApiKeyResponse,
@@ -45,6 +48,14 @@ from src.api.schemas import (
     SubmitDatabaseRequest,
     UsageRecentResponse,
     VerifyEmailResponse,
+)
+from src.billing import (
+    BillingConfigurationError,
+    BillingService,
+    StripeAPIError,
+    StripeClient,
+    WebhookSignatureError,
+    verify_stripe_signature,
 )
 from src.auth import onboarding
 from src.auth.onboarding import (
@@ -240,6 +251,40 @@ def _client_setup_response(payload) -> ClientSetupPayloadResponse:
         api_key_handling=payload.api_key_handling,
         instructions=list(payload.instructions),
         availability_reason=payload.availability_reason,
+    )
+
+
+def _billing_service(request: Request) -> BillingService:
+    stripe_client = getattr(request.app.state, "stripe_client", None)
+    if stripe_client is None:
+        stripe_client = StripeClient(
+            secret_key=settings.stripe_secret_key,
+            api_base=settings.stripe_api_base,
+        )
+    return BillingService(
+        user_store=request.app.state.user_store,
+        stripe_client=stripe_client,
+        settings=settings,
+    )
+
+
+def _billing_summary_response(summary) -> BillingSummaryResponse:
+    return BillingSummaryResponse(
+        user_id=summary.user_id,
+        plan_code=summary.plan_code,
+        plan_display_name=summary.plan_display_name,
+        billing_status=summary.billing_status,
+        daily_limit=summary.daily_limit,
+        daily_used=summary.daily_used,
+        daily_remaining=summary.daily_remaining,
+        checkout_available=summary.checkout_available,
+        portal_available=summary.portal_available,
+        stripe_customer_configured=summary.stripe_customer_configured,
+        billing_current_period_end=(
+            summary.billing_current_period_end.isoformat()
+            if summary.billing_current_period_end is not None
+            else None
+        ),
     )
 
 
@@ -747,6 +792,89 @@ async def usage_recent(
             for r in rows
         ],
         total=len(rows),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Billing endpoints
+# ---------------------------------------------------------------------------
+
+
+@api_app.get("/v1/account/billing", response_model=BillingSummaryResponse)
+async def billing_summary(
+    request: Request,
+    session: AuthedSession,
+) -> BillingSummaryResponse:
+    try:
+        summary = _billing_service(request).build_summary(session.user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _billing_summary_response(summary)
+
+
+@api_app.post("/v1/account/billing/checkout-session", response_model=BillingSessionResponse)
+async def create_checkout_session(
+    request: Request,
+    session: AuthedSession,
+) -> BillingSessionResponse:
+    try:
+        checkout = await _billing_service(request).create_checkout_session(session.user_id)
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except StateTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except StripeAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return BillingSessionResponse(id=checkout.id, url=checkout.url)
+
+
+@api_app.post("/v1/account/billing/portal-session", response_model=BillingSessionResponse)
+async def create_portal_session(
+    request: Request,
+    session: AuthedSession,
+) -> BillingSessionResponse:
+    try:
+        portal = await _billing_service(request).create_portal_session(session.user_id)
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except StateTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except StripeAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return BillingSessionResponse(id=portal.id, url=portal.url)
+
+
+@api_app.post("/v1/billing/webhook", response_model=BillingWebhookResponse)
+async def stripe_webhook(request: Request) -> BillingWebhookResponse:
+    if not settings.stripe_webhook_secret:
+        raise HTTPException(status_code=503, detail="Stripe webhook secret is not configured.")
+
+    payload = await request.body()
+    try:
+        event = verify_stripe_signature(
+            payload,
+            request.headers.get("stripe-signature", ""),
+            settings.stripe_webhook_secret,
+        )
+        result = _billing_service(request).process_webhook_event(event)
+    except WebhookSignatureError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (StateTransitionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return BillingWebhookResponse(
+        received=True,
+        processed=result.processed,
+        duplicate=result.duplicate,
+        event_id=result.event_id,
+        event_type=result.event_type,
+        user_id=result.user_id,
+        billing_status=result.billing_status,
+        plan_code=result.plan_code,
     )
 
 

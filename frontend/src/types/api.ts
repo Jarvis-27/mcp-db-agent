@@ -165,6 +165,25 @@ export interface RecentQueriesResponse {
   total: number
 }
 
+export interface BillingSummaryResponse {
+  user_id: string
+  plan_code: string
+  plan_display_name: string
+  billing_status: string
+  daily_limit: number
+  daily_used: number
+  daily_remaining: number
+  checkout_available: boolean
+  portal_available: boolean
+  stripe_customer_configured: boolean
+  billing_current_period_end: string | null
+}
+
+export interface BillingSessionResponse {
+  id: string
+  url: string
+}
+
 export interface ApiError {
   detail: string
 }

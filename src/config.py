@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     billing_gate_enabled: bool = False
     mfa_gate_enabled: bool = False
 
+    # Stripe billing settings
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_pro_price_id: str = ""
+    stripe_api_base: str = "https://api.stripe.com"
+    stripe_checkout_success_url: str = ""
+    stripe_checkout_cancel_url: str = ""
+    stripe_customer_portal_return_url: str = ""
+
     # ── Verification token TTLs ────────────────────────────────────────
     email_verification_token_ttl_minutes: int = 60
     login_link_token_ttl_minutes: int = 30
@@ -139,6 +148,11 @@ class Settings(BaseSettings):
                 "Set it to the resource-server identifier registered with your "
                 "authorization server (e.g. https://app.example.com/mcp)."
             )
+        if self.billing_gate_enabled and not self.stripe_billing_is_configured():
+            raise ValueError(
+                "Stripe billing is enabled but STRIPE_SECRET_KEY, "
+                "STRIPE_WEBHOOK_SECRET, and STRIPE_PRO_PRICE_ID are not all set."
+            )
         return self
 
     def credential_encryption_keys_list(self) -> list[str]:
@@ -160,6 +174,25 @@ class Settings(BaseSettings):
     def oauth_link_is_configured(self) -> bool:
         """Return True when the account-linking OAuth client is fully configured."""
         return bool(self.oauth_client_id and self.oauth_link_redirect_uri and self.oauth_issuer_url)
+
+    def stripe_billing_is_configured(self) -> bool:
+        """Return True when Stripe can create sessions and verify webhooks."""
+        return bool(self.stripe_secret_key and self.stripe_webhook_secret and self.stripe_pro_price_id)
+
+    def stripe_checkout_success_url_effective(self) -> str:
+        if self.stripe_checkout_success_url:
+            return self.stripe_checkout_success_url
+        return f"{self.frontend_base_url.rstrip('/')}/app/billing?checkout=success"
+
+    def stripe_checkout_cancel_url_effective(self) -> str:
+        if self.stripe_checkout_cancel_url:
+            return self.stripe_checkout_cancel_url
+        return f"{self.frontend_base_url.rstrip('/')}/app/billing?checkout=cancelled"
+
+    def stripe_customer_portal_return_url_effective(self) -> str:
+        if self.stripe_customer_portal_return_url:
+            return self.stripe_customer_portal_return_url
+        return f"{self.frontend_base_url.rstrip('/')}/app/billing"
 
     def mcp_oauth_enabled(self) -> bool:
         """Return True when /mcp is actively accepting OAuth bearer tokens."""

@@ -18,7 +18,7 @@ const faqs = [
   {
     question: 'Why is Pro listed without a dollar amount?',
     answer:
-      'The backend plan limits are ready, but billing is not wired in this frontend pass. Pro is shown as an early-access upgrade path.',
+      'The launch price is configured in Stripe. Signed-in users upgrade from the billing page when their workspace is ready.',
   },
   {
     question: 'Can I use ChatGPT, Cursor, or VS Code?',

@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useState } from 'react'
 import {
   BarChart2,
+  CreditCard,
   Database,
   Key,
   LayoutDashboard,
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
   { href: '/app/dashboard', label: 'Dashboard', icon: LayoutDashboard, key: 'dash' },
   { href: '/app/setup', label: 'Setup', icon: ListChecks, key: 'setup' },
   { href: '/app/usage', label: 'Usage', icon: BarChart2, key: 'usage' },
+  { href: '/app/billing', label: 'Billing', icon: CreditCard, key: 'billing' },
   { href: '/app/api-keys', label: 'API keys', icon: Key, key: 'keys' },
   { href: '/app/settings/database', label: 'Database', icon: Database, key: 'db' },
 ]

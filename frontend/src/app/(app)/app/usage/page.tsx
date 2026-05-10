@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import { CheckCircle2, Clock3, MessageSquareText, Timer, XCircle } from 'lucide-react'
 import { backendFetch } from '@/lib/api/backend'
 import { QuotaMeter } from '@/components/quota-meter'
@@ -6,6 +7,7 @@ import { getRecentQueriesOrNull } from '@/lib/api/dashboard'
 import { PageHeader } from '@/components/page-header'
 import { MetricCard } from '@/components/metric-card'
 import { EmptyState } from '@/components/empty-state'
+import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { SetupPayloadResponse, RecentQueryItem } from '@/types/api'
 
@@ -97,6 +99,19 @@ export default async function UsagePage() {
               warningLevel={quota.warning_level}
             />
           </div>
+          {payload?.plan_code === 'free' && quota.daily_remaining <= 5 && (
+            <div className="mt-4 flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm">
+                Free quota is tight. Pro raises the daily limit to 500 questions.
+              </p>
+              <Link
+                href="/app/billing"
+                className={cn(buttonVariants({ size: 'sm' }), 'w-full sm:w-auto')}
+              >
+                View billing
+              </Link>
+            </div>
+          )}
         </section>
       ) : (
         <EmptyState
