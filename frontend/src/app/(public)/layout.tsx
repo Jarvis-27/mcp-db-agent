@@ -48,6 +48,7 @@ const footerNav: Array<{
   {
     heading: 'Resources',
     links: [
+      { href: '/support', label: 'Support' },
       {
         href: 'https://modelcontextprotocol.io/',
         label: 'About MCP',
@@ -59,6 +60,14 @@ const footerNav: Array<{
         external: true,
       },
       { href: '/#examples', label: 'Tool reference' },
+    ],
+  },
+  {
+    heading: 'Legal',
+    links: [
+      { href: '/privacy-policy', label: 'Privacy policy' },
+      { href: '/terms-of-service', label: 'Terms of service' },
+      { href: '/support', label: 'Refunds and cancellations' },
     ],
   },
 ]
@@ -162,7 +171,7 @@ export default function PublicLayout({
             </div>
 
             <div className="lg:col-span-7">
-              <div className="grid gap-10 sm:grid-cols-3">
+              <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
                 {footerNav.map((column) => (
                   <div key={column.heading}>
                     <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-background/55">
@@ -231,6 +240,24 @@ export default function PublicLayout({
                 className="transition-colors hover:text-background"
               >
                 Pricing
+              </Link>
+              <Link
+                href="/support"
+                className="transition-colors hover:text-background"
+              >
+                Support
+              </Link>
+              <Link
+                href="/privacy-policy"
+                className="transition-colors hover:text-background"
+              >
+                Privacy
+              </Link>
+              <Link
+                href="/terms-of-service"
+                className="transition-colors hover:text-background"
+              >
+                Terms
               </Link>
               <Link
                 href="/login"
