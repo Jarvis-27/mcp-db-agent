@@ -337,3 +337,65 @@ def test_validation_result_defaults():
     assert r.error is None
     assert r.warning is None
     assert r.modified_sql is None
+
+
+# ---------------------------------------------------------------------------
+# Forbidden-keyword scan: must not match inside string literals or comments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "literal_word",
+    ["merge", "truncate", "exec", "execute", "grant", "revoke"],
+)
+def test_forbidden_keyword_in_string_literal_does_not_reject(literal_word):
+    """A SELECT whose data contains a forbidden keyword must still pass."""
+    v = _validator()
+    result = v.validate(f"SELECT id FROM users WHERE feedback = '{literal_word} please' LIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+def test_forbidden_keyword_in_block_comment_does_not_reject():
+    v = _validator()
+    result = v.validate("SELECT id FROM users /* TODO: revoke old keys */ LIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+def test_forbidden_keyword_in_line_comment_does_not_reject():
+    v = _validator()
+    result = v.validate("SELECT id FROM users -- merge needed\nLIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+def test_escaped_quote_in_string_literal_does_not_unbalance_mask():
+    """A '' inside a literal must not leak surrounding text into the scan."""
+    v = _validator()
+    result = v.validate("SELECT id FROM users WHERE note = 'it''s a merge' LIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+# ---------------------------------------------------------------------------
+# Schema-qualified table names: schema.table must not fail existence check
+# ---------------------------------------------------------------------------
+
+
+def test_schema_qualified_table_passes_existence_check():
+    v = _validator(tables=["users"])
+    result = v.validate("SELECT * FROM public.users LIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+def test_schema_qualified_join_passes_existence_check():
+    v = _validator(tables=["users", "orders"])
+    result = v.validate(
+        "SELECT u.id FROM public.users u JOIN public.orders o ON u.id = o.user_id LIMIT 5"
+    )
+    assert result.is_valid is True, result.error
+
+
+def test_schema_qualified_unknown_table_still_rejected():
+    """The fix must not weaken existence checking — only the table portion is verified."""
+    v = _validator(tables=["users"])
+    result = v.validate("SELECT * FROM public.ghost LIMIT 5")
+    assert result.is_valid is False
+    assert "ghost" in result.error

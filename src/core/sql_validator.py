@@ -147,9 +147,11 @@ class SQLValidator:
 
         # sqlparse classifies EXEC/EXECUTE/GRANT/REVOKE as T.Keyword (no DML/DDL subtype),
         # so the loop above misses them. Catch them with a word-boundary regex.
-        sql_upper = sql.upper()
+        # Mask string literals and comments so words inside data (e.g.
+        # WHERE feedback = 'please merge my PR') don't trip the keyword scan.
+        masked_upper = _mask_strings_and_comments(sql).upper()
         for keyword in _FORBIDDEN_KEYWORD_ONLY:
-            if re.search(rf"\b{keyword}\b", sql_upper):
+            if re.search(rf"\b{keyword}\b", masked_upper):
                 return ValidationResult(is_valid=False, error="Write operations are not allowed")
 
         # Check 2: Verify all referenced tables exist
@@ -193,10 +195,14 @@ def _first_sql_keyword(sql: str) -> str:
 
 
 def _extract_table_names(sql: str) -> list[str]:
-    """Extract table names from FROM and JOIN clauses using regex."""
-    # Match: FROM table_name or JOIN table_name (optional alias)
+    """Extract table names from FROM and JOIN clauses using regex.
+
+    Accepts an optional ``schema.`` qualifier and captures only the trailing
+    table identifier — schema names are not in ``get_table_names()`` and would
+    otherwise fail the existence check.
+    """
     pattern = re.compile(
-        r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"\b(?:FROM|JOIN)\s+(?:[a-zA-Z_][a-zA-Z0-9_]*\s*\.\s*)?([a-zA-Z_][a-zA-Z0-9_]*)",
         re.IGNORECASE,
     )
     return pattern.findall(sql)
@@ -227,6 +233,65 @@ def _has_top_level_limit(sql: str) -> bool:
                 return True
         i += 1
     return False
+
+
+def _mask_strings_and_comments(sql: str) -> str:
+    """Replace SQL string literals and comments with spaces of equal length.
+
+    This lets keyword scans see code only, so a literal like
+    ``'please merge my PR'`` does not trigger the MERGE block. Double-quoted
+    identifiers are preserved (they are names, not data).
+    """
+    out = list(sql)
+    n = len(sql)
+    i = 0
+    while i < n:
+        c = sql[i]
+        # -- line comment
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            while i < n and sql[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        # /* block comment */
+        if c == "/" and i + 1 < n and sql[i + 1] == "*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
+                if sql[i] != "\n":
+                    out[i] = " "
+                i += 1
+            if i + 1 < n:
+                out[i] = out[i + 1] = " "
+                i += 2
+            continue
+        # 'string' literal — '' is an escaped single quote
+        if c == "'":
+            out[i] = " "
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        out[i] = out[i + 1] = " "
+                        i += 2
+                        continue
+                    out[i] = " "
+                    i += 1
+                    break
+                if sql[i] != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        # "quoted identifier" — leave intact (it is a name, not data)
+        if c == '"':
+            i += 1
+            while i < n and sql[i] != '"':
+                i += 1
+            if i < n:
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
 
 
 def _extract_cte_names(sql: str) -> set[str]:
