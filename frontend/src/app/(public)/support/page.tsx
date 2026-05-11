@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { PolicyPage, PolicySection } from '@/components/policy-page'
 
-const supportEmail = 'hello@plainquery.app'
+const supportEmail = 'hello@plainquery.in'
 
 export const metadata: Metadata = {
   title: 'Support | PlainQuery',
@@ -25,7 +25,7 @@ export default function SupportPage() {
           </li>
           <li>
             <strong>Website:</strong>{' '}
-            <a href="https://plainquery.app">https://plainquery.app</a>.
+            <a href="https://plainquery.in">https://plainquery.in</a>.
           </li>
           <li>
             <strong>Service offered:</strong> digital SaaS access to an MCP

@@ -266,10 +266,10 @@ export default function PublicLayout({
                 Sign in
               </Link>
               <a
-                href="mailto:hello@plainquery.app"
+                href="mailto:hello@plainquery.in"
                 className="transition-colors hover:text-background"
               >
-                hello@plainquery.app
+                hello@plainquery.in
               </a>
             </div>
           </div>
