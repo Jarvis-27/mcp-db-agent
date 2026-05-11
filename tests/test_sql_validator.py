@@ -203,6 +203,33 @@ def test_limit_injected_when_limit_only_in_subquery():
     assert "LIMIT 100" in result.modified_sql
 
 
+def test_limit_injected_when_limit_only_in_string_literal():
+    """A literal containing the word LIMIT must not suppress injection."""
+    v = _validator()
+    result = v.validate("SELECT id FROM users WHERE comment = 'LIMIT 5'")
+    assert result.is_valid is True
+    assert result.modified_sql is not None
+    assert result.modified_sql.endswith("LIMIT 100;")
+
+
+def test_limit_injected_when_limit_only_in_line_comment():
+    """A line comment mentioning LIMIT must not suppress injection."""
+    v = _validator()
+    result = v.validate("SELECT id FROM users -- LIMIT 5 was here\n")
+    assert result.is_valid is True
+    assert result.modified_sql is not None
+    assert result.modified_sql.endswith("LIMIT 100;")
+
+
+def test_limit_injected_when_aggregation_token_only_in_string_literal():
+    """A literal containing COUNT(* must not be mistaken for an aggregation."""
+    v = _validator()
+    result = v.validate("SELECT id FROM users WHERE note = 'COUNT(*) of issues'")
+    assert result.is_valid is True
+    assert result.modified_sql is not None
+    assert result.modified_sql.endswith("LIMIT 100;")
+
+
 def test_limit_injection_strips_trailing_semicolon_before_appending():
     """Injected LIMIT should not produce double semicolons."""
     v = _validator()

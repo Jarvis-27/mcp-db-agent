@@ -169,9 +169,11 @@ class SQLValidator:
         # Check 3: Auto-inject LIMIT if the query is a plain SELECT without aggregation.
         # Use a depth-aware check so a LIMIT buried inside a subquery (e.g. "SELECT *
         # FROM (SELECT id FROM users LIMIT 5) AS sub") doesn't fool the outer-query check.
-        sql_upper = sql.upper()
-        if not _has_top_level_limit(sql) and not any(
-            pat in sql_upper for pat in _AGGREGATION_PATTERNS
+        # Run both scans against the masked SQL so literal data like
+        # ``WHERE comment = 'LIMIT 5'`` or ``WHERE note = 'COUNT(*)'`` cannot
+        # bypass the safety cap.
+        if not _has_top_level_limit(masked_upper) and not any(
+            pat in masked_upper for pat in _AGGREGATION_PATTERNS
         ):
             modified = sql.rstrip(";") + " LIMIT 100;"
             return ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified)
