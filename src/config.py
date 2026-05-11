@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_address: str | None = None
 
+    # ── Resend HTTP API (preferred over SMTP when both api_key and from_address are set) ──
+    resend_api_key: str | None = None
+    resend_from_address: str | None = None
+
     # ── Application base URL (used to build the MCP endpoint URL in setup payloads) ──
     app_base_url: str = "http://localhost:8000"
 
