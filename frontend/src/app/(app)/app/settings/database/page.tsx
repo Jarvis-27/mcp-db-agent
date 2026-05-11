@@ -33,7 +33,7 @@ export default async function DatabaseSettingsPage() {
               <Server className="h-4 w-4" />
             </span>
             <div>
-              <p className="eyebrow text-primary">§ 01 · current</p>
+              <p className="eyebrow text-primary">current</p>
               <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
                 Current connection
               </h2>
@@ -90,7 +90,7 @@ export default async function DatabaseSettingsPage() {
               <Database className="h-4 w-4" />
             </span>
             <div>
-              <p className="eyebrow text-primary">§ 02 · update</p>
+              <p className="eyebrow text-primary">update</p>
               <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
                 Update connection
               </h2>

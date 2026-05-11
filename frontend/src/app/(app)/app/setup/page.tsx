@@ -113,7 +113,7 @@ export default async function SetupPage() {
         <section className="rounded-xl border border-border bg-card shadow-sm">
           <div className="flex items-center justify-between border-b border-border px-6 py-4">
             <div>
-              <p className="eyebrow text-primary">§ 01 · checklist</p>
+              <p className="eyebrow text-primary">checklist</p>
               <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
                 What still needs to be done
               </h2>
@@ -183,7 +183,7 @@ export default async function SetupPage() {
 
         <aside className="flex flex-col rounded-xl border border-foreground/95 bg-foreground p-6 text-background shadow-sm">
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-background/55">
-            § 02 · the goal
+            the goal
           </p>
           <h2 className="mt-2 font-display text-2xl font-semibold leading-tight -tracking-[0.025em]">
             First value is one good question.

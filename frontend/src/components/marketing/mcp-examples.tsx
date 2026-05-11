@@ -1,4 +1,7 @@
-import { ArrowDownRight, Database, Sparkles, Table2, Terminal } from 'lucide-react'
+'use client'
+
+import { useState } from 'react'
+import { Database, Table2, Terminal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type ResultColumn = { key: string; label: string; mono?: boolean; align?: 'left' | 'right' }
@@ -96,117 +99,131 @@ WHERE c.table_name = 'orders';`,
 ]
 
 export function McpExamples() {
+  const [activeIdx, setActiveIdx] = useState(0)
+  const active = examples[activeIdx]
+
   return (
-    <div className="space-y-10">
-      {examples.map((ex, idx) => (
-        <ExampleCard key={ex.number} example={ex} reverse={idx % 2 === 1} />
-      ))}
-    </div>
-  )
-}
-
-function ExampleCard({ example, reverse }: { example: Example; reverse: boolean }) {
-  return (
-    <article
-      className={cn(
-        'grid gap-6 lg:grid-cols-12 lg:items-stretch',
-      )}
-    >
-      {/* Prompt + commentary column */}
-      <div className={cn('lg:col-span-5 flex flex-col', reverse && 'lg:order-2')}>
-        <div className="flex items-baseline gap-3">
-          <span className="font-mono text-xs text-muted-foreground">{example.number}</span>
-          <span className="rule flex-1" />
-          <span className="eyebrow text-muted-foreground">{example.badge}</span>
-        </div>
-
-        <p className="mt-5 font-display text-2xl font-semibold leading-[1.2] -tracking-[0.025em] sm:text-[1.75rem]">
-          <span className="text-primary">“</span>
-          {example.prompt}
-          <span className="text-primary">”</span>
-        </p>
-
-        <p className="mt-4 text-sm leading-7 text-muted-foreground text-pretty">
-          {example.rationale}
-        </p>
-
-        <div className="mt-6 inline-flex items-center gap-2 self-start rounded-full border bg-card/60 px-3 py-1.5 text-xs font-medium">
-          <Sparkles className="h-3.5 w-3.5 text-primary" />
-          <span className="font-mono">ask_database</span>
-          <span className="text-muted-foreground">tool · MCP</span>
-        </div>
-      </div>
-
-      {/* SQL + result column */}
-      <div className={cn('lg:col-span-7 flex flex-col gap-3', reverse && 'lg:order-1')}>
-        <div className="overflow-hidden rounded-2xl border bg-foreground/[0.97] text-background shadow-lg shadow-foreground/5">
-          <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
-            <div className="flex items-center gap-2 text-[11px] font-medium tracking-wider text-background/70">
-              <Terminal className="h-3.5 w-3.5" />
-              <span className="font-mono uppercase">generated.sql</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-background/30" />
-              <span className="h-2 w-2 rounded-full bg-background/30" />
-              <span className="h-2 w-2 rounded-full bg-primary" />
-            </div>
-          </div>
-          <pre className="overflow-x-auto px-4 py-4 font-mono text-[12.5px] leading-[1.6] text-background/90">
-            <code>{highlightSql(example.sql)}</code>
-          </pre>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ArrowDownRight className="h-3.5 w-3.5" />
-          <span className="font-mono uppercase tracking-wider">result · validated, capped at 100 rows</span>
-        </div>
-
-        <div className="overflow-hidden rounded-2xl border bg-card">
-          <div
-            className="grid bg-muted/60 px-4 py-2.5 text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground"
-            style={{ gridTemplateColumns: gridCols(example.columns) }}
-          >
-            {example.columns.map((c) => (
-              <span key={c.key} className={cn(c.align === 'right' && 'text-right')}>
-                {c.label}
+    <div>
+      {/* Tab strip */}
+      <div
+        role="tablist"
+        aria-label="Example questions"
+        className="flex flex-wrap gap-2"
+      >
+        {examples.map((ex, i) => {
+          const selected = i === activeIdx
+          return (
+            <button
+              key={ex.number}
+              role="tab"
+              aria-selected={selected}
+              onClick={() => setActiveIdx(i)}
+              className={cn(
+                'group inline-flex items-center gap-2.5 rounded-full border px-4 py-2 text-xs font-mono uppercase tracking-[0.12em] transition',
+                selected
+                  ? 'border-foreground bg-foreground text-background shadow-sm'
+                  : 'border-border bg-card text-muted-foreground hover:border-foreground/40 hover:text-foreground',
+              )}
+            >
+              <span className={cn('text-[10px]', selected ? 'text-background/60' : 'text-muted-foreground/70')}>
+                {ex.number}
               </span>
-            ))}
-          </div>
-          <div className="divide-y">
-            {example.rows.map((row, i) => (
-              <div
-                key={i}
-                className="grid px-4 py-3 text-sm"
-                style={{ gridTemplateColumns: gridCols(example.columns) }}
-              >
-                {example.columns.map((c) => (
-                  <span
-                    key={c.key}
-                    className={cn(
-                      c.mono ? 'font-mono text-[12.5px]' : 'font-medium',
-                      c.align === 'right' && 'text-right tabular-nums',
-                      c.key === 'indexed' && 'text-emerald-700',
-                    )}
-                  >
-                    {row[c.key]}
-                  </span>
-                ))}
+              <span>{ex.badge}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Active example panel */}
+      <article className="mt-8 overflow-hidden rounded-2xl border bg-card shadow-sm">
+        {/* Prompt header */}
+        <header className="border-b bg-gradient-to-b from-muted/40 to-transparent px-6 py-8 sm:px-10 sm:py-10">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+            you ask
+          </p>
+          <p className="mt-3 font-display text-2xl font-semibold leading-[1.25] -tracking-[0.025em] sm:text-[1.75rem]">
+            <span className="text-primary">“</span>
+            {active.prompt}
+            <span className="text-primary">”</span>
+          </p>
+          <p className="mt-4 max-w-3xl text-sm leading-7 text-muted-foreground text-pretty">
+            {active.rationale}
+          </p>
+        </header>
+
+        {/* SQL + result split */}
+        <div className="grid lg:grid-cols-2">
+          {/* SQL */}
+          <div className="border-b bg-foreground/[0.97] text-background lg:border-b-0 lg:border-r lg:border-white/10">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+              <div className="flex items-center gap-2 text-[11px] font-medium tracking-wider text-background/70">
+                <Terminal className="h-3.5 w-3.5" />
+                <span className="font-mono uppercase">generated.sql</span>
               </div>
-            ))}
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-background/45">
+                validated · read-only
+              </span>
+            </div>
+            <pre className="overflow-x-auto px-5 py-5 font-mono text-[12.5px] leading-[1.65] text-background/90">
+              <code>{highlightSql(active.sql)}</code>
+            </pre>
           </div>
-          <div className="flex items-center justify-between gap-3 border-t bg-card/50 px-4 py-2.5 text-[11px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5 font-mono uppercase tracking-wider">
-              <Table2 className="h-3 w-3" />
-              {example.rows.length} rows
-            </span>
-            <span className="inline-flex items-center gap-1.5 font-mono uppercase tracking-wider">
+
+          {/* Result */}
+          <div className="flex flex-col">
+            <div className="flex items-center justify-between border-b px-5 py-3">
+              <div className="flex items-center gap-2 text-[11px] font-medium tracking-wider text-muted-foreground">
+                <Table2 className="h-3.5 w-3.5" />
+                <span className="font-mono uppercase">result</span>
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                {active.rows.length} rows · capped at 100
+              </span>
+            </div>
+
+            <div
+              className="grid bg-muted/50 px-5 py-2.5 text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground"
+              style={{ gridTemplateColumns: gridCols(active.columns) }}
+            >
+              {active.columns.map((c) => (
+                <span key={c.key} className={cn(c.align === 'right' && 'text-right')}>
+                  {c.label}
+                </span>
+              ))}
+            </div>
+            <div className="divide-y">
+              {active.rows.map((row, i) => (
+                <div
+                  key={i}
+                  className="grid px-5 py-3 text-sm"
+                  style={{ gridTemplateColumns: gridCols(active.columns) }}
+                >
+                  {active.columns.map((c) => (
+                    <span
+                      key={c.key}
+                      className={cn(
+                        c.mono ? 'font-mono text-[12.5px]' : 'font-medium',
+                        c.align === 'right' && 'text-right tabular-nums',
+                        c.key === 'indexed' && 'text-emerald-700',
+                      )}
+                    >
+                      {row[c.key]}
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-auto flex items-center gap-2 border-t bg-card/40 px-5 py-2.5 text-[11px] text-muted-foreground">
               <Database className="h-3 w-3" />
-              read-only
-            </span>
+              <span className="font-mono uppercase tracking-wider">
+                ask_database · MCP tool
+              </span>
+            </div>
           </div>
         </div>
-      </div>
-    </article>
+      </article>
+    </div>
   )
 }
 

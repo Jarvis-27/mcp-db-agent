@@ -74,7 +74,7 @@ export default async function UsagePage() {
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="eyebrow text-primary">§ 01 · daily quota</p>
+              <p className="eyebrow text-primary">daily quota</p>
               <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
                 Daily quota
               </h2>
@@ -124,7 +124,7 @@ export default async function UsagePage() {
       <section className="rounded-xl border border-border bg-card shadow-sm">
         <div className="flex items-end justify-between border-b border-border px-6 py-4">
           <div>
-            <p className="eyebrow text-primary">§ 02 · activity</p>
+            <p className="eyebrow text-primary">activity</p>
             <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
               Recent questions
             </h2>

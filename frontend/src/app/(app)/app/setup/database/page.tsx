@@ -49,7 +49,7 @@ export default function SetupDatabasePage() {
       <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
         <section className="rounded-xl border border-border bg-card shadow-sm">
           <div className="border-b border-border px-6 py-4">
-            <p className="eyebrow text-primary">§ 01 · connection</p>
+            <p className="eyebrow text-primary">connection</p>
             <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
               Connection string
             </h2>

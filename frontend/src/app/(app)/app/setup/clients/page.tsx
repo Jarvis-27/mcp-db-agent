@@ -80,7 +80,7 @@ export default async function AppSetupClientsPage({ searchParams }: Props) {
 
       <section className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
         <SectionCard
-          eyebrow="§ 01 · endpoint"
+          eyebrow="endpoint"
           icon={PlugZap}
           title="MCP endpoint"
           description="Use this URL in every supported client."
@@ -91,7 +91,7 @@ export default async function AppSetupClientsPage({ searchParams }: Props) {
         </SectionCard>
 
         <SectionCard
-          eyebrow="§ 02 · auth"
+          eyebrow="auth"
           title="Auth mode"
           description="The generated instructions adapt to this deployment."
           headerAction={
@@ -139,7 +139,7 @@ export default async function AppSetupClientsPage({ searchParams }: Props) {
       />
 
       <SectionCard
-        eyebrow="§ 03 · clients"
+        eyebrow="clients"
         icon={CopyCheck}
         title="Client instructions"
         description="Choose the client your team will actually use first."
@@ -151,7 +151,7 @@ export default async function AppSetupClientsPage({ searchParams }: Props) {
 
       {payload.sample_prompts.length > 0 && (
         <SectionCard
-          eyebrow="§ 04 · prompts"
+          eyebrow="prompts"
           icon={MessageSquareText}
           title="First questions to try"
           description="Start with safe, simple checks before asking business questions."

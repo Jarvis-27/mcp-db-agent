@@ -180,7 +180,7 @@ export function ApiKeyManager({ initialKeys, mode, returnTo = null }: ApiKeyMana
               <KeyRound className="h-4 w-4" />
             </span>
             <div>
-              <p className="eyebrow text-primary">§ 01 · create</p>
+              <p className="eyebrow text-primary">create</p>
               <h2 className="mt-1 font-display text-xl font-semibold -tracking-[0.02em]">
                 {mode === 'onboarding' ? 'Create your first API key' : 'Create API key'}
               </h2>
@@ -226,7 +226,7 @@ export function ApiKeyManager({ initialKeys, mode, returnTo = null }: ApiKeyMana
       <section className="rounded-xl border border-border bg-card shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border px-6 py-4">
           <div>
-            <p className="eyebrow text-primary">§ 02 · active</p>
+            <p className="eyebrow text-primary">active</p>
             <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
               Active keys
             </h2>
@@ -289,7 +289,7 @@ export function ApiKeyManager({ initialKeys, mode, returnTo = null }: ApiKeyMana
       {revokedKeys.length > 0 && (
         <section className="rounded-xl border border-border bg-card shadow-sm">
           <div className="border-b border-border px-6 py-4">
-            <p className="eyebrow text-muted-foreground">§ 03 · audit</p>
+            <p className="eyebrow text-muted-foreground">audit</p>
             <h2 className="mt-1 font-display text-lg font-semibold -tracking-[0.02em]">
               Revoked keys
             </h2>

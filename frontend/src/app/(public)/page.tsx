@@ -108,7 +108,7 @@ export default function HomePage() {
 
             <h1 className="animate-fade-up delay-100 mt-8 font-display text-balance text-[3rem] font-semibold leading-[1.04] -tracking-[0.035em] sm:text-[3.9rem] lg:text-[4.6rem]">
               Ask your database{' '}
-              <span className="highlight-marker text-foreground">in plain English</span>
+              <span className="text-primary">in plain English</span>
               <span className="text-primary">.</span>{' '}
               <span className="text-muted-foreground/85 font-normal">
                 No SQL. No queue.
@@ -217,7 +217,7 @@ export default function HomePage() {
         className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8"
       >
         <SectionHeader
-          eyebrow="§ 01 · how it works"
+          eyebrow="how it works"
           title={
             <>
               From <Underlined>database</Underlined> to{' '}
@@ -257,7 +257,7 @@ export default function HomePage() {
       >
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <SectionHeader
-            eyebrow="§ 02 · the ask_database tool"
+            eyebrow="the ask_database tool"
             title={
               <>
                 One MCP tool. <Highlighted>Three honest examples</Highlighted>
@@ -294,7 +294,7 @@ export default function HomePage() {
         <div className="grid gap-14 lg:grid-cols-12">
           <div className="lg:col-span-5">
             <SectionHeader
-              eyebrow="§ 03 · built for trust"
+              eyebrow="built for trust"
               title={
                 <>
                   A friendly product surface on top of a{' '}
@@ -315,20 +315,25 @@ export default function HomePage() {
 
           <div className="lg:col-span-7">
             <ul className="grid gap-px overflow-hidden rounded-3xl border bg-border sm:grid-cols-2">
-              {trust.map((item) => (
+              {trust.map((item, i) => (
                 <li
                   key={item.title}
-                  className="flex flex-col bg-card p-7"
+                  className={cn(
+                    'flex flex-col bg-card p-7',
+                    i === trust.length - 1 && 'sm:col-span-2 sm:flex-row sm:items-start sm:gap-6',
+                  )}
                 >
-                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     <item.icon className="h-5 w-5" />
                   </span>
-                  <h3 className="mt-5 font-display text-lg font-semibold -tracking-[0.02em]">
-                    {item.title}
-                  </h3>
-                  <p className="mt-2 text-sm leading-7 text-muted-foreground text-pretty">
-                    {item.body}
-                  </p>
+                  <div className={cn('mt-5', i === trust.length - 1 && 'sm:mt-0')}>
+                    <h3 className="font-display text-lg font-semibold -tracking-[0.02em]">
+                      {item.title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-7 text-muted-foreground text-pretty">
+                      {item.body}
+                    </p>
+                  </div>
                 </li>
               ))}
               <li className="relative flex flex-col justify-between bg-foreground p-7 text-background sm:col-span-2">
@@ -360,7 +365,7 @@ export default function HomePage() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
             <SectionHeader
-              eyebrow="§ 04 · pricing"
+              eyebrow="pricing"
               title={
                 <>
                   Start free.{' '}
@@ -403,7 +408,7 @@ export default function HomePage() {
 
           <div className="relative grid items-end gap-10 lg:grid-cols-[1.4fr_1fr]">
             <div>
-              <p className="eyebrow text-background/55">§ 05 · the ask</p>
+              <p className="eyebrow text-background/55">the ask</p>
               <h2 className="mt-4 font-display text-4xl font-semibold leading-[1.05] -tracking-[0.03em] sm:text-5xl">
                 Stop waiting for a report.
                 <br />
@@ -461,11 +466,11 @@ function Check2() {
 }
 
 function Underlined({ children }: { children: React.ReactNode }) {
-  return <span className="ink-rule">{children}</span>
+  return <span className="text-primary">{children}</span>
 }
 
 function Highlighted({ children }: { children: React.ReactNode }) {
-  return <span className="highlight-marker">{children}</span>
+  return <span className="text-primary">{children}</span>
 }
 
 interface SectionHeaderProps {

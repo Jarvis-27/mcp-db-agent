@@ -126,7 +126,7 @@ export default async function DashboardPage() {
 
       <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
         <SectionCard
-          eyebrow="§ 01 · setup path"
+          eyebrow="setup path"
           title="What it takes to ask a question"
           description="These are the pieces that turn PlainQuery from an account into a usable database agent."
           action={
@@ -182,7 +182,7 @@ export default async function DashboardPage() {
         </SectionCard>
 
         <SectionCard
-          eyebrow="§ 02 · endpoint"
+          eyebrow="endpoint"
           title="MCP endpoint"
           description="Point supported clients at this URL after auth is configured."
         >
@@ -210,7 +210,7 @@ export default async function DashboardPage() {
       </div>
 
       <SectionCard
-        eyebrow="§ 03 · activity"
+        eyebrow="activity"
         title="Recent questions"
         description="A lightweight audit trail of what your connected clients asked."
         action={
