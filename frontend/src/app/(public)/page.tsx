@@ -32,7 +32,7 @@ const steps = [
     icon: Plug,
     title: 'Connect a database',
     body:
-      'Paste a Postgres, MySQL, or SQLite connection string. PlainQuery validates it, blocks unsafe URLs, and stores the credential encrypted.',
+      'Use guided Postgres setup, or paste a connection string. PlainQuery validates it, blocks unsafe URLs, and stores the credential encrypted.',
   },
   {
     n: '02',

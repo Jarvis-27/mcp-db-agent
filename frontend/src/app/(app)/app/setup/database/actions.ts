@@ -10,13 +10,51 @@ export async function submitDatabaseAction(
   _prevState: State,
   formData: FormData,
 ): Promise<State> {
-  const databaseUrl = formData.get('database_url')?.toString().trim()
+  const method = formData.get('connection_method')?.toString() ?? 'guided'
+  let body: Record<string, string | number | null> = { name: 'primary' }
 
-  if (!databaseUrl) return { error: 'Database URL is required.' }
+  if (method === 'url') {
+    const databaseUrl = formData.get('database_url')?.toString().trim()
+    if (!databaseUrl) return { error: 'Database URL is required.' }
+    body = {
+      ...body,
+      connection_method: 'url',
+      database_url: databaseUrl,
+    }
+  } else {
+    const provider = formData.get('provider')?.toString() || 'generic_postgres'
+    const host = formData.get('host')?.toString().trim()
+    const portText = formData.get('port')?.toString().trim()
+    const database = formData.get('database')?.toString().trim()
+    const username = formData.get('username')?.toString().trim()
+    const password = formData.get('password')?.toString() ?? ''
+    const sslmode = formData.get('sslmode')?.toString() || 'require'
+
+    if (!host || !database || !username || !password) {
+      return { error: 'Host, database name, username, and password are required.' }
+    }
+
+    const port = Number(portText || '5432')
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return { error: 'Port must be a number between 1 and 65535.' }
+    }
+
+    body = {
+      ...body,
+      connection_method: 'guided',
+      provider,
+      host,
+      port,
+      database,
+      username,
+      password,
+      sslmode,
+    }
+  }
 
   const res = await backendFetch('/v1/account/database', {
     method: 'PUT',
-    body: JSON.stringify({ database_url: databaseUrl, name: 'primary' }),
+    body: JSON.stringify(body),
   })
 
   if (res.ok) {

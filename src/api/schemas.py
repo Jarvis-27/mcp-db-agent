@@ -1,6 +1,7 @@
 """Pydantic v2 request/response models for the user-account REST API."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,7 +46,22 @@ class SessionResponse(BaseModel):
 class SubmitDatabaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    database_url: str = Field(..., min_length=1, max_length=2048)
+    connection_method: Literal["guided", "url"] | None = None
+    database_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    provider: Literal[
+        "generic_postgres",
+        "supabase",
+        "neon",
+        "aws_rds",
+        "railway",
+        "render",
+    ] | None = None
+    host: str | None = Field(default=None, min_length=1, max_length=255)
+    port: int | None = Field(default=5432, ge=1, le=65535)
+    database: str | None = Field(default=None, min_length=1, max_length=255)
+    username: str | None = Field(default=None, min_length=1, max_length=255)
+    password: str | None = Field(default=None, min_length=1, max_length=512)
+    sslmode: Literal["require", "verify-ca", "verify-full"] = "require"
     name: str | None = Field(default="primary", max_length=100)
 
 

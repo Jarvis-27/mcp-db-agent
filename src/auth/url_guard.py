@@ -101,6 +101,13 @@ def _resolve_and_check_hostname(hostname: str) -> None:
     try:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror as exc:
+        if hostname.startswith("db.") and hostname.endswith(".supabase.co"):
+            raise InvalidDatabaseURL(
+                f"Cannot resolve hostname '{hostname}'. Supabase direct database hosts "
+                "are IPv6-only by default. Use the Supabase Session Pooler host "
+                "(*.pooler.supabase.com on port 5432), or enable Supabase's IPv4 add-on "
+                "before using the direct db.<project-ref>.supabase.co host."
+            ) from exc
         raise InvalidDatabaseURL(f"Cannot resolve hostname '{hostname}': {exc}") from exc
 
     resolved_ips = {str(info[4][0]) for info in infos}

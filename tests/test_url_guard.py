@@ -149,6 +149,15 @@ def test_unresolvable_hostname():
             validate_database_url(_pg("nonexistent.invalid"), allow_sqlite=False)
 
 
+def test_supabase_direct_ipv6_resolution_failure_mentions_pooler():
+    with patch("socket.getaddrinfo", side_effect=socket.gaierror("getaddrinfo failed")):
+        with pytest.raises(InvalidDatabaseURL, match="Session Pooler"):
+            validate_database_url(
+                "postgresql://postgres:pass@db.abc123.supabase.co/postgres",
+                allow_sqlite=False,
+            )
+
+
 # ---------------------------------------------------------------------------
 # SSL mode enforcement in non-development environments
 # ---------------------------------------------------------------------------

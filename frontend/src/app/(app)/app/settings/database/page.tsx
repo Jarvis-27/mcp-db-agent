@@ -21,9 +21,9 @@ export default async function DatabaseSettingsPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="§ settings · database"
+        eyebrow="settings / database"
         title="Database connection"
-        description="Review the active database and update credentials if your host, username, or password changes."
+        description="Review the active database and update it with guided provider fields or a replacement connection string."
       />
 
       <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
@@ -38,7 +38,7 @@ export default async function DatabaseSettingsPage() {
                 Current connection
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                PlainQuery stores the encrypted URL, not the raw value shown here.
+                PlainQuery stores the encrypted credential and only shows a safe summary.
               </p>
             </div>
           </div>
@@ -54,7 +54,7 @@ export default async function DatabaseSettingsPage() {
                       </p>
                       {meta.database_name && (
                         <p className="mt-1 font-mono text-[12px] text-muted-foreground">
-                          {meta.db_type ?? 'database'} · {meta.database_name}
+                          {meta.db_type ?? 'database'} / {meta.database_name}
                           {meta.host ? ` @ ${meta.host}` : ''}
                         </p>
                       )}
@@ -67,7 +67,7 @@ export default async function DatabaseSettingsPage() {
                 </div>
                 {meta.last_validated_at && (
                   <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                    last validated ·{' '}
+                    last validated /{' '}
                     {new Date(meta.last_validated_at).toLocaleString([], {
                       dateStyle: 'medium',
                       timeStyle: 'short',
@@ -95,7 +95,7 @@ export default async function DatabaseSettingsPage() {
                 Update connection
               </h2>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Reconnect to a different database or rotate credentials.
+                Reconnect to a different database, rotate credentials, or paste a full URL.
               </p>
             </div>
           </div>

@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
@@ -171,6 +172,61 @@ def test_no_admin_approval_required_on_happy_path(client):
     assert db_resp.status_code == 200
     assert db_resp.json()["status"] == "setup_complete"
     assert db_resp.json()["account_status"] == "active"
+
+
+def test_guided_postgres_submission_builds_escaped_database_url(client):
+    """Structured guided setup should produce the same stored URL contract safely."""
+    user_id, session_token = _register_and_get_session(client, "guided@example.com")
+    password = "p@ss/w:rd#1"
+
+    with (
+        patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("8.8.8.8", 5432))]),
+        patch("src.api.app._dry_run_connect") as dry_run_connect,
+    ):
+        db_resp = client.put(
+            "/v1/account/database",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={
+                "connection_method": "guided",
+                "provider": "supabase",
+                "host": "8.8.8.8",
+                "port": 5432,
+                "database": "sales_db",
+                "username": "reader@example.com",
+                "password": password,
+                "sslmode": "require",
+                "name": "primary",
+            },
+        )
+
+    assert db_resp.status_code == 200, db_resp.text
+    dry_run_connect.assert_called_once()
+    dry_run_url = dry_run_connect.call_args.args[0]
+    assert "p%40ss%2Fw%3Ard%231" in dry_run_url
+
+    parsed = make_url(dry_run_url)
+    assert parsed.drivername == "postgresql"
+    assert parsed.username == "reader@example.com"
+    assert parsed.password == password
+    assert parsed.host == "8.8.8.8"
+    assert parsed.database == "sales_db"
+    assert dict(parsed.query)["sslmode"] == "require"
+
+    store: UserStore = api_app.state.user_store
+    user_config = store.get_user_by_id(user_id)
+    assert user_config is not None
+    stored = make_url(user_config.database_url)
+    assert stored.password == password
+
+    metadata = client.get(
+        "/v1/account/database",
+        headers={"Authorization": f"Bearer {session_token}"},
+    )
+    assert metadata.status_code == 200
+    assert metadata.json()["host"] == "8.8.8.8"
+    assert metadata.json()["database_name"] == "sales_db"
+    assert password not in metadata.text
+    assert "reader@example.com" not in metadata.text
 
 
 # ---------------------------------------------------------------------------

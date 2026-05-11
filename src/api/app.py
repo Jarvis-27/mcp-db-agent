@@ -13,7 +13,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 
 from src.api.schemas import (
     AccountResponse,
@@ -306,6 +306,67 @@ def _database_metadata_response(user, cipher) -> DatabaseMetadataResponse:
     )
 
 
+_POSTGRES_GUIDED_PROVIDERS = {
+    "generic_postgres",
+    "supabase",
+    "neon",
+    "aws_rds",
+    "railway",
+    "render",
+}
+
+
+def _required_guided_text(value: str | None, field_name: str) -> str:
+    if value is None:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required for guided setup.")
+    cleaned = value.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required for guided setup.")
+    return cleaned
+
+
+def _guided_database_url(body: SubmitDatabaseRequest) -> str:
+    provider = body.provider or "generic_postgres"
+    if provider not in _POSTGRES_GUIDED_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unsupported guided database provider.")
+
+    host = _required_guided_text(body.host, "Host")
+    if "://" in host or "/" in host or "@" in host:
+        raise HTTPException(
+            status_code=400,
+            detail="Host should be a hostname only, without protocol, username, or path.",
+        )
+
+    database = _required_guided_text(body.database, "Database name")
+    username = _required_guided_text(body.username, "Username")
+    if body.password is None or body.password == "":
+        raise HTTPException(status_code=400, detail="Password is required for guided setup.")
+
+    url = URL.create(
+        drivername="postgresql",
+        username=username,
+        password=body.password,
+        host=host,
+        port=body.port or 5432,
+        database=database,
+        query={"sslmode": body.sslmode},
+    )
+    return url.render_as_string(hide_password=False)
+
+
+def _database_url_from_submission(body: SubmitDatabaseRequest) -> str:
+    method = body.connection_method
+    if method is None:
+        method = "url" if body.database_url else "guided"
+
+    if method == "url":
+        if body.database_url is None or not body.database_url.strip():
+            raise HTTPException(status_code=400, detail="Database URL is required.")
+        return body.database_url.strip()
+
+    return _guided_database_url(body)
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -555,8 +616,9 @@ async def submit_database(
         )
 
     try:
+        raw_database_url = _database_url_from_submission(body)
         sanitized_url = validate_database_url(
-            body.database_url, allow_sqlite=settings.allow_sqlite_user_dbs
+            raw_database_url, allow_sqlite=settings.allow_sqlite_user_dbs
         )
     except InvalidDatabaseURL as exc:
         raise HTTPException(status_code=400, detail=str(exc))
