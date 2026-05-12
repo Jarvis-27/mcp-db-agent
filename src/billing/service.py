@@ -74,9 +74,12 @@ class BillingService:
         if user is None:
             raise LookupError("User not found")
 
-        plan_code = str(user.plan_code)
+        snapshot = self._user_store.get_effective_quota_snapshot(user_id)
+        if snapshot is None:
+            raise LookupError("User not found")
+        plan_code = snapshot.plan_code
         plan = self._entitlements.get_plan(plan_code)
-        daily_used = int(user.daily_query_count)
+        daily_used = snapshot.daily_count
         stripe_customer_id = (
             str(user.stripe_customer_id) if user.stripe_customer_id is not None else None
         )
@@ -114,7 +117,10 @@ class BillingService:
         user = self._user_store.get_user_row(user_id)
         if user is None:
             raise LookupError("User not found")
-        if str(user.account_status) != ACCOUNT_ACTIVE or str(user.onboarding_status) != SETUP_COMPLETE:
+        if (
+            str(user.account_status) != ACCOUNT_ACTIVE
+            or str(user.onboarding_status) != SETUP_COMPLETE
+        ):
             raise StateTransitionError("Complete account setup before upgrading.")
 
         stripe_customer_id = (
@@ -200,7 +206,8 @@ class BillingService:
                 plan_code=plan_code,
                 stripe_customer_id=customer_id,
                 stripe_subscription_id=subscription_id,
-                stripe_price_id=_price_id_from_subscription(obj) or self._settings.stripe_pro_price_id,
+                stripe_price_id=_price_id_from_subscription(obj)
+                or self._settings.stripe_pro_price_id,
                 billing_current_period_end=_period_end_from_subscription(obj),
                 billing_last_event_id=event_id,
             )

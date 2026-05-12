@@ -7,11 +7,13 @@ OwnerSession tables are replaced by User / UserSession.
 """
 
 import hashlib
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import (
     Boolean,
@@ -42,6 +44,8 @@ from src.auth.onboarding import (
 )
 from src.entitlements.service import EntitlementService
 
+logger = logging.getLogger(__name__)
+
 
 class Base(DeclarativeBase):
     pass
@@ -63,6 +67,7 @@ class User(Base):
     plan_code = Column(String(40), nullable=False, default="free")
     daily_query_count = Column(Integer, nullable=False, default=0)
     daily_quota_reset_at = Column(DateTime(timezone=True), nullable=False)
+    timezone = Column(String(64), nullable=False, server_default="UTC", default="UTC")
     # Inlined active database (nullable until submitted)
     db_url_enc = Column(Text, nullable=True)
     db_name = Column(String(100), nullable=True)
@@ -231,6 +236,7 @@ class DailyQuotaSnapshot:
     plan_code: str
     daily_count: int
     daily_quota_reset_at: datetime
+    timezone: str = "UTC"
 
 
 @dataclass(frozen=True)
@@ -263,8 +269,41 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
+def _resolve_timezone(tz: str | None) -> ZoneInfo:
+    if not tz:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(tz)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown IANA timezone %r; falling back to UTC", tz)
+        return ZoneInfo("UTC")
+
+
+def _normalize_timezone(tz: str | None) -> str:
+    """Return a validated IANA timezone string, falling back to 'UTC'."""
+    if not tz:
+        return "UTC"
+    try:
+        ZoneInfo(tz)
+    except ZoneInfoNotFoundError:
+        return "UTC"
+    return tz
+
+
+def _next_local_midnight(now: datetime, tz: str | None) -> datetime:
+    """Return the next 00:00 in the given IANA timezone, expressed in UTC."""
+    now_utc = _ensure_utc(now)
+    zone = _resolve_timezone(tz)
+    local_now = now_utc.astimezone(zone)
+    next_local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        days=1
+    )
+    return next_local_midnight.astimezone(UTC)
+
+
 def _next_midnight(now: datetime) -> datetime:
-    return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    """Backward-compatible UTC midnight helper."""
+    return _next_local_midnight(now, "UTC")
 
 
 def _normalize_scopes(
@@ -292,9 +331,10 @@ class UserStore:
     # User lifecycle
     # ------------------------------------------------------------------
 
-    def create_user(self, email: str) -> str:
+    def create_user(self, email: str, timezone: str | None = None) -> str:
         user_id = str(uuid.uuid4())
         now = _utcnow()
+        tz = _normalize_timezone(timezone)
         user = User(
             id=user_id,
             email=email.strip().lower(),
@@ -304,7 +344,8 @@ class UserStore:
             billing_status=BILLING_FREE,
             plan_code="free",
             daily_query_count=0,
-            daily_quota_reset_at=_next_midnight(now),
+            daily_quota_reset_at=_next_local_midnight(now, tz),
+            timezone=tz,
             db_url_enc=None,
             db_name=None,
             db_validation_status=None,
@@ -734,9 +775,7 @@ class UserStore:
 
     def get_user_by_stripe_customer_id(self, stripe_customer_id: str) -> User | None:
         with Session(self._engine) as session:
-            user = (
-                session.query(User).filter(User.stripe_customer_id == stripe_customer_id).first()
-            )
+            user = session.query(User).filter(User.stripe_customer_id == stripe_customer_id).first()
             if user is None:
                 return None
             session.expunge(user)
@@ -774,9 +813,7 @@ class UserStore:
                     .first()
                 )
                 if existing is not None:
-                    raise StateTransitionError(
-                        "Stripe customer is already linked to another user."
-                    )
+                    raise StateTransitionError("Stripe customer is already linked to another user.")
 
             user = session.get(User, user_id)
             if user is None:
@@ -943,9 +980,17 @@ class UserStore:
 
     def consume_daily_query_quota(self, user_id: str) -> DailyQuotaSnapshot:
         now = _utcnow()
-        next_reset = _next_midnight(now)
 
         with Session(self._engine) as session:
+            tz_row = session.execute(
+                text("SELECT timezone FROM users WHERE id = :user_id"),
+                {"user_id": user_id},
+            ).fetchone()
+            if tz_row is None:
+                raise ValueError(f"User {user_id} not found")
+            tz = _normalize_timezone(str(tz_row[0]))
+            next_reset = _next_local_midnight(now, tz)
+
             row = session.execute(
                 text(
                     """
@@ -978,7 +1023,86 @@ class UserStore:
             plan_code=str(row[0]),
             daily_count=int(row[1]),
             daily_quota_reset_at=_ensure_utc(reset_at),
+            timezone=tz,
         )
+
+    def get_effective_quota_snapshot(self, user_id: str) -> DailyQuotaSnapshot | None:
+        """Return the user's quota state, virtualizing reset if the window has elapsed.
+
+        Pure read: never writes to the database. Callers display this; the
+        canonical mutation happens in `consume_daily_query_quota` on next use.
+        """
+        with Session(self._engine) as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT plan_code, daily_query_count, daily_quota_reset_at, timezone
+                    FROM users
+                    WHERE id = :user_id
+                    """
+                ),
+                {"user_id": user_id},
+            ).fetchone()
+        if row is None:
+            return None
+
+        plan_code = str(row[0])
+        stored_count = int(row[1])
+        reset_at = row[2]
+        if isinstance(reset_at, str):
+            reset_at = datetime.fromisoformat(reset_at)
+        reset_at = _ensure_utc(reset_at)
+        tz = _normalize_timezone(str(row[3]) if row[3] is not None else None)
+
+        now = _utcnow()
+        if now >= reset_at:
+            return DailyQuotaSnapshot(
+                user_id=user_id,
+                plan_code=plan_code,
+                daily_count=0,
+                daily_quota_reset_at=_next_local_midnight(now, tz),
+                timezone=tz,
+            )
+        return DailyQuotaSnapshot(
+            user_id=user_id,
+            plan_code=plan_code,
+            daily_count=stored_count,
+            daily_quota_reset_at=reset_at,
+            timezone=tz,
+        )
+
+    def update_timezone(self, user_id: str, timezone: str) -> bool:
+        """Update the user's IANA timezone and recompute daily_quota_reset_at.
+
+        Returns True if the row exists, False otherwise. Falls back to "UTC"
+        if `timezone` is not a recognized IANA name.
+        """
+        tz = _normalize_timezone(timezone)
+        now = _utcnow()
+        next_reset = _next_local_midnight(now, tz)
+
+        with Session(self._engine) as session:
+            result = session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET
+                        timezone = :tz,
+                        daily_quota_reset_at = :next_reset,
+                        updated_at = :now
+                    WHERE id = :user_id
+                    """
+                ),
+                {
+                    "tz": tz,
+                    "next_reset": next_reset,
+                    "now": now,
+                    "user_id": user_id,
+                },
+            )
+            session.commit()
+        rowcount = getattr(result, "rowcount", 0)
+        return int(rowcount or 0) > 0
 
     # ------------------------------------------------------------------
     # Internal helpers

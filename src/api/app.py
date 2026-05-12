@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from typing import Annotated, cast
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -33,6 +33,7 @@ from src.api.schemas import (
     OAuthLinkStartResponse,
     OAuthLinkStatusResponse,
     OAuthUnlinkResponse,
+    PreferencesResponse,
     QuotaSummary,
     RecentQueryItem,
     RequestLoginLinkRequest,
@@ -46,6 +47,7 @@ from src.api.schemas import (
     SignupPendingResponse,
     SignupRequest,
     SubmitDatabaseRequest,
+    UpdatePreferencesRequest,
     UsageRecentResponse,
     VerifyEmailResponse,
 )
@@ -385,7 +387,7 @@ async def signup(request: Request, body: SignupRequest) -> SignupPendingResponse
             detail="An account with this email address already exists.",
         )
 
-    user_id = user_store.create_user(email=body.email)
+    user_id = user_store.create_user(email=body.email, timezone=body.timezone)
 
     try:
         token_store: TokenStore = request.app.state.token_store
@@ -406,6 +408,11 @@ async def signup(request: Request, body: SignupRequest) -> SignupPendingResponse
 @api_app.get("/v1/auth/verify-email", response_model=VerifyEmailResponse)
 async def verify_email(
     token: str = Query(..., description="Email verification token from the verification link"),
+    tz: str | None = Query(
+        default=None,
+        max_length=64,
+        description="Optional IANA timezone detected from the user's browser",
+    ),
     request: Request = ...,  # type: ignore[assignment]
 ) -> VerifyEmailResponse:
     token_store: TokenStore = request.app.state.token_store
@@ -428,6 +435,12 @@ async def verify_email(
             status_code=409,
             detail=f"Cannot verify email: account is in '{user.onboarding_status}' state.",
         )
+
+    if tz:
+        try:
+            user_store.update_timezone(user_id, tz)
+        except Exception as exc:
+            logger.warning("Failed to update timezone for user %s: %s", user_id, exc)
 
     user_store.set_email_verified(user_id)
     new_state = onboarding.resolve_next_state(
@@ -460,6 +473,12 @@ async def request_login_link(
     ctx = user_store.get_user_by_email(body.email)
 
     if ctx is not None and ctx.onboarding_status != PENDING_EMAIL_VERIFICATION:
+        if body.timezone:
+            try:
+                user_store.update_timezone(ctx.user_id, body.timezone)
+            except Exception as exc:
+                logger.warning("Failed to update timezone for %s: %s", body.email, exc)
+
         try:
             token_store: TokenStore = request.app.state.token_store
             raw_token = token_store.issue_user_login_token(ctx.user_id)
@@ -474,6 +493,11 @@ async def request_login_link(
 @api_app.get("/v1/auth/exchange-login-link", response_model=SessionResponse)
 async def exchange_login_link(
     token: str = Query(..., description="Login token from the email link"),
+    tz: str | None = Query(
+        default=None,
+        max_length=64,
+        description="Optional IANA timezone detected from the user's browser",
+    ),
     request: Request = ...,  # type: ignore[assignment]
 ) -> SessionResponse:
     token_store: TokenStore = request.app.state.token_store
@@ -496,6 +520,12 @@ async def exchange_login_link(
             status_code=409,
             detail="Email must be verified before using a login link.",
         )
+
+    if tz:
+        try:
+            user_store.update_timezone(user_id, tz)
+        except Exception as exc:
+            logger.warning("Failed to update timezone for user %s: %s", user_id, exc)
 
     session_token = user_store.issue_user_session(
         user_id,
@@ -793,10 +823,12 @@ async def dashboard_summary(session: AuthedSession, request: Request) -> Dashboa
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    plan_code = str(user.plan_code)
-    daily_count = int(user.daily_query_count)
-    plan = _entitlements.get_plan(plan_code)
-    warning_level = _entitlements.quota_warning_level(plan_code, daily_count)
+    snapshot = user_store.get_effective_quota_snapshot(session.user_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    plan = _entitlements.get_plan(snapshot.plan_code)
+    warning_level = _entitlements.quota_warning_level(snapshot.plan_code, snapshot.daily_count)
 
     active_db = user_store.get_active_database(session.user_id)
     api_key_count = user_store.count_active_api_keys(session.user_id)
@@ -805,7 +837,7 @@ async def dashboard_summary(session: AuthedSession, request: Request) -> Dashboa
         user_id=session.user_id,
         account_status=str(user.account_status),
         onboarding_status=str(user.onboarding_status),
-        plan_code=plan_code,
+        plan_code=snapshot.plan_code,
         billing_status=str(user.billing_status),
         active_database=(
             ActiveDatabaseSummary(
@@ -818,9 +850,9 @@ async def dashboard_summary(session: AuthedSession, request: Request) -> Dashboa
         api_key_count=api_key_count,
         quota=QuotaSummary(
             daily_limit=plan.ask_database_per_day,
-            daily_used=daily_count,
-            daily_remaining=max(0, plan.ask_database_per_day - daily_count),
-            reset_at=cast(datetime, user.daily_quota_reset_at),
+            daily_used=snapshot.daily_count,
+            daily_remaining=max(0, plan.ask_database_per_day - snapshot.daily_count),
+            reset_at=snapshot.daily_quota_reset_at,
             warning_level=warning_level,
         ),
     )
@@ -961,6 +993,27 @@ async def get_account(request: Request, session: AuthedSession) -> AccountRespon
         account_status=account_st,
         plan_code=str(row.plan_code),
         billing_status=str(row.billing_status),
+        timezone=str(row.timezone) if row.timezone is not None else "UTC",
+    )
+
+
+@api_app.put("/v1/account/preferences", response_model=PreferencesResponse)
+async def update_preferences(
+    request: Request,
+    session: AuthedSession,
+    body: UpdatePreferencesRequest,
+) -> PreferencesResponse:
+    user_store: UserStore = request.app.state.user_store
+    updated = user_store.update_timezone(session.user_id, body.timezone)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    snapshot = user_store.get_effective_quota_snapshot(session.user_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return PreferencesResponse(
+        user_id=session.user_id,
+        timezone=snapshot.timezone,
+        daily_quota_reset_at=snapshot.daily_quota_reset_at,
     )
 
 
@@ -1155,7 +1208,7 @@ async def oauth_link_callback(
         )
 
     from src.auth.user_store import StateTransitionError
-    from datetime import UTC, datetime
+    from datetime import UTC
 
     user_store: UserStore = request.app.state.user_store
     email_verified_at = datetime.now(UTC) if claims.email_verified else None

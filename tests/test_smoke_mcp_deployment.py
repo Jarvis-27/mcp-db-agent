@@ -67,27 +67,19 @@ def _discovery_transport():
             and url == "https://mcp.example.com/mcp/.well-known/oauth-protected-resource"
         ):
             return _json_response(200, _resource_metadata())
-        if (
-            request.method == "GET"
-            and url
-            in {
-                "https://mcp.example.com/mcp/.well-known/oauth-authorization-server",
-                "https://mcp.example.com/mcp/.well-known/openid-configuration",
-            }
-        ):
+        if request.method == "GET" and url in {
+            "https://mcp.example.com/mcp/.well-known/oauth-authorization-server",
+            "https://mcp.example.com/mcp/.well-known/openid-configuration",
+        }:
             metadata_name = url.rsplit("/", 1)[-1]
             return httpx.Response(
                 307,
                 headers={"location": f"https://auth.example.com/.well-known/{metadata_name}"},
             )
-        if (
-            request.method == "GET"
-            and url
-            in {
-                "https://auth.example.com/.well-known/oauth-authorization-server",
-                "https://auth.example.com/.well-known/openid-configuration",
-            }
-        ):
+        if request.method == "GET" and url in {
+            "https://auth.example.com/.well-known/oauth-authorization-server",
+            "https://auth.example.com/.well-known/openid-configuration",
+        }:
             return _json_response(200, _issuer_metadata())
         return httpx.Response(404, text=f"unhandled {request.method} {url}")
 

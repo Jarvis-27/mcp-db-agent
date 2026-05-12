@@ -161,9 +161,7 @@ def test_checkout_session_creates_customer_and_returns_stripe_url(client, app_st
 
     assert resp.status_code == 200
     assert resp.json() == {"id": "cs_test_123", "url": stripe_client.checkout_url}
-    assert stripe_client.created_customers == [
-        {"email": "billing@example.com", "user_id": user_id}
-    ]
+    assert stripe_client.created_customers == [{"email": "billing@example.com", "user_id": user_id}]
     assert stripe_client.checkout_sessions[0]["price_id"] == "price_pro_123"
     user = store.get_user_row(user_id)
     assert user is not None

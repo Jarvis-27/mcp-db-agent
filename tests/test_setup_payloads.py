@@ -128,3 +128,36 @@ def test_chatgpt_payload_is_marked_unavailable_until_oauth():
     assert payload.chatgpt_developer_mode.status == "unsupported_until_oauth"
     assert payload.chatgpt_developer_mode.auth_method == "oauth_2_1_required"
     assert payload.chatgpt_developer_mode.snippet == ""
+
+
+def test_setup_payload_virtualizes_quota_after_local_midnight():
+    store = _make_store()
+    user_id = _activate_user(store)
+    # Simulate yesterday's usage that has not yet been reset by a consume call.
+    past_reset = datetime.now(UTC) - timedelta(hours=2)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text(
+                "UPDATE users SET timezone = :tz, daily_query_count = 7,"
+                " daily_quota_reset_at = :reset WHERE id = :id"
+            ),
+            {"tz": "Asia/Kolkata", "reset": past_reset, "id": user_id},
+        )
+        conn.commit()
+
+    service = SetupPayloadService(store, app_base_url="http://localhost:8000")
+    payload = service.build_payload(user_id)
+
+    assert payload.quota_summary.daily_used == 0
+    assert payload.quota_summary.daily_remaining == payload.quota_summary.daily_limit
+    assert payload.quota_summary.reset_at > datetime.now(UTC)
+    assert payload.quota_summary.warning_level in (None, "none")
+
+    # Read-side virtualization must not have mutated the stored row.
+    with store._engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT daily_query_count FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == 7

@@ -321,7 +321,9 @@ def _post_jsonrpc(
 
 def _check_tool_security(tool: dict[str, Any], expected_scopes: Sequence[str]) -> None:
     schemes = tool.get("securitySchemes") or (tool.get("_meta") or {}).get("securitySchemes") or []
-    _require(isinstance(schemes, list) and schemes, f"tool {tool.get('name')} lacks securitySchemes")
+    _require(
+        isinstance(schemes, list) and schemes, f"tool {tool.get('name')} lacks securitySchemes"
+    )
     scheme_scopes = {
         str(scope)
         for scheme in schemes

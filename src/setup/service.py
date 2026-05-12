@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
 
 from src.auth.onboarding import ACCOUNT_ACTIVE, SETUP_COMPLETE
 from src.auth.user_store import ApiKey, User, UserStore
@@ -60,16 +59,20 @@ class SetupPayloadService:
             raise LookupError(f"User {user_id} not found")
         self._ensure_eligible(user)
 
+        snapshot = self._user_store.get_effective_quota_snapshot(user_id)
+        if snapshot is None:
+            raise LookupError(f"User {user_id} not found")
+
         selected_key = self._select_api_key(user_id, raw_api_key=raw_api_key)
         active_key_count = self._user_store.count_active_api_keys(user_id)
-        plan = self._entitlements.get_plan(str(user.plan_code))
-        daily_used = int(user.daily_query_count)
+        plan = self._entitlements.get_plan(snapshot.plan_code)
+        daily_used = snapshot.daily_count
         quota_summary = SetupQuotaSummary(
             daily_limit=plan.ask_database_per_day,
             daily_used=daily_used,
             daily_remaining=max(plan.ask_database_per_day - daily_used, 0),
-            reset_at=_ensure_utc(cast(datetime, user.daily_quota_reset_at)),
-            warning_level=self._entitlements.quota_warning_level(str(user.plan_code), daily_used),
+            reset_at=_ensure_utc(snapshot.daily_quota_reset_at),
+            warning_level=self._entitlements.quota_warning_level(snapshot.plan_code, daily_used),
         )
         key_state = SetupApiKeyState(
             active_key_count=active_key_count,

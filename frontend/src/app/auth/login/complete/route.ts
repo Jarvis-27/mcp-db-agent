@@ -12,14 +12,17 @@ import type { AccountStatusResponse, SessionResponse } from '@/types/api'
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('token')
+  const tz = request.nextUrl.searchParams.get('tz')
 
   if (!token) {
     return redirectWithError(request, '/auth/login', 'This sign-in link is missing a token.')
   }
 
   const backendUrl = getBackendApiUrl()
+  const params = new URLSearchParams({ token })
+  if (tz) params.set('tz', tz)
   const res = await fetch(
-    `${backendUrl}/api/v1/auth/exchange-login-link?token=${encodeURIComponent(token)}`,
+    `${backendUrl}/api/v1/auth/exchange-login-link?${params.toString()}`,
     { cache: 'no-store' },
   )
 

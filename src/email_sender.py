@@ -136,9 +136,7 @@ class ResendEmailSender:
 
 
 def make_email_sender(settings) -> EmailSender:  # type: ignore[type-arg]
-    if getattr(settings, "resend_api_key", None) and getattr(
-        settings, "resend_from_address", None
-    ):
+    if getattr(settings, "resend_api_key", None) and getattr(settings, "resend_from_address", None):
         return ResendEmailSender(
             api_key=settings.resend_api_key,
             from_address=settings.resend_from_address,

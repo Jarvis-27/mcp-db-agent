@@ -22,6 +22,7 @@ dependencies = [
     "starlette>=0.46.0",
     "httpx>=0.28.0",
     "PyJWT[crypto]>=2.8.0",
+    "tzdata>=2025.1; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

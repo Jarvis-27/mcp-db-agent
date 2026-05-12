@@ -1,16 +1,29 @@
-import { redirect } from 'next/navigation'
+'use client'
+
+import { use, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AlertCircle } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useDetectedTimezone } from '@/lib/use-detected-timezone'
 
 interface Props {
   searchParams: Promise<{ token?: string; error?: string }>
 }
 
-export default async function VerifyEmailPage({ searchParams }: Props) {
-  const { token, error } = await searchParams
+export default function VerifyEmailPage({ searchParams }: Props) {
+  const { token, error } = use(searchParams)
+  const router = useRouter()
+  const tz = useDetectedTimezone()
+
+  useEffect(() => {
+    if (error || !token) return
+    const params = new URLSearchParams({ token })
+    if (tz) params.set('tz', tz)
+    router.replace(`/auth/verify/complete?${params.toString()}`)
+  }, [error, router, token, tz])
 
   if (error) {
     return (
@@ -36,7 +49,11 @@ export default async function VerifyEmailPage({ searchParams }: Props) {
     )
   }
 
-  redirect(`/auth/verify/complete?token=${encodeURIComponent(token)}`)
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background p-4">
+      <p className="text-sm text-muted-foreground">Verifying your email…</p>
+    </main>
+  )
 }
 
 function AuthErrorShell({

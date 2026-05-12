@@ -12,8 +12,6 @@ async def test_apps_tool_metadata_includes_oauth_security_schemes(monkeypatch):
     for tool in tools:
         payload = tool.model_dump(by_alias=True, exclude_none=True, mode="json")
         assert payload["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp:access"]}]
-        assert payload["_meta"]["securitySchemes"] == [
-            {"type": "oauth2", "scopes": ["mcp:access"]}
-        ]
+        assert payload["_meta"]["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp:access"]}]
         assert payload["annotations"]["readOnlyHint"] is True
         assert payload["title"]

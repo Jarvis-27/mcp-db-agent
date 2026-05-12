@@ -10,6 +10,7 @@ class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(..., min_length=1, max_length=254)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class SignupPendingResponse(BaseModel):
@@ -30,6 +31,7 @@ class RequestLoginLinkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(..., min_length=1, max_length=254)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class GenericAcceptedResponse(BaseModel):
@@ -48,14 +50,17 @@ class SubmitDatabaseRequest(BaseModel):
 
     connection_method: Literal["guided", "url"] | None = None
     database_url: str | None = Field(default=None, min_length=1, max_length=2048)
-    provider: Literal[
-        "generic_postgres",
-        "supabase",
-        "neon",
-        "aws_rds",
-        "railway",
-        "render",
-    ] | None = None
+    provider: (
+        Literal[
+            "generic_postgres",
+            "supabase",
+            "neon",
+            "aws_rds",
+            "railway",
+            "render",
+        ]
+        | None
+    ) = None
     host: str | None = Field(default=None, min_length=1, max_length=255)
     port: int | None = Field(default=5432, ge=1, le=65535)
     database: str | None = Field(default=None, min_length=1, max_length=255)
@@ -101,6 +106,19 @@ class AccountResponse(BaseModel):
     account_status: str
     plan_code: str
     billing_status: str
+    timezone: str
+
+
+class UpdatePreferencesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timezone: str = Field(..., min_length=1, max_length=64)
+
+
+class PreferencesResponse(BaseModel):
+    user_id: str
+    timezone: str
+    daily_quota_reset_at: datetime
 
 
 class CreateApiKeyRequest(BaseModel):

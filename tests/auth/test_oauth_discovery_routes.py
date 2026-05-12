@@ -22,9 +22,7 @@ def test_protected_resource_metadata_routes_include_chatgpt_alias(monkeypatch):
     _configure_oauth(monkeypatch)
 
     routes = app_module._build_protected_resource_routes()
-    client = TestClient(
-        Starlette(routes=[*routes, Mount("/mcp", app=_unexpected_mcp_app)])
-    )
+    client = TestClient(Starlette(routes=[*routes, Mount("/mcp", app=_unexpected_mcp_app)]))
 
     response = client.get("/mcp/.well-known/oauth-protected-resource")
 

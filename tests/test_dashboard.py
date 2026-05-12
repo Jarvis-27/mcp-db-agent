@@ -1,5 +1,6 @@
 """Tests for GET /v1/account/dashboard and GET /v1/account/usage/recent endpoints."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import src.auth.url_guard as ug_module
@@ -7,7 +8,7 @@ import pytest
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from src.api.app import api_app
@@ -146,6 +147,78 @@ def test_dashboard_summary_no_database_shows_null(client):
     data = resp.json()
     assert data["active_database"] is None
     assert data["api_key_count"] == 0
+
+
+def test_dashboard_quota_resets_lazily_on_read(client):
+    """Stale daily_query_count must virtualize to 0 once reset window has elapsed."""
+    user_id, session_token = _register_and_get_session(client, "stale@example.com")
+    _activate_user(client, session_token)
+
+    # Simulate yesterday's usage with the reset window already in the past.
+    store: UserStore = api_app.state.user_store
+    past_reset = datetime.now(UTC) - timedelta(hours=2)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text(
+                "UPDATE users SET daily_query_count = 7, daily_quota_reset_at = :t,"
+                " timezone = :tz WHERE id = :id"
+            ),
+            {"t": past_reset, "tz": "Asia/Kolkata", "id": user_id},
+        )
+        conn.commit()
+
+    resp = client.get(
+        "/v1/account/dashboard",
+        headers={"Authorization": f"Bearer {session_token}"},
+    )
+    assert resp.status_code == 200
+    quota = resp.json()["quota"]
+    assert quota["daily_used"] == 0
+    assert quota["daily_remaining"] == quota["daily_limit"]
+    assert quota["warning_level"] is None
+
+    # Stored counter must remain untouched (no implicit write on read).
+    with store._engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT daily_query_count FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == 7
+
+
+def test_update_preferences_changes_timezone(client):
+    """PUT /v1/account/preferences updates the user's timezone and reset boundary."""
+    user_id, session_token = _register_and_get_session(client, "pref@example.com")
+    _activate_user(client, session_token)
+
+    resp = client.put(
+        "/v1/account/preferences",
+        headers={"Authorization": f"Bearer {session_token}"},
+        json={"timezone": "Asia/Kolkata"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["timezone"] == "Asia/Kolkata"
+    assert body["user_id"] == user_id
+
+    store: UserStore = api_app.state.user_store
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "Asia/Kolkata"
+
+
+def test_update_preferences_invalid_tz_falls_back_to_utc(client):
+    user_id, session_token = _register_and_get_session(client, "badtz@example.com")
+    _activate_user(client, session_token)
+
+    resp = client.put(
+        "/v1/account/preferences",
+        headers={"Authorization": f"Bearer {session_token}"},
+        json={"timezone": "Not/Real"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "UTC"
 
 
 # ── Usage recent tests ─────────────────────────────────────────────────────────

@@ -106,6 +106,54 @@ def test_register_missing_email_returns_422(client):
     assert resp.status_code == 422
 
 
+def test_register_stores_provided_timezone(client):
+    from src.auth.user_store import UserStore
+
+    resp = client.post(
+        "/v1/auth/signup",
+        json={"email": "ist-signup@example.com", "timezone": "Asia/Kolkata"},
+    )
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+
+    store: UserStore = api_app.state.user_store
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "Asia/Kolkata"
+
+
+def test_register_without_timezone_defaults_to_utc(client):
+    from src.auth.user_store import UserStore
+
+    resp = client.post(
+        "/v1/auth/signup",
+        json={"email": "no-tz@example.com"},
+    )
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+
+    store: UserStore = api_app.state.user_store
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "UTC"
+
+
+def test_register_invalid_timezone_silently_uses_utc(client):
+    from src.auth.user_store import UserStore
+
+    resp = client.post(
+        "/v1/auth/signup",
+        json={"email": "bogus-tz@example.com", "timezone": "Not/A_Real_Zone"},
+    )
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+
+    store: UserStore = api_app.state.user_store
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "UTC"
+
+
 def test_account_status_requires_session(client):
     resp = client.get("/v1/account/status")
     assert resp.status_code == 401

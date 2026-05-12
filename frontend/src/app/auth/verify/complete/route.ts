@@ -12,13 +12,16 @@ import type { VerifyEmailResponse } from '@/types/api'
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('token')
+  const tz = request.nextUrl.searchParams.get('tz')
 
   if (!token) {
     return redirectWithError(request, '/auth/verify', 'This verification link is missing a token.')
   }
 
+  const params = new URLSearchParams({ token })
+  if (tz) params.set('tz', tz)
   const res = await fetch(
-    `${getBackendApiUrl()}/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`,
+    `${getBackendApiUrl()}/api/v1/auth/verify-email?${params.toString()}`,
     { cache: 'no-store' },
   )
 

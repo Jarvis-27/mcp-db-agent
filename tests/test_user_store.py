@@ -321,3 +321,161 @@ def test_revoke_user_session(store):
     assert store.get_user_by_session(raw) is not None
     store.revoke_user_session(raw)
     assert store.get_user_by_session(raw) is None
+
+
+# ---------------------------------------------------------------------------
+# Timezone-aware daily quota behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_create_user_default_timezone_is_utc(store):
+    user_id = store.create_user("default-tz@example.com")
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "UTC"
+
+
+def test_create_user_stores_provided_timezone(store):
+    user_id = store.create_user("ist@example.com", timezone="Asia/Kolkata")
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "Asia/Kolkata"
+
+
+def test_create_user_invalid_timezone_falls_back_to_utc(store):
+    user_id = store.create_user("bogus-tz@example.com", timezone="Not/A_Real_Zone")
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "UTC"
+
+
+def test_create_user_initial_reset_at_aligned_to_local_midnight(store):
+    from zoneinfo import ZoneInfo
+
+    user_id = store.create_user("ist-init@example.com", timezone="Asia/Kolkata")
+    user = store.get_user_row(user_id)
+    assert user is not None
+    reset_at = user.daily_quota_reset_at
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=UTC)
+    local = reset_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert (local.hour, local.minute, local.second) == (0, 0, 0)
+
+
+def test_get_effective_quota_snapshot_returns_stored_when_future_reset(store):
+    user_id, _, _ = _make_active_user(store)
+    store.consume_daily_query_quota(user_id)
+    store.consume_daily_query_quota(user_id)
+
+    snap = store.get_effective_quota_snapshot(user_id)
+    assert snap is not None
+    assert snap.daily_count == 2
+    assert snap.daily_quota_reset_at > datetime.now(UTC)
+
+
+def test_get_effective_quota_snapshot_virtualizes_zero_when_past_reset(store):
+    user_id, _, _ = _make_active_user(store)
+    store.consume_daily_query_quota(user_id)
+    store.consume_daily_query_quota(user_id)
+
+    past_reset = datetime.now(UTC) - timedelta(hours=1)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET daily_quota_reset_at = :t WHERE id = :id"),
+            {"t": past_reset, "id": user_id},
+        )
+        conn.commit()
+
+    snap = store.get_effective_quota_snapshot(user_id)
+    assert snap is not None
+    assert snap.daily_count == 0
+    assert snap.daily_quota_reset_at > datetime.now(UTC)
+
+
+def test_get_effective_quota_snapshot_does_not_persist(store):
+    user_id, _, _ = _make_active_user(store)
+    store.consume_daily_query_quota(user_id)
+    store.consume_daily_query_quota(user_id)
+
+    past_reset = datetime.now(UTC) - timedelta(hours=1)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET daily_quota_reset_at = :t WHERE id = :id"),
+            {"t": past_reset, "id": user_id},
+        )
+        conn.commit()
+
+    # Calling the read helper must NOT mutate the row.
+    store.get_effective_quota_snapshot(user_id)
+    store.get_effective_quota_snapshot(user_id)
+
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert int(user.daily_query_count) == 2  # unchanged
+    stored_reset = user.daily_quota_reset_at
+    if stored_reset.tzinfo is None:
+        stored_reset = stored_reset.replace(tzinfo=UTC)
+    assert stored_reset < datetime.now(UTC)  # still backdated
+
+
+def test_get_effective_quota_snapshot_unknown_user_returns_none(store):
+    assert store.get_effective_quota_snapshot("00000000-0000-0000-0000-000000000000") is None
+
+
+def test_update_timezone_recomputes_reset_at(store):
+    from zoneinfo import ZoneInfo
+
+    user_id = store.create_user("tz-update@example.com", timezone="UTC")
+    assert store.update_timezone(user_id, "Asia/Kolkata") is True
+
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "Asia/Kolkata"
+    reset_at = user.daily_quota_reset_at
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=UTC)
+    local = reset_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert (local.hour, local.minute) == (0, 0)
+
+
+def test_update_timezone_invalid_falls_back_to_utc(store):
+    user_id = store.create_user("bogus-update@example.com", timezone="Asia/Kolkata")
+    assert store.update_timezone(user_id, "Not/A_Real_Zone") is True
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert str(user.timezone) == "UTC"
+
+
+def test_update_timezone_unknown_user_returns_false(store):
+    assert store.update_timezone("00000000-0000-0000-0000-000000000000", "UTC") is False
+
+
+def test_consume_quota_uses_user_timezone(store):
+    from zoneinfo import ZoneInfo
+
+    user_id = store.create_user("consumer-ist@example.com", timezone="Asia/Kolkata")
+    snap = store.consume_daily_query_quota(user_id)
+    assert snap.timezone == "Asia/Kolkata"
+    reset_at = snap.daily_quota_reset_at
+    local = reset_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert (local.hour, local.minute, local.second) == (0, 0, 0)
+
+
+def test_consume_quota_resets_at_local_midnight(store):
+    user_id = store.create_user("reset-ist@example.com", timezone="Asia/Kolkata")
+    # First consume sets count=1 and computes initial reset_at.
+    store.consume_daily_query_quota(user_id)
+    store.consume_daily_query_quota(user_id)
+
+    # Force reset window into the past.
+    past_reset = datetime.now(UTC) - timedelta(minutes=5)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET daily_quota_reset_at = :t WHERE id = :id"),
+            {"t": past_reset, "id": user_id},
+        )
+        conn.commit()
+
+    snap = store.consume_daily_query_quota(user_id)
+    assert snap.daily_count == 1  # reset to 1 on first consume after boundary
+    assert snap.daily_quota_reset_at > datetime.now(UTC)

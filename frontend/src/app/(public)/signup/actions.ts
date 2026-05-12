@@ -9,12 +9,13 @@ export async function registerAction(
   formData: FormData,
 ): Promise<State> {
   const email = formData.get('email')?.toString().trim()
+  const timezone = formData.get('timezone')?.toString().trim() || null
 
   if (!email) return { error: 'Email address is required.' }
 
   const res = await backendFetchPublic('/v1/auth/signup', {
     method: 'POST',
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, timezone }),
   })
 
   if (res.status === 201) return { success: true }

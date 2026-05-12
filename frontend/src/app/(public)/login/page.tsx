@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useDetectedTimezone } from '@/lib/use-detected-timezone'
 import { requestLoginLinkAction } from './actions'
 
 type State = { success?: boolean; error?: string } | null
@@ -17,6 +18,7 @@ export default function LoginPage() {
     requestLoginLinkAction,
     null,
   )
+  const timezone = useDetectedTimezone()
 
   return (
     <main className="mx-auto grid min-h-[calc(100vh-8rem)] max-w-5xl items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[0.85fr_1fr] lg:px-8">
@@ -82,6 +84,8 @@ export default function LoginPage() {
                   className="h-11"
                 />
               </div>
+
+              <input type="hidden" name="timezone" value={timezone} />
 
               <Button type="submit" className="h-11 w-full" disabled={isPending}>
                 {isPending ? 'Sending link...' : 'Send sign-in link'}

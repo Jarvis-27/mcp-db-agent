@@ -83,7 +83,9 @@ def _mounted_resource_metadata_url() -> str | None:
         resource_path = parsed.path.rstrip("/")
         if not resource_path:
             return None
-        return f"{parsed.scheme}://{parsed.netloc}{resource_path}/.well-known/oauth-protected-resource"
+        return (
+            f"{parsed.scheme}://{parsed.netloc}{resource_path}/.well-known/oauth-protected-resource"
+        )
     except Exception:
         return None
 
@@ -198,9 +200,7 @@ class ResourceMetadataChallengeAliasMiddleware:
                         value_end = text.find('"', value_start)
                         if value_end != -1:
                             text = (
-                                text[:value_start]
-                                + self._resource_metadata_url
-                                + text[value_end:]
+                                text[:value_start] + self._resource_metadata_url + text[value_end:]
                             )
                             value = text.encode("latin-1")
                 headers.append((name, value))

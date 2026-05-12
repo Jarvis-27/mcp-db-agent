@@ -9,11 +9,12 @@ export async function requestLoginLinkAction(
   formData: FormData,
 ): Promise<State> {
   const email = formData.get('email')?.toString().trim()
+  const timezone = formData.get('timezone')?.toString().trim() || null
   if (!email) return { error: 'Email address is required.' }
 
   const res = await backendFetchPublic('/v1/auth/request-login-link', {
     method: 'POST',
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, timezone }),
   })
 
   // Backend always returns 202 to avoid user enumeration; we mirror that.

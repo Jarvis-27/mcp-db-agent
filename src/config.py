@@ -181,7 +181,9 @@ class Settings(BaseSettings):
 
     def stripe_billing_is_configured(self) -> bool:
         """Return True when Stripe can create sessions and verify webhooks."""
-        return bool(self.stripe_secret_key and self.stripe_webhook_secret and self.stripe_pro_price_id)
+        return bool(
+            self.stripe_secret_key and self.stripe_webhook_secret and self.stripe_pro_price_id
+        )
 
     def stripe_checkout_success_url_effective(self) -> str:
         if self.stripe_checkout_success_url:

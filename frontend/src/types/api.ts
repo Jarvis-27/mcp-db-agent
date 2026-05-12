@@ -48,6 +48,23 @@ export interface AccountStatusResponse {
   can_issue_api_key: boolean
 }
 
+export interface AccountResponse {
+  user_id: string
+  is_active: boolean
+  created_at: string
+  status: OnboardingStatus
+  account_status: AccountStatus
+  plan_code: string
+  billing_status: string
+  timezone: string
+}
+
+export interface PreferencesResponse {
+  user_id: string
+  timezone: string
+  daily_quota_reset_at: string
+}
+
 export interface AccountDatabaseResponse {
   user_id: string
   status: OnboardingStatus

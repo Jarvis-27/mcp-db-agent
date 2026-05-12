@@ -12,6 +12,7 @@ import {
   ListChecks,
   LogOut,
   Menu,
+  UserCog,
   X,
 } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { href: '/app/billing', label: 'Billing', icon: CreditCard, key: 'billing' },
   { href: '/app/api-keys', label: 'API keys', icon: Key, key: 'keys' },
   { href: '/app/settings/database', label: 'Database', icon: Database, key: 'db' },
+  { href: '/app/settings/account', label: 'Account', icon: UserCog, key: 'account' },
 ]
 
 interface AppShellProps {
