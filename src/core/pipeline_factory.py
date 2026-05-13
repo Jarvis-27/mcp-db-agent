@@ -116,7 +116,7 @@ class PipelineFactory:
         )
         user_settings = self._build_user_settings(uc)
         generator = SQLGenerator(user_settings, inspector)
-        validator = SQLValidator(inspector)
+        validator = SQLValidator(inspector, max_query_rows=user_settings.max_query_rows)
         executor = SQLExecutor(engine, user_settings, self._executor_pool)
         corrector = SelfCorrector(generator, validator, executor, user_settings)
         formatter = ResultFormatter()
@@ -162,6 +162,7 @@ class PipelineFactory:
             max_query_rows=self._settings.max_query_rows,
             query_timeout_seconds=self._settings.query_timeout_seconds,
             max_self_correction_retries=self._settings.max_self_correction_retries,
+            max_llm_chars_per_request=self._settings.max_llm_chars_per_request,
         )
 
     async def invalidate(self, user_id: str) -> None:

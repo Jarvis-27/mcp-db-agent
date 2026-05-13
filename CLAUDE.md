@@ -143,6 +143,13 @@ Generate an encryption key:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
+> **Rate-limiter scope.** Both the SlowAPI per-IP limiter on REST endpoints and the
+> per-API-key burst limiter on `ask_database` (`MCP_BURST_CAPACITY`) use
+> in-process counters. With N uvicorn workers the effective cap is `N × limit`.
+> Until a Redis-backed shared store is wired up, run prod with a single worker
+> (`uvicorn --workers 1`) or accept the worker-multiplied cap. Tracking: G4 in
+> `PRODUCTION_GAPS_PLAN.md`.
+
 ## Connecting MCP Clients (HTTP mode)
 
 After starting the server (`uvicorn src.app:app`), register a user:

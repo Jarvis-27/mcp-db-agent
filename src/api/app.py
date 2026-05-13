@@ -93,7 +93,24 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 
-api_app = FastAPI(title="MCP Database Analytics - Account API")
+
+def _build_api_app() -> FastAPI:
+    """Construct the account FastAPI sub-app with environment-gated docs (G3).
+
+    OpenAPI / Swagger / ReDoc are disabled in production so the public account
+    API does not advertise admin or billing routes.  Kept on elsewhere for
+    local exploration and QA in staging.
+    """
+    is_prod = settings.environment == "production"
+    return FastAPI(
+        title="MCP Database Analytics - Account API",
+        docs_url=None if is_prod else "/docs",
+        redoc_url=None if is_prod else "/redoc",
+        openapi_url=None if is_prod else "/openapi.json",
+    )
+
+
+api_app = _build_api_app()
 api_app.state.limiter = limiter
 api_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
@@ -1250,17 +1267,77 @@ async def oauth_unlink(request: Request, session: AuthedSession) -> OAuthUnlinkR
 
 
 @api_app.get("/health/live")
-async def health_live() -> dict:
+async def health_live(request: Request) -> dict:
+    """Liveness probe (G1) — 503 when the event loop is wedged.
+
+    The heartbeat task updates a timestamp every second; if more than
+    ``stale_after_seconds`` have passed without an update, the loop is
+    deadlocked or starved and the orchestrator should replace the worker.
+    """
+    heartbeat = getattr(request.app.state, "heartbeat", None)
+    if heartbeat is None or not heartbeat.is_alive():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "fail",
+                "reason": "event_loop_stalled",
+                "seconds_since_last_tick": (
+                    round(heartbeat.seconds_since_last_tick(), 2) if heartbeat is not None else None
+                ),
+            },
+        )
     return {"status": "ok"}
 
 
 @api_app.get("/health/ready")
 async def health_ready(request: Request) -> dict:
+    """Readiness probe (G2) — 503 if any critical dependency is unavailable.
+
+    Each check is independent so the response body surfaces every failing
+    dependency at once, not just the first.
+    """
+    checks: dict[str, str] = {}
+
+    # 1. Auth DB connectivity
     try:
         user_store: UserStore = request.app.state.user_store
         with user_store._engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        _ = user_store._cipher
-    except Exception:
-        raise HTTPException(status_code=503, detail="Auth database not reachable")
-    return {"status": "ok"}
+        checks["auth_db"] = "ok"
+    except Exception as exc:
+        checks["auth_db"] = f"fail: {exc.__class__.__name__}"
+
+    # 2. Credential cipher present
+    try:
+        if getattr(request.app.state.user_store, "_cipher", None) is None:
+            checks["cipher"] = "fail: not configured"
+        else:
+            checks["cipher"] = "ok"
+    except Exception as exc:
+        checks["cipher"] = f"fail: {exc.__class__.__name__}"
+
+    # 3. Pipeline factory built
+    factory = getattr(request.app.state, "factory", None)
+    checks["pipeline_factory"] = "ok" if factory is not None else "fail: missing"
+
+    # 4. Executor pool not shut down
+    pool = getattr(request.app.state, "executor_pool", None)
+    if pool is None:
+        checks["executor_pool"] = "fail: missing"
+    elif getattr(pool, "_shutdown", False):
+        checks["executor_pool"] = "fail: shutdown"
+    else:
+        checks["executor_pool"] = "ok"
+
+    # 5. LLM provider key configured for the active provider
+    provider = (settings.llm_provider or "anthropic").lower()
+    if provider == "anthropic" and not settings.anthropic_api_key:
+        checks["llm_provider"] = "fail: missing ANTHROPIC_API_KEY"
+    elif provider == "groq" and not settings.groq_api_key:
+        checks["llm_provider"] = "fail: missing GROQ_API_KEY"
+    else:
+        checks["llm_provider"] = "ok"
+
+    if any(v != "ok" for v in checks.values()):
+        raise HTTPException(status_code=503, detail={"status": "fail", "checks": checks})
+    return {"status": "ok", "checks": checks}

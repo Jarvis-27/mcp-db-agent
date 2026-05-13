@@ -1,15 +1,27 @@
 """Unit tests for SelfCorrector — all LLM/DB calls are mocked."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.core.self_corrector import SelfCorrector
+import pytest
+
+from src.core.self_corrector import SelfCorrector, _is_llm_repairable
 from src.core.sql_validator import ValidationResult
 
 
-def _make_settings(max_retries: int = 3) -> MagicMock:
+def _make_settings(max_retries: int = 3, max_chars: int = 1_000_000) -> MagicMock:
     s = MagicMock()
     s.max_self_correction_retries = max_retries
+    # Plain int so chars-consumed comparisons work; default is effectively infinite
+    # to keep pre-G6 tests unaffected.
+    s.max_llm_chars_per_request = max_chars
     return s
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep():
+    """Skip the jittered backoff sleeps so tests run instantly."""
+    with patch("src.core.self_corrector.asyncio.sleep", new=AsyncMock()):
+        yield
 
 
 def _make_corrector(
@@ -189,7 +201,9 @@ async def test_fix_sql_prompt_content():
     validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
 
     executor = MagicMock()
-    executor.execute = AsyncMock(side_effect=[Exception("syntax error"), []])
+    # Retryable error message (G6 classifier) so the repair LLM call actually
+    # fires and we can inspect the prompt it received.
+    executor.execute = AsyncMock(side_effect=[Exception("no such column: foo"), []])
 
     corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
     await corrector.execute_with_correction("How many users?", "sqlite")
@@ -197,4 +211,136 @@ async def test_fix_sql_prompt_content():
     call_args = generator.generate_from_prompt.call_args[0][0]
     assert "How many users?" in call_args
     assert "SELECT 1" in call_args
-    assert "syntax error" in call_args
+    assert "no such column: foo" in call_args
+
+
+# ---------------------------------------------------------------------------
+# G6: error categorization, backoff, char budget
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "no such table: foo",
+        "relation does not exist",
+        "undefined column 'bar'",
+        "column does not exist",
+        "ambiguous column reference",
+        "operator does not exist",
+        "type mismatch in expression",
+        "could not be cast to integer",
+        "Query timed out",  # asyncio.TimeoutError fallback
+    ],
+)
+def test_is_llm_repairable_returns_true_for_known_marker(msg):
+    assert _is_llm_repairable(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "",
+        "permission denied for relation users",
+        "connection reset by peer",
+        "duplicate key value violates unique constraint",
+        "Internal Server Error",
+        "deadlock detected",
+    ],
+)
+def test_is_llm_repairable_returns_false_for_fatal(msg):
+    assert _is_llm_repairable(msg) is False
+
+
+async def test_retries_on_undefined_table():
+    """Executor raises an UndefinedTable-flavored error → LLM repair fires."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM nonexistent")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT * FROM users LIMIT 10;")
+    generator.get_schema_context = MagicMock(return_value="users(id, name)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        side_effect=[RuntimeError("undefined table 'nonexistent'"), [{"id": 1}]]
+    )
+
+    corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
+    result = await corrector.execute_with_correction("list users", "sqlite")
+
+    assert result["success"] is True
+    assert result["attempts"] == 2
+    generator.generate_from_prompt.assert_awaited_once()
+
+
+async def test_aborts_on_fatal_syntax_error():
+    """A non-retryable error category must abort without calling the LLM."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT broken !! syntax")
+    generator.generate_from_prompt = AsyncMock(return_value="never called")
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(side_effect=Exception("permission denied"))
+
+    corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
+    result = await corrector.execute_with_correction("anything", "sqlite")
+
+    assert result["success"] is False
+    assert result["attempts"] == 1
+    generator.generate_from_prompt.assert_not_awaited()
+    # The fatal-abort reason is appended to errors.
+    assert any("non-retryable" in e.lower() for e in result["errors"])
+
+
+async def test_backoff_called_between_retries():
+    """asyncio.sleep must be called with a positive delay before each LLM repair."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT 1")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT 1")
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(side_effect=[RuntimeError("no such column: foo"), [{"x": 1}]])
+
+    with patch("src.core.self_corrector.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
+        await corrector.execute_with_correction("q", "sqlite")
+
+    assert sleep_mock.await_count >= 1
+    # First positional arg is the delay; must be a positive float.
+    first_delay = sleep_mock.await_args_list[0].args[0]
+    assert first_delay > 0
+
+
+async def test_aborts_on_char_budget_exhaustion():
+    """When the per-request char budget is exceeded, the loop must stop early."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM nonexistent")
+    # Repair returns a long string so the budget is blown after the first repair.
+    generator.generate_from_prompt = AsyncMock(return_value="x" * 100)
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(side_effect=RuntimeError("no such table: foo"))
+
+    # Budget of 10 chars — the very first repair (≫10 chars) blows it.
+    settings = _make_settings(max_retries=5, max_chars=10)
+    corrector = SelfCorrector(generator, validator, executor, settings)
+    result = await corrector.execute_with_correction("q", "sqlite")
+
+    assert result["success"] is False
+    assert any("budget exhausted" in e.lower() for e in result["errors"])
+    # Should have stopped well before max_retries.
+    assert result["attempts"] < 5

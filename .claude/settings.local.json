@@ -10,7 +10,8 @@
       "Bash(uv run:*)",
       "Bash(Get-ChildItem -Path \"D:\\\\Abhishek\\\\MCP Database Analytics Agent\\\\mcp-db-agent\\\\frontend\\\\src\\\\app\" -Recurse -Filter \"*.tsx\" -Filter \"*.ts\")",
       "Bash(Select-Object FullName)",
-      "Bash(Get-ChildItem *)"
+      "Bash(Get-ChildItem *)",
+      "PowerShell(uv run *)"
     ]
   }
 }

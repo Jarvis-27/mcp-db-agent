@@ -34,6 +34,7 @@ from src.tools.list_tables import list_tables as _list_tables
 _factory: PipelineFactory | None = None
 _query_log = None  # QueryLog | None — populated by src/app.py
 _user_store = None  # UserStore | None — populated by src/app.py
+_mcp_limiter = None  # PerUserSlidingWindow | None — populated by src/app.py
 
 from cachetools import TTLCache  # type: ignore[import-untyped]
 
@@ -267,6 +268,36 @@ async def ask_database(question: str) -> str:
             payload = json.loads(cached_result)
             payload["cached"] = True
             return json.dumps(payload, indent=2)
+
+    # --- Burst rate limit (G5) BEFORE quota / pipeline resolution ---
+    if _mcp_limiter is not None:
+        allowed, retry_after = await _mcp_limiter.acquire(user_id)
+        if not allowed:
+            _log.warning(
+                "ask_database",
+                extra={
+                    "fields": {
+                        "tool": "ask_database",
+                        "event": "rate_limited",
+                        "user_id": user_id,
+                        "retry_after_seconds": round(retry_after, 2),
+                    }
+                },
+            )
+            return json.dumps(
+                {
+                    "error": "Rate limit exceeded",
+                    "code": "burst_limit",
+                    "retry_after_seconds": round(retry_after, 2),
+                    "limit": _mcp_limiter.capacity,
+                    "window_seconds": _mcp_limiter.window_seconds,
+                    "suggestion": (
+                        "Wait the retry-after interval before sending more questions. "
+                        "Configure MCP_BURST_CAPACITY/MCP_BURST_WINDOW_SECONDS to tune."
+                    ),
+                },
+                indent=2,
+            )
 
     # --- Enforce daily quota BEFORE pipeline resolution ---
     quota_snapshot = None

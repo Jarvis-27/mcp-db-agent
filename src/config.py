@@ -20,6 +20,7 @@ class UserSettings:
     max_query_rows: int
     query_timeout_seconds: int
     max_self_correction_retries: int
+    max_llm_chars_per_request: int = 40_000
 
 
 _ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -37,6 +38,14 @@ class Settings(BaseSettings):
     max_query_rows: int = 100
     query_timeout_seconds: int = 30
     max_self_correction_retries: int = 3
+    # Soft per-request LLM cost ceiling (G6). Counted as prompt+response characters;
+    # at ~4 chars/token this is ≈ 10k tokens. SelfCorrector aborts when exceeded.
+    max_llm_chars_per_request: int = 40_000
+    # Per-API-key burst limit applied inside ask_database (G5). Sliding-window
+    # counters live in-process; multi-worker deployments will multiply the cap
+    # until a shared store is wired up — see CLAUDE.md "Rate-limiter scope".
+    mcp_burst_capacity: int = 30
+    mcp_burst_window_seconds: float = 60.0
 
     # ── Hosted account mode ────────────────────────────────────────────
     environment: Literal["development", "staging", "production"] = "development"

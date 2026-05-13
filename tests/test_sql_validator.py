@@ -426,3 +426,79 @@ def test_schema_qualified_unknown_table_still_rejected():
     result = v.validate("SELECT * FROM public.ghost LIMIT 5")
     assert result.is_valid is False
     assert "ghost" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Configurable max_query_rows (G7): auto-inject uses setting + user LIMIT clamp
+# ---------------------------------------------------------------------------
+
+
+def _validator_with_max(max_rows: int, tables: list[str] | None = None) -> SQLValidator:
+    inspector = MagicMock()
+    inspector.get_table_names.return_value = tables if tables is not None else ["users", "orders"]
+    return SQLValidator(inspector, max_query_rows=max_rows)
+
+
+def test_auto_inject_uses_configured_max():
+    v = _validator_with_max(25)
+    result = v.validate("SELECT id FROM users")
+    assert result.is_valid is True
+    assert result.modified_sql is not None
+    assert result.modified_sql.endswith("LIMIT 25;")
+
+
+def test_auto_inject_default_is_100():
+    v = _validator()  # default max_query_rows=100
+    result = v.validate("SELECT id FROM users")
+    assert result.modified_sql is not None
+    assert result.modified_sql.endswith("LIMIT 100;")
+
+
+def test_user_limit_clamped_when_over_max():
+    v = _validator_with_max(100)
+    result = v.validate("SELECT id FROM users LIMIT 9999")
+    assert result.is_valid is True
+    assert result.warning is not None
+    assert "clamped" in result.warning.lower()
+    assert result.modified_sql is not None
+    assert "LIMIT 100" in result.modified_sql
+    assert "9999" not in result.modified_sql
+
+
+def test_user_limit_kept_when_under_max():
+    v = _validator_with_max(100)
+    result = v.validate("SELECT id FROM users LIMIT 50")
+    assert result.is_valid is True
+    assert result.modified_sql is None  # untouched
+
+
+def test_user_limit_equal_to_max_kept():
+    v = _validator_with_max(100)
+    result = v.validate("SELECT id FROM users LIMIT 100")
+    assert result.is_valid is True
+    assert result.modified_sql is None
+
+
+def test_clamp_skipped_for_aggregation():
+    v = _validator_with_max(100)
+    result = v.validate("SELECT COUNT(*) FROM users LIMIT 9999")
+    assert result.is_valid is True
+    assert result.modified_sql is None  # aggregation: clamp doesn't apply
+
+
+def test_clamp_preserves_surrounding_sql():
+    v = _validator_with_max(50)
+    result = v.validate("SELECT id, name FROM users WHERE id > 0 LIMIT 9999")
+    assert result.modified_sql is not None
+    assert result.modified_sql.startswith("SELECT id, name FROM users WHERE id > 0 LIMIT ")
+    assert result.modified_sql.rstrip(";").endswith("LIMIT 50")
+
+
+def test_clamp_does_not_affect_subquery_limit():
+    """A subquery LIMIT is not top-level; auto-inject fires at top instead."""
+    v = _validator_with_max(50)
+    result = v.validate("SELECT * FROM (SELECT id FROM users LIMIT 9999) AS sub")
+    assert result.modified_sql is not None
+    # Inner LIMIT 9999 is untouched; outer auto-LIMIT 50 is appended.
+    assert "LIMIT 9999" in result.modified_sql
+    assert result.modified_sql.endswith("LIMIT 50;")

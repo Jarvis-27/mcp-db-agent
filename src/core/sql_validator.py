@@ -90,8 +90,9 @@ class ValidationResult:
 
 
 class SQLValidator:
-    def __init__(self, schema_inspector: SchemaInspector) -> None:
+    def __init__(self, schema_inspector: SchemaInspector, max_query_rows: int = 100) -> None:
         self._schema_inspector = schema_inspector
+        self._max_query_rows = max_query_rows
 
     def validate(self, sql: str) -> ValidationResult:
         # Check 0a: Single statement only — multi-statement strings are rejected.
@@ -172,11 +173,23 @@ class SQLValidator:
         # Run both scans against the masked SQL so literal data like
         # ``WHERE comment = 'LIMIT 5'`` or ``WHERE note = 'COUNT(*)'`` cannot
         # bypass the safety cap.
-        if not _has_top_level_limit(masked_upper) and not any(
-            pat in masked_upper for pat in _AGGREGATION_PATTERNS
-        ):
-            modified = sql.rstrip(";") + " LIMIT 100;"
+        has_aggregation = any(pat in masked_upper for pat in _AGGREGATION_PATTERNS)
+        top_limit = _extract_top_level_limit(masked_upper)
+        if top_limit is None and not has_aggregation:
+            modified = sql.rstrip(";") + f" LIMIT {self._max_query_rows};"
             return ValidationResult(is_valid=True, warning="No LIMIT added", modified_sql=modified)
+
+        # Clamp user-supplied LIMIT that exceeds the configured max.
+        # Aggregations are exempt — they produce a single row regardless.
+        if top_limit is not None and not has_aggregation:
+            value, start, end = top_limit
+            if value > self._max_query_rows:
+                clamped = sql[:start] + str(self._max_query_rows) + sql[end:]
+                return ValidationResult(
+                    is_valid=True,
+                    warning=f"LIMIT clamped from {value} to {self._max_query_rows}",
+                    modified_sql=clamped,
+                )
 
         return ValidationResult(is_valid=True)
 
@@ -235,6 +248,53 @@ def _has_top_level_limit(sql: str) -> bool:
                 return True
         i += 1
     return False
+
+
+def _extract_top_level_limit(masked_upper: str) -> tuple[int, int, int] | None:
+    """Find the top-level integer LIMIT in *masked_upper* and return its position.
+
+    Returns ``(value, start_idx, end_idx)`` where ``masked_upper[start_idx:end_idx]``
+    is the integer literal (the same indices map to the original SQL because
+    string masking preserves character offsets).  Returns ``None`` when there is
+    no top-level LIMIT, when the value is non-integer (``LIMIT ALL``,
+    ``LIMIT ?param``), or when the syntax is MySQL's ``LIMIT offset, count``
+    form (which this project does not officially support — bailing out keeps
+    the clamp safe-by-omission).
+    """
+    depth = 0
+    n = len(masked_upper)
+    i = 0
+    while i < n:
+        c = masked_upper[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0 and masked_upper[i : i + 5] == "LIMIT":
+            before_ok = i == 0 or not (masked_upper[i - 1].isalnum() or masked_upper[i - 1] == "_")
+            after_ok = (i + 5) >= n or not (
+                masked_upper[i + 5].isalnum() or masked_upper[i + 5] == "_"
+            )
+            if before_ok and after_ok:
+                j = i + 5
+                while j < n and masked_upper[j] in " \t\r\n":
+                    j += 1
+                start = j
+                while j < n and masked_upper[j].isdigit():
+                    j += 1
+                if j == start:
+                    return None
+                end = j
+                # MySQL "LIMIT offset, count": the first integer is the offset,
+                # not the row cap — refuse to clamp rather than truncate offset.
+                k = j
+                while k < n and masked_upper[k] in " \t\r\n":
+                    k += 1
+                if k < n and masked_upper[k] == ",":
+                    return None
+                return (int(masked_upper[start:end]), start, end)
+        i += 1
+    return None
 
 
 def _mask_strings_and_comments(sql: str) -> str:

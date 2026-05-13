@@ -31,7 +31,8 @@ order, not severity alone.
 - **Acceptance:** Unit test that monkey-patches the heartbeat to stale and
   asserts 503; smoke test under a deliberately blocked loop returns 503.
 - **Effort:** S
-- [ ] Done
+- [x] Done — `src/core/heartbeat.py` + lifespan task; `/health/live` returns
+  503 when `seconds_since_last_tick > stale_after_seconds`.
 
 ### G2. `/health/ready` only checks the auth DB
 - **File:** `src/api/app.py:1142-1151`
@@ -43,7 +44,8 @@ order, not severity alone.
   critical dependency. Surface the failing dependency in the 503 body.
 - **Acceptance:** Test per dependency that simulates failure and asserts 503.
 - **Effort:** M
-- [ ] Done
+- [x] Done — `/health/ready` now checks auth_db, cipher, pipeline_factory,
+  executor_pool, and llm_provider; surfaces failing deps in the 503 body.
 
 ### G3. FastAPI docs (`/docs`, `/redoc`, `/openapi.json`) exposed in production
 - **File:** `src/api/app.py:94`
@@ -63,7 +65,8 @@ order, not severity alone.
 - **Acceptance:** Test with `ENVIRONMENT=production` confirms 404 on all three;
   test with `development` confirms 200.
 - **Effort:** S
-- [ ] Done
+- [x] Done — gated on `settings.environment == "production"`; covered by
+  `tests/test_api_docs_gate.py`.
 
 ### G4. SlowAPI runs in-memory by default — per-IP limits leak per worker
 - **File:** `src/api/app.py:92`
@@ -78,7 +81,9 @@ order, not severity alone.
 - **Acceptance:** Integration test with 2 workers + shared Redis showing one
   global bucket; configuration validation rejects prod boot without `REDIS_URL`.
 - **Effort:** M
-- [ ] Done
+- [ ] Done — **Deferred to a follow-up PR**. Per-worker limitation documented
+  under "Rate-limiter scope" in `CLAUDE.md`; recommended mitigation until
+  Redis lands is `uvicorn --workers 1` in production.
 
 ### G5. MCP `ask_database` endpoint has no rate limit at all
 - **File:** `src/server.py` (no limiter on tool calls) — limiter only attached
@@ -95,7 +100,9 @@ order, not severity alone.
   beyond the burst rate get a structured `rate_limited` error and the burst
   rate is configurable.
 - **Effort:** M
-- [ ] Done
+- [x] Done — `src/auth/rate_limiter.py` `PerUserSlidingWindow`; tunable via
+  `MCP_BURST_CAPACITY` / `MCP_BURST_WINDOW_SECONDS`. Multi-worker caveat
+  shares the same Redis caveat as G4.
 
 ### G6. Self-corrector retries with no backoff and no cost ceiling
 - **File:** `src/core/self_corrector.py:38-77`
@@ -114,7 +121,9 @@ order, not severity alone.
 - **Acceptance:** Unit tests per error category proving retry vs. abort;
   cost-budget test that proves a request stops calling the LLM after N tokens.
 - **Effort:** M
-- [ ] Done
+- [x] Done — `_is_llm_repairable` classifier, jittered backoff before each LLM
+  repair, soft char budget via `MAX_LLM_CHARS_PER_REQUEST`. Token budget uses
+  prompt+response chars (~4 chars/token) as a cheap proxy.
 
 ### G7. `MAX_QUERY_ROWS` is documented but unused
 - **File:** `src/core/sql_validator.py:178` (hardcoded `LIMIT 100`).
@@ -127,7 +136,9 @@ order, not severity alone.
 - **Acceptance:** Test that `LIMIT 9999` becomes `LIMIT {max_query_rows}` when
   the cap is lower, and that the auto-inject value follows the setting.
 - **Effort:** S
-- [ ] Done
+- [x] Done — `SQLValidator(max_query_rows=…)`; new `_extract_top_level_limit`
+  helper drives clamping. Aggregations and MySQL `LIMIT offset, count` are
+  intentionally exempt.
 
 ### G8. SQL executor timeout cancels the future, not the database query
 - **File:** `src/core/sql_executor.py`
@@ -143,7 +154,10 @@ order, not severity alone.
   shorter timeout and asserts the server kills it (server-side cancellation),
   not just the client coroutine.
 - **Effort:** M
-- [ ] Done
+- [x] Done — code already does `SET LOCAL statement_timeout` (PG) and
+  `threading.Timer(...).interrupt()` (SQLite); added
+  `tests/test_sql_executor_integration.py` covering both paths (PG test is
+  gated on `DATABASE_URL`). MySQL is out of product scope.
 
 ---
 
