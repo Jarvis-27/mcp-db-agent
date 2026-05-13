@@ -37,6 +37,7 @@ from src.auth.user_store import UserStore
 from src.config import settings
 from src.core.drain import DrainState
 from src.core.heartbeat import HeartbeatMonitor
+from src.core.observability import init_tracing, shutdown_tracing
 from src.core.pipeline_factory import PipelineFactory
 from src.core.query_log import QueryLog
 from src.email_sender import make_email_sender
@@ -62,6 +63,17 @@ CORS_ALLOW_HEADERS: list[str] = [
     "X-Request-ID",
 ]
 CORS_EXPOSE_HEADERS: list[str] = ["X-Request-ID"]
+
+
+def _otel_set_request_id(span, scope) -> None:  # type: ignore[no-untyped-def]
+    """FastAPI server_request_hook — copy request_id_var onto the auto-instrumented span."""
+    if span is None or not span.is_recording():
+        return
+    from src.middleware.request_id import request_id_var
+
+    rid = request_id_var.get()
+    if rid:
+        span.set_attribute("request.id", rid)
 
 
 def _enable_sqlite_wal(engine) -> None:
@@ -237,6 +249,18 @@ class ResourceMetadataChallengeAliasMiddleware:
 async def lifespan(app: Starlette):
     """Unified lifespan — starts all shared resources, tears them down on exit."""
 
+    # 0. Initialize OpenTelemetry tracing (G16) before any engines are built,
+    # so SQLAlchemy auto-instrumentation can attach to engines created below.
+    init_tracing(settings)
+    if settings.otel_enabled:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(
+            api_app,
+            excluded_urls="health/live,health/ready",
+            server_request_hook=_otel_set_request_id,
+        )
+
     # 1. Build cipher
     keys = settings.credential_encryption_keys_list()
     if not keys:
@@ -255,6 +279,14 @@ async def lifespan(app: Starlette):
     auth_engine = create_engine(settings.auth_database_url, pool_pre_ping=True)
     if settings.auth_database_url.startswith("sqlite"):
         _enable_sqlite_wal(auth_engine)
+    if settings.otel_enabled:
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+        SQLAlchemyInstrumentor().instrument(
+            engine=auth_engine,
+            enable_commenter=True,
+            commenter_options={"opentelemetry_values": True},
+        )
 
     # 3. Run migrations in development; refuse to start in production if behind
     if settings.environment == "development":
@@ -313,7 +345,7 @@ async def lifespan(app: Starlette):
         max_workers=settings.query_pool_size, thread_name_prefix="sql-exec"
     )
     query_log = QueryLog(engine=auth_engine)
-    factory = PipelineFactory(settings, executor_pool)
+    factory = PipelineFactory(settings, executor_pool, instrument_engines=settings.otel_enabled)
 
     # 5. Build TokenStore and EmailSender
     token_store = TokenStore(
@@ -392,6 +424,7 @@ async def lifespan(app: Starlette):
             # statement_timeout / SQLite interrupt() from G8 kills it.
             executor_pool.shutdown(wait=False, cancel_futures=True)
             auth_engine.dispose()
+            shutdown_tracing()
 
 
 # ---------------------------------------------------------------------------

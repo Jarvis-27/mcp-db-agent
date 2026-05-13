@@ -6,7 +6,10 @@ import anthropic
 import groq
 
 from src.config import UserSettings
+from src.core.observability import get_tracer
 from src.core.schema_inspector import SchemaInspector
+
+_tracer = get_tracer(__name__)
 
 
 class SQLGenerator:
@@ -53,26 +56,51 @@ class SQLGenerator:
 
     async def _call_llm(self, prompt: str) -> str:
         """Send *prompt* to the configured LLM and return cleaned SQL."""
-        if isinstance(self._client, groq.AsyncGroq):
-            groq_response = await self._client.chat.completions.create(
-                model=self._settings.groq_model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": "You are a SQL expert. Return only SQL."},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            raw_sql = groq_response.choices[0].message.content or ""
-        else:
-            anthropic_response = await self._client.messages.create(
-                model=self._settings.claude_model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            block = anthropic_response.content[0]
-            raw_sql = block.text if isinstance(block, anthropic.types.TextBlock) else ""
+        with _tracer.start_as_current_span("llm.generate") as span:
+            span.set_attribute("gen_ai.request.max_tokens", 1024)
+            if isinstance(self._client, groq.AsyncGroq):
+                span.set_attribute("gen_ai.system", "groq")
+                span.set_attribute("gen_ai.request.model", self._settings.groq_model)
+                groq_response = await self._client.chat.completions.create(
+                    model=self._settings.groq_model,
+                    max_tokens=1024,
+                    messages=[
+                        {"role": "system", "content": "You are a SQL expert. Return only SQL."},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                raw_sql = groq_response.choices[0].message.content or ""
+                try:
+                    if groq_response.usage is not None:
+                        span.set_attribute(
+                            "gen_ai.usage.input_tokens", groq_response.usage.prompt_tokens
+                        )
+                        span.set_attribute(
+                            "gen_ai.usage.output_tokens", groq_response.usage.completion_tokens
+                        )
+                except AttributeError:
+                    pass
+            else:
+                span.set_attribute("gen_ai.system", "anthropic")
+                span.set_attribute("gen_ai.request.model", self._settings.claude_model)
+                anthropic_response = await self._client.messages.create(
+                    model=self._settings.claude_model,
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                block = anthropic_response.content[0]
+                raw_sql = block.text if isinstance(block, anthropic.types.TextBlock) else ""
+                try:
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", anthropic_response.usage.input_tokens
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens", anthropic_response.usage.output_tokens
+                    )
+                except AttributeError:
+                    pass
 
-        return _clean_sql(raw_sql)
+            return _clean_sql(raw_sql)
 
 
 def _clean_sql(sql: str) -> str:

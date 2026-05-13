@@ -130,6 +130,24 @@ class Settings(BaseSettings):
         ""  # backend callback URL, e.g. https://app.example.com/api/v1/account/mcp-oauth/callback
     )
 
+    # ── OpenTelemetry tracing (G16) ───────────────────────────────────
+    otel_enabled: bool = False
+    otel_service_name: str = "mcp-db-agent"
+    otel_otlp_endpoint: str = "http://localhost:4317"
+    otel_otlp_protocol: Literal["grpc", "http"] = "grpc"
+    otel_otlp_insecure: bool = True
+    otel_sampler_ratio: float = 1.0
+    otel_capture_sql_text: bool = False
+
+    @field_validator("otel_sampler_ratio")
+    @classmethod
+    def _clamp_otel_sampler_ratio(cls, v: float) -> float:
+        if v < 0.0:
+            return 0.0
+        if v > 1.0:
+            return 1.0
+        return v
+
     @field_validator("credential_encryption_keys")
     @classmethod
     def _check_keys(cls, v: str, info) -> str:

@@ -1,11 +1,16 @@
 """SQL execution layer — runs validated queries against the database."""
 
 import asyncio
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from sqlalchemy import Engine, text
+
+from src.core.observability import get_tracer, should_capture_sql
+
+_tracer = get_tracer(__name__)
 
 
 class SQLExecutor:
@@ -21,11 +26,18 @@ class SQLExecutor:
         async callers are not blocked. Exceptions are intentionally not caught
         here — the SelfCorrector layer is responsible for retries.
         """
-        loop = asyncio.get_running_loop()
-        return await asyncio.wait_for(
-            loop.run_in_executor(self._pool, partial(self._run_query, sql)),
-            timeout=float(self._timeout),
-        )
+        with _tracer.start_as_current_span("db.execute") as span:
+            span.set_attribute("db.system", self._engine.dialect.name)
+            span.set_attribute("db.statement.hash", hashlib.sha256(sql.encode()).hexdigest()[:16])
+            if should_capture_sql():
+                span.set_attribute("db.statement", sql)
+            loop = asyncio.get_running_loop()
+            rows = await asyncio.wait_for(
+                loop.run_in_executor(self._pool, partial(self._run_query, sql)),
+                timeout=float(self._timeout),
+            )
+            span.set_attribute("db.rows_affected", len(rows))
+            return rows
 
     def _run_query(self, sql: str) -> list[dict[str, object]]:
         dialect_name = self._engine.dialect.name

@@ -311,7 +311,17 @@ order, not severity alone.
   span, the schema-introspect span, the LLM span (with token counts), the
   SQL execution span, and the corrector retries (if any).
 - **Effort:** L
-- [ ] Done
+- [x] Done — `src/core/observability.py` owns the SDK lifecycle; FastAPI +
+  SQLAlchemy auto-instrumentation wired through the lifespan; manual spans on
+  `mcp.ask_database`, `schema.get_full_schema`, `corrector.execute_with_correction`
+  (with per-attempt children, `sql.validate`, `llm.fix_sql`), `llm.generate`
+  (with `gen_ai.usage.*` token counts for Anthropic + Groq), `db.execute`
+  (sha256 hash of SQL by default; `OTEL_CAPTURE_SQL_TEXT=true` for raw).
+  Off by default (`OTEL_ENABLED=false`); OTLP exporter selectable gRPC/HTTP.
+  Acceptance covered by `tests/test_observability.py` (9 cases) +
+  `tests/test_observability_disabled.py` smoke.
+- **Follow-up:** OTel metrics + Prometheus endpoint deliberately deferred —
+  per-user cost roll-up uses span-attribute aggregation at the backend.
 
 ### G17. Request ID not propagated into LLM/SQL paths
 - **File:** `RequestIDMiddleware` exists (`src/app.py:498`), but `SQLGenerator`

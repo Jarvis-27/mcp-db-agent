@@ -10,6 +10,10 @@ from sqlalchemy.engine.interfaces import (
     ReflectedPrimaryKeyConstraint,
 )
 
+from src.core.observability import get_tracer
+
+_tracer = get_tracer(__name__)
+
 
 class SchemaInspector:
     def __init__(self, engine: Engine, cache_ttl_seconds: int = 600) -> None:
@@ -33,8 +37,10 @@ class SchemaInspector:
         independently atomic in CPython; a racing reader will see at worst a
         transient mix of fresh cache pointer + fresh inspector, both safe.
         """
-        self._schema_cache = None
-        self._inspector = inspect(self._engine)
+        with _tracer.start_as_current_span("schema.refresh") as span:
+            self._schema_cache = None
+            self._inspector = inspect(self._engine)
+            span.set_attribute("schema.refreshed", True)
 
     def get_table_names(self) -> list[str]:
         return self._inspector.get_table_names()
@@ -58,14 +64,19 @@ class SchemaInspector:
         return [row[0] for row in rows]
 
     def get_full_schema(self) -> str:
-        if self._schema_cache is not None:
-            cached_text, ts = self._schema_cache
-            if time.monotonic() - ts < self._cache_ttl:
-                return cached_text
+        with _tracer.start_as_current_span("schema.get_full_schema") as span:
+            if self._schema_cache is not None:
+                cached_text, ts = self._schema_cache
+                if time.monotonic() - ts < self._cache_ttl:
+                    span.set_attribute("schema.cache_hit", True)
+                    return cached_text
 
-        text_result = self._build_full_schema()
-        self._schema_cache = (text_result, time.monotonic())
-        return text_result
+            span.set_attribute("schema.cache_hit", False)
+            text_result = self._build_full_schema()
+            # Count from the built text to avoid a second inspector call.
+            span.set_attribute("schema.table_count", text_result.count("TABLE: "))
+            self._schema_cache = (text_result, time.monotonic())
+            return text_result
 
     def _build_full_schema(self) -> str:
         lines: list[str] = []

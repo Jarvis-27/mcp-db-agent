@@ -17,12 +17,17 @@ if str(_project_root) not in sys.path:
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool, ToolAnnotations
 
+from opentelemetry.trace import Status, StatusCode
+
 from src.auth.middleware import user_config_var
 from src.config import settings
 from src.entitlements.service import EntitlementService
 from src.core.logger import get_logger
+from src.core.observability import add_request_id, get_tracer
 from src.core.pipeline_factory import PipelineFactory, PipelineComponents
 from src.resources.schema_overview import get_schema_overview
+
+_tracer = get_tracer(__name__)
 
 from src.tools.describe_schema import describe_schema as _describe_schema
 from src.tools.get_sample_data import get_sample_data as _get_sample_data
@@ -244,188 +249,239 @@ async def ask_database(question: str) -> str:
     Args:
         question: Plain-English question about the data.
     """
-    # --- Drain gate (G10) — refuse new work once the lifespan flips the flag ---
-    if _drain_state is not None and _drain_state.draining:
-        return json.dumps(
-            {
-                "error": "Service is shutting down",
-                "code": "service_draining",
-                "retry_after_seconds": 30,
-                "suggestion": "Retry in a few moments — a new worker will pick up the request.",
-            },
-            indent=2,
-        )
+    with _tracer.start_as_current_span("mcp.ask_database") as span:
+        span.set_attribute("mcp.tool.name", "ask_database")
+        add_request_id(span)
 
-    user_id = _current_user_id()
-    api_key_id = _current_api_key_id()
-    query_log = _get_query_log()
-
-    cache_key = (user_id, question.lower().strip())
-    now = time.monotonic()
-
-    _log.info(
-        "ask_database",
-        extra={
-            "fields": {
-                "tool": "ask_database",
-                "event": "started",
-                "question": question,
-                "user_id": user_id,
-            }
-        },
-    )
-
-    # --- Cache hit ---
-    if cache_key in _cache:
-        cached_result, cached_at = _cache[cache_key]
-        if now - cached_at < CACHE_TTL:
-            payload = json.loads(cached_result)
-            payload["cached"] = True
-            return json.dumps(payload, indent=2)
-
-    # --- Burst rate limit (G5) BEFORE quota / pipeline resolution ---
-    if _mcp_limiter is not None:
-        allowed, retry_after = await _mcp_limiter.acquire(user_id)
-        if not allowed:
-            _log.warning(
-                "ask_database",
-                extra={
-                    "fields": {
-                        "tool": "ask_database",
-                        "event": "rate_limited",
-                        "user_id": user_id,
-                        "retry_after_seconds": round(retry_after, 2),
-                    }
-                },
-            )
+        # --- Drain gate (G10) — refuse new work once the lifespan flips the flag ---
+        if _drain_state is not None and _drain_state.draining:
             return json.dumps(
                 {
-                    "error": "Rate limit exceeded",
-                    "code": "burst_limit",
-                    "retry_after_seconds": round(retry_after, 2),
-                    "limit": _mcp_limiter.capacity,
-                    "window_seconds": _mcp_limiter.window_seconds,
-                    "suggestion": (
-                        "Wait the retry-after interval before sending more questions. "
-                        "Configure MCP_BURST_CAPACITY/MCP_BURST_WINDOW_SECONDS to tune."
-                    ),
+                    "error": "Service is shutting down",
+                    "code": "service_draining",
+                    "retry_after_seconds": 30,
+                    "suggestion": "Retry in a few moments — a new worker will pick up the request.",
                 },
                 indent=2,
             )
 
-    # --- Enforce daily quota BEFORE pipeline resolution ---
-    quota_snapshot = None
-    entitlement = None
-    warning_level = None
+        user_id = _current_user_id()
+        span.set_attribute("mcp.user_id", user_id)
+        api_key_id = _current_api_key_id()
+        query_log = _get_query_log()
 
-    if _user_store is not None:
-        quota_snapshot = _user_store.consume_daily_query_quota(user_id)
-        entitlement = _entitlements.check_query_quota(
-            quota_snapshot.plan_code,
-            max(quota_snapshot.daily_count - 1, 0),
-        )
-        warning_level = _entitlements.quota_warning_level(
-            quota_snapshot.plan_code,
-            quota_snapshot.daily_count,
-        )
-        if not entitlement.allowed:
-            _log.warning(
-                "ask_database",
-                extra={
-                    "fields": {
-                        "tool": "ask_database",
-                        "event": "quota_exceeded",
-                        "user_id": user_id,
-                        "plan_code": entitlement.plan_code,
-                        "daily_count": quota_snapshot.daily_count,
-                        "quota": entitlement.limit,
-                        "warning_level": warning_level,
-                        "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
-                    }
-                },
-            )
-            return json.dumps(
-                {
-                    "error": "Daily query quota exceeded",
-                    "quota": entitlement.limit,
-                    "code": entitlement.reason,
-                    "plan_code": entitlement.plan_code,
-                    "current": quota_snapshot.daily_count,
-                    "limit": entitlement.limit,
-                    "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
-                    "warning_level": warning_level,
-                    "suggestion": (
-                        "Your daily quota resets at midnight UTC. "
-                        "Upgrade your plan or try again after the reset."
-                    ),
-                },
-                indent=2,
-            )
+        cache_key = (user_id, question.lower().strip())
+        now = time.monotonic()
 
-    # --- Resolve pipeline ---
-    pipeline = await _get_pipeline()
-
-    # Quota snapshot fields used by every log path — assigned up-front so the
-    # CancelledError handler below can reuse them without races.
-    plan_code = quota_snapshot.plan_code if quota_snapshot is not None else None
-    daily_count = quota_snapshot.daily_count if quota_snapshot is not None else None
-    daily_limit = entitlement.limit if entitlement is not None else None
-
-    # --- Execute pipeline ---
-    start = time.monotonic()
-    try:
-        result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
-    except asyncio.CancelledError:
-        # G10: the lifespan cancelled us mid-flight because the grace window
-        # expired. Log a terminal query_history row so the request is not lost
-        # to silence, then re-raise so ASGI machinery sees the cancellation.
-        cancel_duration_ms = int((time.monotonic() - start) * 1000)
-        query_log.log_query(
-            question=question,
-            sql="",
-            success=False,
-            row_count=0,
-            attempts=0,
-            duration_ms=cancel_duration_ms,
-            error="query cancelled by server shutdown",
-            error_code="shutdown_interrupted",
-            user_id=user_id,
-            api_key_id=api_key_id,
-            plan_code=plan_code,
-            daily_count=daily_count,
-            daily_limit=daily_limit,
-            warning_level=warning_level,
-        )
-        _log.warning(
+        _log.info(
             "ask_database",
             extra={
                 "fields": {
                     "tool": "ask_database",
-                    "event": "shutdown_interrupted",
+                    "event": "started",
                     "question": question,
                     "user_id": user_id,
-                    "execution_time_ms": cancel_duration_ms,
                 }
             },
         )
-        raise
-    duration_ms = int((time.monotonic() - start) * 1000)
 
-    sql: str = str(result["sql"])
-    attempts: int = cast(int, result["attempts"])
-    data: list[dict[str, object]] = cast(list[dict[str, object]], result["data"])
-    errors: list[str] = cast(list[str], result["errors"])
+        # --- Cache hit ---
+        if cache_key in _cache:
+            cached_result, cached_at = _cache[cache_key]
+            if now - cached_at < CACHE_TTL:
+                payload = json.loads(cached_result)
+                payload["cached"] = True
+                return json.dumps(payload, indent=2)
 
-    if result["success"]:
-        formatted = pipeline.formatter.format(sql, data, attempts)
+        # --- Burst rate limit (G5) BEFORE quota / pipeline resolution ---
+        if _mcp_limiter is not None:
+            allowed, retry_after = await _mcp_limiter.acquire(user_id)
+            if not allowed:
+                _log.warning(
+                    "ask_database",
+                    extra={
+                        "fields": {
+                            "tool": "ask_database",
+                            "event": "rate_limited",
+                            "user_id": user_id,
+                            "retry_after_seconds": round(retry_after, 2),
+                        }
+                    },
+                )
+                return json.dumps(
+                    {
+                        "error": "Rate limit exceeded",
+                        "code": "burst_limit",
+                        "retry_after_seconds": round(retry_after, 2),
+                        "limit": _mcp_limiter.capacity,
+                        "window_seconds": _mcp_limiter.window_seconds,
+                        "suggestion": (
+                            "Wait the retry-after interval before sending more questions. "
+                            "Configure MCP_BURST_CAPACITY/MCP_BURST_WINDOW_SECONDS to tune."
+                        ),
+                    },
+                    indent=2,
+                )
+
+        # --- Enforce daily quota BEFORE pipeline resolution ---
+        quota_snapshot = None
+        entitlement = None
+        warning_level = None
+
+        if _user_store is not None:
+            quota_snapshot = _user_store.consume_daily_query_quota(user_id)
+            entitlement = _entitlements.check_query_quota(
+                quota_snapshot.plan_code,
+                max(quota_snapshot.daily_count - 1, 0),
+            )
+            warning_level = _entitlements.quota_warning_level(
+                quota_snapshot.plan_code,
+                quota_snapshot.daily_count,
+            )
+            if not entitlement.allowed:
+                _log.warning(
+                    "ask_database",
+                    extra={
+                        "fields": {
+                            "tool": "ask_database",
+                            "event": "quota_exceeded",
+                            "user_id": user_id,
+                            "plan_code": entitlement.plan_code,
+                            "daily_count": quota_snapshot.daily_count,
+                            "quota": entitlement.limit,
+                            "warning_level": warning_level,
+                            "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
+                        }
+                    },
+                )
+                return json.dumps(
+                    {
+                        "error": "Daily query quota exceeded",
+                        "quota": entitlement.limit,
+                        "code": entitlement.reason,
+                        "plan_code": entitlement.plan_code,
+                        "current": quota_snapshot.daily_count,
+                        "limit": entitlement.limit,
+                        "reset_at": quota_snapshot.daily_quota_reset_at.isoformat(),
+                        "warning_level": warning_level,
+                        "suggestion": (
+                            "Your daily quota resets at midnight UTC. "
+                            "Upgrade your plan or try again after the reset."
+                        ),
+                    },
+                    indent=2,
+                )
+
+        # --- Resolve pipeline ---
+        pipeline = await _get_pipeline()
+
+        # Quota snapshot fields used by every log path — assigned up-front so the
+        # CancelledError handler below can reuse them without races.
+        plan_code = quota_snapshot.plan_code if quota_snapshot is not None else None
+        daily_count = quota_snapshot.daily_count if quota_snapshot is not None else None
+        daily_limit = entitlement.limit if entitlement is not None else None
+
+        # --- Execute pipeline ---
+        start = time.monotonic()
+        try:
+            result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
+        except asyncio.CancelledError:
+            # G10: the lifespan cancelled us mid-flight because the grace window
+            # expired. Log a terminal query_history row so the request is not lost
+            # to silence, then re-raise so ASGI machinery sees the cancellation.
+            cancel_duration_ms = int((time.monotonic() - start) * 1000)
+            span.set_status(Status(StatusCode.ERROR, "shutdown_interrupted"))
+            query_log.log_query(
+                question=question,
+                sql="",
+                success=False,
+                row_count=0,
+                attempts=0,
+                duration_ms=cancel_duration_ms,
+                error="query cancelled by server shutdown",
+                error_code="shutdown_interrupted",
+                user_id=user_id,
+                api_key_id=api_key_id,
+                plan_code=plan_code,
+                daily_count=daily_count,
+                daily_limit=daily_limit,
+                warning_level=warning_level,
+            )
+            _log.warning(
+                "ask_database",
+                extra={
+                    "fields": {
+                        "tool": "ask_database",
+                        "event": "shutdown_interrupted",
+                        "question": question,
+                        "user_id": user_id,
+                        "execution_time_ms": cancel_duration_ms,
+                    }
+                },
+            )
+            raise
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        sql: str = str(result["sql"])
+        attempts: int = cast(int, result["attempts"])
+        data: list[dict[str, object]] = cast(list[dict[str, object]], result["data"])
+        errors: list[str] = cast(list[str], result["errors"])
+        span.set_attribute("mcp.attempts", attempts)
+
+        if result["success"]:
+            span.set_attribute("mcp.row_count", len(data))
+            formatted = pipeline.formatter.format(sql, data, attempts)
+            query_log.log_query(
+                question=question,
+                sql=sql,
+                success=True,
+                row_count=len(data),
+                attempts=attempts,
+                duration_ms=duration_ms,
+                error=None,
+                user_id=user_id,
+                api_key_id=api_key_id,
+                plan_code=plan_code,
+                daily_count=daily_count,
+                daily_limit=daily_limit,
+                warning_level=warning_level,
+            )
+            _cache[cache_key] = (formatted, time.monotonic())
+            log_level = logging.WARNING if attempts > 1 else logging.INFO
+            _log.log(
+                log_level,
+                "ask_database",
+                extra={
+                    "fields": {
+                        "tool": "ask_database",
+                        "event": "completed",
+                        "question": question,
+                        "user_id": user_id,
+                        "generated_sql": sql,
+                        "execution_time_ms": duration_ms,
+                        "result_row_count": len(data),
+                        "attempts": attempts,
+                        "error": None,
+                        "plan_code": plan_code,
+                        "daily_count": daily_count,
+                        "daily_limit": daily_limit,
+                        "warning_level": warning_level,
+                    }
+                },
+            )
+            return formatted
+
+        last_error = errors[-1] if errors else "Query failed after maximum retries"
+        span.set_status(Status(StatusCode.ERROR, last_error[:200]))
+        formatted = pipeline.formatter.format_error(last_error, sql, errors)
         query_log.log_query(
             question=question,
             sql=sql,
-            success=True,
-            row_count=len(data),
+            success=False,
+            row_count=0,
             attempts=attempts,
             duration_ms=duration_ms,
-            error=None,
+            error=last_error,
             user_id=user_id,
             api_key_id=api_key_id,
             plan_code=plan_code,
@@ -433,10 +489,7 @@ async def ask_database(question: str) -> str:
             daily_limit=daily_limit,
             warning_level=warning_level,
         )
-        _cache[cache_key] = (formatted, time.monotonic())
-        log_level = logging.WARNING if attempts > 1 else logging.INFO
-        _log.log(
-            log_level,
+        _log.error(
             "ask_database",
             extra={
                 "fields": {
@@ -444,11 +497,11 @@ async def ask_database(question: str) -> str:
                     "event": "completed",
                     "question": question,
                     "user_id": user_id,
-                    "generated_sql": sql,
+                    "generated_sql": result["sql"],
                     "execution_time_ms": duration_ms,
-                    "result_row_count": len(data),
-                    "attempts": attempts,
-                    "error": None,
+                    "result_row_count": 0,
+                    "attempts": result["attempts"],
+                    "error": last_error,
                     "plan_code": plan_code,
                     "daily_count": daily_count,
                     "daily_limit": daily_limit,
@@ -457,45 +510,6 @@ async def ask_database(question: str) -> str:
             },
         )
         return formatted
-
-    last_error = errors[-1] if errors else "Query failed after maximum retries"
-    formatted = pipeline.formatter.format_error(last_error, sql, errors)
-    query_log.log_query(
-        question=question,
-        sql=sql,
-        success=False,
-        row_count=0,
-        attempts=attempts,
-        duration_ms=duration_ms,
-        error=last_error,
-        user_id=user_id,
-        api_key_id=api_key_id,
-        plan_code=plan_code,
-        daily_count=daily_count,
-        daily_limit=daily_limit,
-        warning_level=warning_level,
-    )
-    _log.error(
-        "ask_database",
-        extra={
-            "fields": {
-                "tool": "ask_database",
-                "event": "completed",
-                "question": question,
-                "user_id": user_id,
-                "generated_sql": result["sql"],
-                "execution_time_ms": duration_ms,
-                "result_row_count": 0,
-                "attempts": result["attempts"],
-                "error": last_error,
-                "plan_code": plan_code,
-                "daily_count": daily_count,
-                "daily_limit": daily_limit,
-                "warning_level": warning_level,
-            }
-        },
-    )
-    return formatted
 
 
 @mcp.tool(

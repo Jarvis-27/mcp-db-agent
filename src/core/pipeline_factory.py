@@ -57,12 +57,18 @@ class _DisposingTTLCache(TTLCache):
 
 
 class PipelineFactory:
-    def __init__(self, settings: Settings, executor_pool: ThreadPoolExecutor) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        executor_pool: ThreadPoolExecutor,
+        instrument_engines: bool = False,
+    ) -> None:
         self._settings = settings
         self._executor_pool = executor_pool
         self._cache: _DisposingTTLCache = _DisposingTTLCache(maxsize=100, ttl=3600)
         self._lock = asyncio.Lock()
         self._per_key_locks: dict[tuple, asyncio.Lock] = {}
+        self._instrument_engines = instrument_engines
 
     async def get(self, user_config: UserConfig) -> PipelineComponents:
         """Return cached pipeline for user_config, building one if needed."""
@@ -110,6 +116,15 @@ class PipelineFactory:
         # Dry-run connect — fail fast at build time rather than at first query
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+
+        if self._instrument_engines:
+            from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+            SQLAlchemyInstrumentor().instrument(
+                engine=engine,
+                enable_commenter=True,
+                commenter_options={"opentelemetry_values": True},
+            )
 
         inspector = SchemaInspector(
             engine, cache_ttl_seconds=self._settings.schema_cache_ttl_seconds

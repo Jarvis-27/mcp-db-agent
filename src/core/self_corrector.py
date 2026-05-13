@@ -3,11 +3,14 @@
 import asyncio
 import random
 
+from src.core.observability import get_tracer
 from src.core.schema_inspector import SchemaInspector
 from src.core.sql_executor import SQLExecutor
 from src.core.sql_generator import SQLGenerator
 from src.core.sql_validator import SQLValidator
 from src.config import UserSettings
+
+_tracer = get_tracer(__name__)
 
 
 # Substrings, lowercased, of errors the LLM has a reasonable chance of fixing
@@ -99,95 +102,116 @@ class SelfCorrector:
         - attempts (int): number of loop iterations used
         - errors (list[str]): accumulated error messages (always present)
         """
-        sql = await self._generator.generate(question, dialect)
-        errors_so_far: list[str] = []
-        chars_consumed = 0
-        schema_refreshed = False
-        attempt = 0
+        with _tracer.start_as_current_span("corrector.execute_with_correction") as parent_span:
+            parent_span.set_attribute("corrector.max_retries", self._max_retries)
+            sql = await self._generator.generate(question, dialect)
+            errors_so_far: list[str] = []
+            chars_consumed = 0
+            schema_refreshed = False
+            attempt = 0
 
-        while attempt < self._max_retries:
-            attempt += 1
+            while attempt < self._max_retries:
+                attempt += 1
+                with _tracer.start_as_current_span("corrector.attempt") as attempt_span:
+                    attempt_span.set_attribute("corrector.attempt", attempt)
 
-            # --- Validation ---
-            validation = self._validator.validate(sql)
-            if not validation.is_valid:
-                errors_so_far.append(validation.error or "Validation failed")
-                if chars_consumed > self._max_chars:
-                    errors_so_far.append(
-                        f"Aborted: per-request LLM budget exhausted "
-                        f"({chars_consumed} > {self._max_chars} chars)"
-                    )
-                    break
-                await self._sleep_backoff(attempt)
-                try:
-                    sql, used = await self._fix_sql(
-                        question, sql, validation.error or "Validation failed", errors_so_far
-                    )
-                    chars_consumed += used
-                except Exception as fix_exc:
-                    errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
-                    break
-                continue
+                    # --- Validation ---
+                    with _tracer.start_as_current_span("sql.validate") as v_span:
+                        validation = self._validator.validate(sql)
+                        v_span.set_attribute("validation.passed", validation.is_valid)
+                    if not validation.is_valid:
+                        errors_so_far.append(validation.error or "Validation failed")
+                        if chars_consumed > self._max_chars:
+                            errors_so_far.append(
+                                f"Aborted: per-request LLM budget exhausted "
+                                f"({chars_consumed} > {self._max_chars} chars)"
+                            )
+                            break
+                        await self._sleep_backoff(attempt)
+                        try:
+                            with _tracer.start_as_current_span("llm.fix_sql") as fix_span:
+                                fix_span.set_attribute("corrector.repair_for", "validation")
+                                sql, used = await self._fix_sql(
+                                    question,
+                                    sql,
+                                    validation.error or "Validation failed",
+                                    errors_so_far,
+                                )
+                            chars_consumed += used
+                        except Exception as fix_exc:
+                            errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
+                            break
+                        continue
 
-            # Use the LIMIT-injected or clamped version if the validator produced one
-            if validation.modified_sql:
-                sql = validation.modified_sql
+                    # Use the LIMIT-injected or clamped version if the validator produced one
+                    if validation.modified_sql:
+                        sql = validation.modified_sql
 
-            # --- Execution ---
-            try:
-                data = await self._executor.execute(sql)
-                return {
-                    "success": True,
-                    "sql": sql,
-                    "data": data,
-                    "attempts": attempt,
-                    "errors": errors_so_far,
-                }
-            except Exception as exc:
-                # asyncio.TimeoutError.__str__() returns "" in Python 3.11+,
-                # which gives the LLM no context to correct.  Use a fallback.
-                error_msg = str(exc) or "Query timed out"
-                errors_so_far.append(error_msg)
-                if not _is_llm_repairable(error_msg):
-                    errors_so_far.append(f"Aborted: non-retryable error category ({error_msg})")
-                    break
-
-                # G9: bust the cached schema once per request when the live DB
-                # tells us our cache is stale, so _fix_sql below sees fresh
-                # schema via generator.get_schema_context().
-                if (
-                    not schema_refreshed
-                    and self._inspector is not None
-                    and _is_schema_drift(error_msg)
-                ):
+                    # --- Execution ---
                     try:
-                        self._inspector.refresh()
-                        schema_refreshed = True
-                    except Exception as refresh_exc:
-                        errors_so_far.append(f"Schema refresh failed: {refresh_exc}")
+                        data = await self._executor.execute(sql)
+                        parent_span.set_attribute("corrector.final_attempts", attempt)
+                        parent_span.set_attribute("corrector.schema_refreshed", schema_refreshed)
+                        return {
+                            "success": True,
+                            "sql": sql,
+                            "data": data,
+                            "attempts": attempt,
+                            "errors": errors_so_far,
+                        }
+                    except Exception as exc:
+                        # asyncio.TimeoutError.__str__() returns "" in Python 3.11+,
+                        # which gives the LLM no context to correct.  Use a fallback.
+                        error_msg = str(exc) or "Query timed out"
+                        errors_so_far.append(error_msg)
+                        if not _is_llm_repairable(error_msg):
+                            errors_so_far.append(
+                                f"Aborted: non-retryable error category ({error_msg})"
+                            )
+                            break
 
-                if chars_consumed > self._max_chars:
-                    errors_so_far.append(
-                        f"Aborted: per-request LLM budget exhausted "
-                        f"({chars_consumed} > {self._max_chars} chars)"
-                    )
-                    break
-                await self._sleep_backoff(attempt)
-                try:
-                    sql, used = await self._fix_sql(question, sql, error_msg, errors_so_far)
-                    chars_consumed += used
-                except Exception as fix_exc:
-                    errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
-                    break
+                        # G9: bust the cached schema once per request when the live DB
+                        # tells us our cache is stale, so _fix_sql below sees fresh
+                        # schema via generator.get_schema_context().
+                        if (
+                            not schema_refreshed
+                            and self._inspector is not None
+                            and _is_schema_drift(error_msg)
+                        ):
+                            try:
+                                self._inspector.refresh()
+                                schema_refreshed = True
+                            except Exception as refresh_exc:
+                                errors_so_far.append(f"Schema refresh failed: {refresh_exc}")
 
-        # All retries exhausted
-        return {
-            "success": False,
-            "sql": sql,
-            "data": [],
-            "attempts": attempt,
-            "errors": errors_so_far,
-        }
+                        if chars_consumed > self._max_chars:
+                            errors_so_far.append(
+                                f"Aborted: per-request LLM budget exhausted "
+                                f"({chars_consumed} > {self._max_chars} chars)"
+                            )
+                            break
+                        await self._sleep_backoff(attempt)
+                        try:
+                            with _tracer.start_as_current_span("llm.fix_sql") as fix_span:
+                                fix_span.set_attribute("corrector.repair_for", "execution")
+                                sql, used = await self._fix_sql(
+                                    question, sql, error_msg, errors_so_far
+                                )
+                            chars_consumed += used
+                        except Exception as fix_exc:
+                            errors_so_far.append(f"Self-correction LLM call failed: {fix_exc}")
+                            break
+
+            # All retries exhausted
+            parent_span.set_attribute("corrector.final_attempts", attempt)
+            parent_span.set_attribute("corrector.schema_refreshed", schema_refreshed)
+            return {
+                "success": False,
+                "sql": sql,
+                "data": [],
+                "attempts": attempt,
+                "errors": errors_so_far,
+            }
 
     @staticmethod
     async def _sleep_backoff(attempt: int) -> None:

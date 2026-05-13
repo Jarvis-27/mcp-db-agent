@@ -151,6 +151,25 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 > (`uvicorn --workers 1`) or accept the worker-multiplied cap. Tracking: G4 in
 > `PRODUCTION_GAPS_PLAN.md`.
 
+### Observability (G16)
+
+Distributed traces are emitted via OTLP when `OTEL_ENABLED=true`. SQL bodies
+are hashed as `db.statement.hash` by default; set `OTEL_CAPTURE_SQL_TEXT=true`
+to record raw statements (privacy-sensitive). Tune `OTEL_SAMPLER_RATIO` in
+production (default 1.0 = sample every trace). On shutdown the SDK can take
+~30 s to flush pending spans, so orchestrator `terminationGracePeriodSeconds`
+should be ≥ `SHUTDOWN_GRACE_PERIOD_SECONDS + 35`.
+
+```env
+OTEL_ENABLED=false                          # off by default
+OTEL_SERVICE_NAME=mcp-db-agent
+OTEL_OTLP_ENDPOINT=http://localhost:4317    # OTel Collector
+OTEL_OTLP_PROTOCOL=grpc                     # or "http"
+OTEL_OTLP_INSECURE=true
+OTEL_SAMPLER_RATIO=1.0
+OTEL_CAPTURE_SQL_TEXT=false
+```
+
 ## Connecting MCP Clients (HTTP mode)
 
 After starting the server (`uvicorn src.app:app`), register a user:

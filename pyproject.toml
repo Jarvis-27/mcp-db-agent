@@ -23,6 +23,12 @@ dependencies = [
     "httpx>=0.28.0",
     "PyJWT[crypto]>=2.8.0",
     "tzdata>=2025.1; sys_platform == 'win32'",
+    "opentelemetry-api>=1.29.0",
+    "opentelemetry-sdk>=1.29.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.29.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.50b0",
 ]
 
 [dependency-groups]
