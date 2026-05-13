@@ -122,3 +122,76 @@ def test_join_query_passes(validator):
     sql = "SELECT u.id, o.id FROM users u JOIN orders o ON u.id = o.user_id LIMIT 10"
     result = validator.validate(sql)
     assert result.is_valid
+
+
+# ---------------------------------------------------------------------------
+# G11: Defense-in-depth denylist for system schemas / tables
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql, fragment",
+    [
+        # PostgreSQL system catalog
+        ("SELECT * FROM pg_catalog.pg_user", "pg_catalog"),
+        ("SELECT * FROM PG_CATALOG.pg_class", "pg_catalog"),
+        # ANSI / Postgres / MySQL information_schema
+        ("SELECT table_name FROM information_schema.tables", "information_schema"),
+        # MySQL credentials / metadata
+        ("SELECT host, user FROM mysql.user", "mysql"),
+        ("SELECT * FROM performance_schema.events_statements_current", "performance_schema"),
+        # SQL Server / MySQL `sys`
+        ("SELECT * FROM sys.dm_exec_sessions", "sys"),
+        # SQLite metadata tables (bare, no schema qualifier)
+        ("SELECT name FROM sqlite_master", "sqlite_master"),
+        ("SELECT * FROM Sqlite_Master", "sqlite_master"),
+        ("SELECT * FROM sqlite_sequence", "sqlite_sequence"),
+        ("SELECT * FROM sqlite_temp_master", "sqlite_temp_master"),
+    ],
+)
+def test_system_table_references_rejected(validator, sql, fragment):
+    result = validator.validate(sql)
+    assert not result.is_valid
+    assert fragment in result.error.lower()
+
+
+def test_system_table_rejected_even_when_inspector_surfaces_it():
+    """Defense-in-depth: G11 must not depend on get_table_names() filtering."""
+    inspector = MagicMock()
+    inspector.get_table_names.return_value = ["users", "sqlite_master"]
+    v = SQLValidator(inspector)
+    result = v.validate("SELECT name FROM sqlite_master")
+    assert not result.is_valid
+    assert "sqlite_master" in result.error
+
+
+def test_system_schema_rejected_in_join():
+    inspector = MagicMock()
+    inspector.get_table_names.return_value = ["users"]
+    v = SQLValidator(inspector)
+    result = v.validate(
+        "SELECT u.id FROM users u JOIN information_schema.columns c "
+        "ON u.id = c.ordinal_position"
+    )
+    assert not result.is_valid
+    assert "information_schema" in result.error.lower()
+
+
+def test_system_schema_rejected_inside_cte():
+    inspector = MagicMock()
+    inspector.get_table_names.return_value = ["users"]
+    v = SQLValidator(inspector)
+    result = v.validate(
+        "WITH x AS (SELECT usename FROM pg_catalog.pg_user) SELECT * FROM x"
+    )
+    assert not result.is_valid
+    assert "pg_catalog" in result.error.lower()
+
+
+def test_legitimate_schema_qualified_table_still_allowed():
+    """`public.users` must remain valid — the denylist is exact-match."""
+    inspector = MagicMock()
+    inspector.get_table_names.return_value = ["users"]
+    v = SQLValidator(inspector)
+    result = v.validate("SELECT * FROM public.users LIMIT 5")
+    assert result.is_valid is True, result.error

@@ -219,7 +219,13 @@ order, not severity alone.
 - **Acceptance:** Regression tests for each engine asserting the SELECT is
   rejected even if a future inspector change were to surface system tables.
 - **Effort:** S
-- [ ] Done
+- [x] Done — `_FORBIDDEN_SCHEMAS` / `_FORBIDDEN_TABLES` denylist in
+  `src/core/sql_validator.py` runs before the existence check via the new
+  `_extract_qualified_table_refs` helper. Regression suite in
+  `tests/test_sql_validator_dangerous.py` covers each engine and verifies
+  rejection even when the inspector is mocked to surface `sqlite_master`.
+  Quoted-identifier holes (`"pg_catalog"."pg_user"`) remain — tracked under
+  G21.
 
 ### G12. CORS uses wildcard methods + headers with `allow_credentials=True`
 - **File:** `src/app.py:489-495`
@@ -236,7 +242,9 @@ order, not severity alone.
 - **Acceptance:** Test of a preflight request from an allowed origin returns
   the explicit method/header set, not `*`.
 - **Effort:** S
-- [ ] Done
+- [x] Done — explicit `CORS_ALLOW_METHODS` / `CORS_ALLOW_HEADERS` /
+  `CORS_EXPOSE_HEADERS` constants in `src/app.py`; preflight and
+  `X-Request-ID` exposure verified by `tests/test_cors.py`.
 
 ### G13. No CI workflow
 - **File:** missing `.github/workflows/`.

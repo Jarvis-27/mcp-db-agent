@@ -51,6 +51,18 @@ log = logging.getLogger(__name__)
 # with api_app.state and src.server (see below).
 _drain_state = DrainState()
 
+# CORS policy — explicit method/header lists are required when
+# allow_credentials=True (CORS spec disallows wildcards in that case).
+CORS_ALLOW_METHODS: list[str] = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+CORS_ALLOW_HEADERS: list[str] = [
+    "Content-Type",
+    "Authorization",
+    "X-API-Key",
+    "X-Session-Token",
+    "X-Request-ID",
+]
+CORS_EXPOSE_HEADERS: list[str] = ["X-Request-ID"]
+
 
 def _enable_sqlite_wal(engine) -> None:
     """Enable WAL mode for an SQLite engine."""
@@ -527,8 +539,9 @@ app = Starlette(
             CORSMiddleware,
             allow_origins=settings.cors_allow_origins,
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=CORS_ALLOW_METHODS,
+            allow_headers=CORS_ALLOW_HEADERS,
+            expose_headers=CORS_EXPOSE_HEADERS,
         ),
         Middleware(MCPMountPathMiddleware),
         Middleware(RequestIDMiddleware),

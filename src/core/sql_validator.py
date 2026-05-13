@@ -26,6 +26,23 @@ _FORBIDDEN_FUNCTIONS = {
     "load_extension",
 }
 
+# Defense-in-depth (G11): system catalogs / metadata schemas are off-limits
+# even when the inspector happens to surface them. Schema names are checked
+# against the qualifier of `schema.table`; bare-name tables are checked
+# against the table identifier directly.
+_FORBIDDEN_SCHEMAS = {
+    "pg_catalog",
+    "information_schema",
+    "mysql",
+    "sys",
+    "performance_schema",
+}
+_FORBIDDEN_TABLES = {
+    "sqlite_master",
+    "sqlite_sequence",
+    "sqlite_temp_master",
+}
+
 _FORBIDDEN_STATEMENT_PATTERNS = [
     re.compile(r"\bCOPY\b.*\bFROM\s+PROGRAM\b", re.IGNORECASE | re.DOTALL),
     re.compile(r"\bCOPY\b.*\bTO\s+PROGRAM\b", re.IGNORECASE | re.DOTALL),
@@ -155,6 +172,24 @@ class SQLValidator:
             if re.search(rf"\b{keyword}\b", masked_upper):
                 return ValidationResult(is_valid=False, error="Write operations are not allowed")
 
+        # Check 1c (G11): Defense-in-depth — block references to system catalogs
+        # and SQLite metadata tables even if the inspector ever surfaces them.
+        # Today the existence check rejects these because get_table_names()
+        # doesn't expose system catalogs, but that's load-bearing on a single
+        # behavior in schema_inspector.py.  This denylist makes the rejection
+        # independent of the inspector.
+        for schema, table in _extract_qualified_table_refs(sql):
+            if schema and schema.lower() in _FORBIDDEN_SCHEMAS:
+                return ValidationResult(
+                    is_valid=False,
+                    error=f"Access to system schema '{schema}' is not allowed",
+                )
+            if table.lower() in _FORBIDDEN_TABLES:
+                return ValidationResult(
+                    is_valid=False,
+                    error=f"Access to system table '{table}' is not allowed",
+                )
+
         # Check 2: Verify all referenced tables exist
         # Exclude CTE aliases — they are valid references but not real DB tables.
         referenced = _extract_table_names(sql)
@@ -209,18 +244,27 @@ def _first_sql_keyword(sql: str) -> str:
     return match.group(1).upper() if match else ""
 
 
-def _extract_table_names(sql: str) -> list[str]:
-    """Extract table names from FROM and JOIN clauses using regex.
+_QUALIFIED_REF_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*)?([a-zA-Z_][a-zA-Z0-9_]*)",
+    re.IGNORECASE,
+)
 
-    Accepts an optional ``schema.`` qualifier and captures only the trailing
-    table identifier — schema names are not in ``get_table_names()`` and would
-    otherwise fail the existence check.
+
+def _extract_qualified_table_refs(sql: str) -> list[tuple[str, str]]:
+    """Return ``[(schema, table)]`` for every FROM/JOIN reference.
+
+    ``schema`` is the empty string when the reference is unqualified.
     """
-    pattern = re.compile(
-        r"\b(?:FROM|JOIN)\s+(?:[a-zA-Z_][a-zA-Z0-9_]*\s*\.\s*)?([a-zA-Z_][a-zA-Z0-9_]*)",
-        re.IGNORECASE,
-    )
-    return pattern.findall(sql)
+    return _QUALIFIED_REF_RE.findall(sql)
+
+
+def _extract_table_names(sql: str) -> list[str]:
+    """Extract table names from FROM and JOIN clauses.
+
+    Schema qualifiers are dropped — schema names are not in
+    ``get_table_names()`` and would otherwise fail the existence check.
+    """
+    return [table for _, table in _extract_qualified_table_refs(sql)]
 
 
 def _has_top_level_limit(sql: str) -> bool:
