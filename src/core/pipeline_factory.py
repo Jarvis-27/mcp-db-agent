@@ -118,7 +118,9 @@ class PipelineFactory:
         generator = SQLGenerator(user_settings, inspector)
         validator = SQLValidator(inspector, max_query_rows=user_settings.max_query_rows)
         executor = SQLExecutor(engine, user_settings, self._executor_pool)
-        corrector = SelfCorrector(generator, validator, executor, user_settings)
+        corrector = SelfCorrector(
+            generator, validator, executor, user_settings, inspector=inspector
+        )
         formatter = ResultFormatter()
 
         drivername = validated_url.drivername

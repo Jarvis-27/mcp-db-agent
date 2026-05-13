@@ -126,6 +126,7 @@ GROQ_MODEL=llama-3.3-70b-versatile
 MAX_QUERY_ROWS=100
 QUERY_TIMEOUT_SECONDS=30
 MAX_SELF_CORRECTION_RETRIES=3
+SHUTDOWN_GRACE_PERIOD_SECONDS=30      # how long to wait for in-flight queries on SIGTERM (G10)
 ```
 
 ### Hosted multi-tenant mode

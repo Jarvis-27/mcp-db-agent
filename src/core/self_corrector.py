@@ -3,6 +3,7 @@
 import asyncio
 import random
 
+from src.core.schema_inspector import SchemaInspector
 from src.core.sql_executor import SQLExecutor
 from src.core.sql_generator import SQLGenerator
 from src.core.sql_validator import SQLValidator
@@ -47,6 +48,29 @@ def _is_llm_repairable(error_msg: str) -> bool:
     return any(marker in lower for marker in _RETRYABLE_MARKERS)
 
 
+# Strict subset of _RETRYABLE_MARKERS — errors whose root cause is the cached
+# schema being out of date.  Type-mismatch / cast / timeout errors are NOT
+# here: they're query-author bugs, refreshing the schema can't help.
+_SCHEMA_DRIFT_MARKERS = (
+    "undefined table",
+    "undefined column",
+    "relation does not exist",
+    "column does not exist",
+    "ambiguous column",
+    "ambiguous reference",
+    "no such table",
+    "no such column",
+)
+
+
+def _is_schema_drift(error_msg: str) -> bool:
+    """Return True when *error_msg* indicates the cached schema is stale (G9)."""
+    if not error_msg:
+        return False
+    lower = error_msg.lower()
+    return any(marker in lower for marker in _SCHEMA_DRIFT_MARKERS)
+
+
 class SelfCorrector:
     def __init__(
         self,
@@ -54,10 +78,12 @@ class SelfCorrector:
         validator: SQLValidator,
         executor: SQLExecutor,
         settings: UserSettings,
+        inspector: SchemaInspector | None = None,
     ) -> None:
         self._generator = generator
         self._validator = validator
         self._executor = executor
+        self._inspector = inspector
         self._max_retries = settings.max_self_correction_retries
         self._max_chars = getattr(settings, "max_llm_chars_per_request", 40_000)
 
@@ -76,6 +102,7 @@ class SelfCorrector:
         sql = await self._generator.generate(question, dialect)
         errors_so_far: list[str] = []
         chars_consumed = 0
+        schema_refreshed = False
         attempt = 0
 
         while attempt < self._max_retries:
@@ -124,6 +151,21 @@ class SelfCorrector:
                 if not _is_llm_repairable(error_msg):
                     errors_so_far.append(f"Aborted: non-retryable error category ({error_msg})")
                     break
+
+                # G9: bust the cached schema once per request when the live DB
+                # tells us our cache is stale, so _fix_sql below sees fresh
+                # schema via generator.get_schema_context().
+                if (
+                    not schema_refreshed
+                    and self._inspector is not None
+                    and _is_schema_drift(error_msg)
+                ):
+                    try:
+                        self._inspector.refresh()
+                        schema_refreshed = True
+                    except Exception as refresh_exc:
+                        errors_so_far.append(f"Schema refresh failed: {refresh_exc}")
+
                 if chars_consumed > self._max_chars:
                     errors_so_far.append(
                         f"Aborted: per-request LLM budget exhausted "

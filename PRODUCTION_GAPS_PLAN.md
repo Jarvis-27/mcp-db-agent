@@ -174,7 +174,13 @@ order, not severity alone.
 - **Acceptance:** Integration test that drops a column mid-session and proves
   the next query refreshes the schema and succeeds without manual intervention.
 - **Effort:** M
-- [ ] Done
+- [x] Done — error-driven schema refresh wired through `SelfCorrector`;
+  `_SCHEMA_DRIFT_MARKERS` narrows the trigger set so type/timeout retries
+  don't pay the refresh cost. Acceptance test in
+  `tests/test_self_corrector_drift.py`.
+- **Follow-up:** validator-path drift (e.g. new table added out-of-band, LLM
+  references it, `SQLValidator` rejects with "Table 'X' does not exist") is
+  not covered — refresh only fires on executor errors today.
 
 ### G10. No graceful shutdown for in-flight queries
 - **File:** `src/app.py` lifespan, `src/core/sql_executor.py`.
@@ -190,7 +196,12 @@ order, not severity alone.
   receives a structured error response *and* sees the matching
   `query_history` row marked interrupted.
 - **Effort:** M
-- [ ] Done
+- [x] Done — `src/core/drain.py` `DrainState` + `src/middleware/drain_guard.py`;
+  lifespan flips the flag and waits up to `SHUTDOWN_GRACE_PERIOD_SECONDS`
+  (default 30 s) before cancelling stragglers. `ask_database` catches the
+  `CancelledError` and writes a `query_history` row with new `error_code`
+  column = `shutdown_interrupted`. `/health/ready` surfaces drain so the LB
+  stops sending traffic before SIGTERM. Schema migration `0011`.
 
 ### G11. Defense-in-depth: system tables are only blocked by table-existence
 - **File:** `src/core/sql_validator.py:160-167`

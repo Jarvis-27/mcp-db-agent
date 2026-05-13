@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     max_query_rows: int = 100
     query_timeout_seconds: int = 30
     max_self_correction_retries: int = 3
+    # Grace window for in-flight queries to drain on shutdown (G10). After
+    # this many seconds the lifespan cancels still-active request tasks so
+    # their CancelledError handlers can log terminal query_history rows.
+    shutdown_grace_period_seconds: float = 30.0
     # Soft per-request LLM cost ceiling (G6). Counted as prompt+response characters;
     # at ~4 chars/token this is ≈ 10k tokens. SelfCorrector aborts when exceeded.
     max_llm_chars_per_request: int = 40_000

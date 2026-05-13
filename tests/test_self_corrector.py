@@ -344,3 +344,169 @@ async def test_aborts_on_char_budget_exhaustion():
     assert any("budget exhausted" in e.lower() for e in result["errors"])
     # Should have stopped well before max_retries.
     assert result["attempts"] < 5
+
+
+# ---------------------------------------------------------------------------
+# G9: schema-drift triggers SchemaInspector.refresh() before LLM repair
+# ---------------------------------------------------------------------------
+
+
+async def test_schema_drift_triggers_refresh_before_repair():
+    """UndefinedTable error must call inspector.refresh() exactly once
+    before the LLM repair attempt."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM stale_table")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT id FROM users LIMIT 10;")
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        side_effect=[RuntimeError("undefined table 'stale_table'"), [{"id": 1}]]
+    )
+
+    inspector = MagicMock()
+    corrector = SelfCorrector(
+        generator, validator, executor, _make_settings(3), inspector=inspector
+    )
+    result = await corrector.execute_with_correction("list users", "sqlite")
+
+    assert result["success"] is True
+    inspector.refresh.assert_called_once()
+    generator.generate_from_prompt.assert_awaited_once()
+
+
+async def test_schema_drift_refresh_is_once_per_request():
+    """Two drift errors in one request → refresh fires only on the first."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM s1")
+    generator.generate_from_prompt = AsyncMock(side_effect=["SELECT * FROM s2", "SELECT 1"])
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        side_effect=[
+            RuntimeError("no such table: s1"),
+            RuntimeError("no such column: x"),
+            [{"id": 1}],
+        ]
+    )
+
+    inspector = MagicMock()
+    corrector = SelfCorrector(
+        generator, validator, executor, _make_settings(5), inspector=inspector
+    )
+    result = await corrector.execute_with_correction("q", "sqlite")
+
+    assert result["success"] is True
+    inspector.refresh.assert_called_once()
+
+
+async def test_type_mismatch_does_not_trigger_refresh():
+    """Type errors are retryable but not schema drift — refresh must NOT fire."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT CAST(name AS int) FROM users")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT id FROM users")
+    generator.get_schema_context = MagicMock(return_value="users(id, name)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(side_effect=[RuntimeError("type mismatch"), [{"id": 1}]])
+
+    inspector = MagicMock()
+    corrector = SelfCorrector(
+        generator, validator, executor, _make_settings(3), inspector=inspector
+    )
+    await corrector.execute_with_correction("q", "sqlite")
+    inspector.refresh.assert_not_called()
+
+
+async def test_schema_drift_without_inspector_is_noop():
+    """Backwards-compat: without an inspector wired, drift still triggers
+    LLM repair — just without a refresh, and without crashing."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM stale")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT 1")
+    generator.get_schema_context = MagicMock(return_value="")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]]
+    )
+
+    corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
+    result = await corrector.execute_with_correction("q", "sqlite")
+    assert result["success"] is True
+
+
+async def test_refresh_failure_does_not_abort_request():
+    """If inspector.refresh() itself raises, the request still gets one
+    LLM repair attempt against the stale schema."""
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=ValidationResult(is_valid=True))
+
+    generator = MagicMock()
+    generator.generate = AsyncMock(return_value="SELECT * FROM stale")
+    generator.generate_from_prompt = AsyncMock(return_value="SELECT id FROM users")
+    generator.get_schema_context = MagicMock(return_value="users(id)")
+
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]]
+    )
+
+    inspector = MagicMock()
+    inspector.refresh = MagicMock(side_effect=RuntimeError("DB unreachable"))
+    corrector = SelfCorrector(
+        generator, validator, executor, _make_settings(3), inspector=inspector
+    )
+    result = await corrector.execute_with_correction("q", "sqlite")
+
+    assert result["success"] is True
+    assert any("Schema refresh failed" in e for e in result["errors"])
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "no such table: foo",
+        "no such column: bar",
+        "undefined table 'foo'",
+        "undefined column 'bar'",
+        "relation does not exist",
+        "column does not exist",
+        "ambiguous column reference",
+        "ambiguous reference to column 'x'",
+    ],
+)
+def test_is_schema_drift_true_for_drift_markers(msg):
+    from src.core.self_corrector import _is_schema_drift
+
+    assert _is_schema_drift(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "",
+        "type mismatch",
+        "could not be cast to integer",
+        "operator does not exist",
+        "query timed out",
+        "permission denied",
+    ],
+)
+def test_is_schema_drift_false_for_non_drift(msg):
+    from src.core.self_corrector import _is_schema_drift
+
+    assert _is_schema_drift(msg) is False

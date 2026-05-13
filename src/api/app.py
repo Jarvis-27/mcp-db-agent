@@ -1338,6 +1338,15 @@ async def health_ready(request: Request) -> dict:
     else:
         checks["llm_provider"] = "ok"
 
+    # 6. Drain state (G10) — flip readiness to fail while shutting down so
+    # the load balancer stops sending new traffic before SIGTERM tears down
+    # the executor.
+    drain_state = getattr(request.app.state, "drain_state", None)
+    if drain_state is not None and drain_state.draining:
+        checks["draining"] = "fail: draining"
+    else:
+        checks["draining"] = "ok"
+
     if any(v != "ok" for v in checks.values()):
         raise HTTPException(status_code=503, detail={"status": "fail", "checks": checks})
     return {"status": "ok", "checks": checks}

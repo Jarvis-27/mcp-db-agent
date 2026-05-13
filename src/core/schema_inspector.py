@@ -21,8 +21,17 @@ class SchemaInspector:
     def refresh(self) -> None:
         """Bust the schema cache and re-initialise the SQLAlchemy inspector.
 
-        Called from PipelineFactory.invalidate() and optionally exposed as an
-        MCP tool so operators can force a re-read after schema migrations.
+        Callers:
+        - ``PipelineFactory.invalidate()`` — operator-triggered after edits to
+          a user's stored connection metadata.
+        - ``SelfCorrector.execute_with_correction()`` — error-driven (G9),
+          fired once per request when the executor surfaces a schema-drift
+          error (UndefinedTable / UndefinedColumn / "no such ...").
+
+        Thread-safety: assumes a single asyncio task drives one corrector at
+        a time per cached engine.  The two attribute swaps below are
+        independently atomic in CPython; a racing reader will see at worst a
+        transient mix of fresh cache pointer + fresh inspector, both safe.
         """
         self._schema_cache = None
         self._inspector = inspect(self._engine)

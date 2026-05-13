@@ -1,5 +1,6 @@
 """MCP server entrypoint — wires all pipeline components and registers tools/resources."""
 
+import asyncio
 import json
 import logging
 import sys
@@ -35,6 +36,7 @@ _factory: PipelineFactory | None = None
 _query_log = None  # QueryLog | None — populated by src/app.py
 _user_store = None  # UserStore | None — populated by src/app.py
 _mcp_limiter = None  # PerUserSlidingWindow | None — populated by src/app.py
+_drain_state = None  # DrainState | None — populated by src/app.py
 
 from cachetools import TTLCache  # type: ignore[import-untyped]
 
@@ -242,6 +244,18 @@ async def ask_database(question: str) -> str:
     Args:
         question: Plain-English question about the data.
     """
+    # --- Drain gate (G10) — refuse new work once the lifespan flips the flag ---
+    if _drain_state is not None and _drain_state.draining:
+        return json.dumps(
+            {
+                "error": "Service is shutting down",
+                "code": "service_draining",
+                "retry_after_seconds": 30,
+                "suggestion": "Retry in a few moments — a new worker will pick up the request.",
+            },
+            indent=2,
+        )
+
     user_id = _current_user_id()
     api_key_id = _current_api_key_id()
     query_log = _get_query_log()
@@ -351,19 +365,56 @@ async def ask_database(question: str) -> str:
     # --- Resolve pipeline ---
     pipeline = await _get_pipeline()
 
+    # Quota snapshot fields used by every log path — assigned up-front so the
+    # CancelledError handler below can reuse them without races.
+    plan_code = quota_snapshot.plan_code if quota_snapshot is not None else None
+    daily_count = quota_snapshot.daily_count if quota_snapshot is not None else None
+    daily_limit = entitlement.limit if entitlement is not None else None
+
     # --- Execute pipeline ---
     start = time.monotonic()
-    result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
+    try:
+        result = await pipeline.corrector.execute_with_correction(question, pipeline.dialect)
+    except asyncio.CancelledError:
+        # G10: the lifespan cancelled us mid-flight because the grace window
+        # expired. Log a terminal query_history row so the request is not lost
+        # to silence, then re-raise so ASGI machinery sees the cancellation.
+        cancel_duration_ms = int((time.monotonic() - start) * 1000)
+        query_log.log_query(
+            question=question,
+            sql="",
+            success=False,
+            row_count=0,
+            attempts=0,
+            duration_ms=cancel_duration_ms,
+            error="query cancelled by server shutdown",
+            error_code="shutdown_interrupted",
+            user_id=user_id,
+            api_key_id=api_key_id,
+            plan_code=plan_code,
+            daily_count=daily_count,
+            daily_limit=daily_limit,
+            warning_level=warning_level,
+        )
+        _log.warning(
+            "ask_database",
+            extra={
+                "fields": {
+                    "tool": "ask_database",
+                    "event": "shutdown_interrupted",
+                    "question": question,
+                    "user_id": user_id,
+                    "execution_time_ms": cancel_duration_ms,
+                }
+            },
+        )
+        raise
     duration_ms = int((time.monotonic() - start) * 1000)
 
     sql: str = str(result["sql"])
     attempts: int = cast(int, result["attempts"])
     data: list[dict[str, object]] = cast(list[dict[str, object]], result["data"])
     errors: list[str] = cast(list[str], result["errors"])
-
-    plan_code = quota_snapshot.plan_code if quota_snapshot is not None else None
-    daily_count = quota_snapshot.daily_count if quota_snapshot is not None else None
-    daily_limit = entitlement.limit if entitlement is not None else None
 
     if result["success"]:
         formatted = pipeline.formatter.format(sql, data, attempts)

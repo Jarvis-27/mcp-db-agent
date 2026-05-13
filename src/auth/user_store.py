@@ -144,6 +144,7 @@ class QueryHistory(Base):
     attempts = Column(Integer, nullable=False)
     duration_ms = Column(Integer, nullable=False)
     error = Column(Text, nullable=True)
+    error_code = Column(String(40), nullable=True)
     plan_code = Column(String(40), nullable=True)
     daily_count = Column(Integer, nullable=True)
     daily_limit = Column(Integer, nullable=True)

@@ -35,14 +35,21 @@ from src.auth.rate_limiter import PerUserSlidingWindow
 from src.auth.token_store import TokenStore
 from src.auth.user_store import UserStore
 from src.config import settings
+from src.core.drain import DrainState
 from src.core.heartbeat import HeartbeatMonitor
 from src.core.pipeline_factory import PipelineFactory
 from src.core.query_log import QueryLog
 from src.email_sender import make_email_sender
 from src.middleware.body_size import BodySizeLimitMiddleware
+from src.middleware.drain_guard import DrainGuardMiddleware
 from src.middleware.request_id import RequestIDMiddleware
 
 log = logging.getLogger(__name__)
+
+# Built at module-import time so the parent Starlette app can hold a stable
+# reference in DrainGuardMiddleware. The lifespan shares this same instance
+# with api_app.state and src.server (see below).
+_drain_state = DrainState()
 
 
 def _enable_sqlite_wal(engine) -> None:
@@ -318,17 +325,20 @@ async def lifespan(app: Starlette):
     api_app.state.cipher = cipher
     api_app.state.query_log = query_log
     api_app.state.heartbeat = heartbeat
+    api_app.state.drain_state = _drain_state
 
     # Also stash on the parent Starlette app's state
     app.state.user_store = user_store
     app.state.auth_key_cache = auth_key_cache
     app.state.heartbeat = heartbeat
+    app.state.drain_state = _drain_state
 
     # 7. Stash factory, query_log, user_store, and MCP burst limiter on server module
     server_module = importlib.import_module("src.server")
     server_module._factory = factory  # type: ignore[attr-defined]
     server_module._query_log = query_log  # type: ignore[attr-defined]
     server_module._user_store = user_store  # type: ignore[attr-defined]
+    server_module._drain_state = _drain_state  # type: ignore[attr-defined]
     server_module._mcp_limiter = PerUserSlidingWindow(  # type: ignore[attr-defined]
         capacity=settings.mcp_burst_capacity,
         window_seconds=settings.mcp_burst_window_seconds,
@@ -353,8 +363,21 @@ async def lifespan(app: Starlette):
             yield
         finally:
             log.info("Shutting down...")
+            _drain_state.begin_drain()
+            remaining = await _drain_state.wait_for_in_flight(
+                settings.shutdown_grace_period_seconds
+            )
+            if remaining:
+                log.warning(
+                    "drain_grace_expired_cancelling_in_flight",
+                    extra={"in_flight": remaining},
+                )
+                await _drain_state.cancel_remaining(settle_seconds=2.0)
             await heartbeat.stop()
             await factory.shutdown()
+            # cancel_futures only cancels queued (not-yet-started) futures;
+            # in-flight SQL keeps running on its thread until the DB-side
+            # statement_timeout / SQLite interrupt() from G8 kills it.
             executor_pool.shutdown(wait=False, cancel_futures=True)
             auth_engine.dispose()
 
@@ -509,6 +532,7 @@ app = Starlette(
         ),
         Middleware(MCPMountPathMiddleware),
         Middleware(RequestIDMiddleware),
+        Middleware(DrainGuardMiddleware, drain_state=_drain_state),
         Middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes),
     ],
 )
