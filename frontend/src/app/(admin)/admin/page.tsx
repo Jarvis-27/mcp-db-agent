@@ -1,8 +1,10 @@
 import Link from 'next/link'
-import { Activity, AlertTriangle, Gauge, Users } from 'lucide-react'
+import { Activity, AlertTriangle, Gauge, ShieldAlert, Users } from 'lucide-react'
 import { MetricCard } from '@/components/metric-card'
 import { PageHeader } from '@/components/page-header'
 import { Sparkline } from '@/components/admin/sparkline'
+import { CopyButton } from '@/components/copy-button'
+import { backendFetch } from '@/lib/api/backend'
 import { getAdminOverview, getAdminQueries } from '@/lib/api/admin'
 import {
   formatDuration,
@@ -10,10 +12,23 @@ import {
   formatPercent,
   formatRelativeTime,
 } from '@/lib/admin-format'
+import type { AccountStatusResponse } from '@/types/api'
+
+async function _getOutboundIp(): Promise<string | null> {
+  const res = await backendFetch('/v1/account/status', { cache: 'no-store' })
+  if (!res.ok) return null
+  try {
+    const data: AccountStatusResponse = await res.json()
+    return data.static_outbound_ip ?? null
+  } catch {
+    return null
+  }
+}
 
 export default async function AdminOverviewPage() {
   const overview = await getAdminOverview()
   const recentErrors = await getAdminQueries({ success: 'false', limit: 5 })
+  const staticOutboundIp = await _getOutboundIp()
 
   if (!overview) {
     return (
@@ -82,6 +97,31 @@ export default async function AdminOverviewPage() {
           detail={`p50: ${formatDuration(overview.p50_duration_ms_today)}`}
         />
       </div>
+
+      <section className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-5 py-3 text-sm">
+        <div className="flex items-center gap-3">
+          <ShieldAlert className="h-4 w-4 text-amber-600" />
+          <div>
+            <p className="font-medium">Outbound IP</p>
+            <p className="text-xs text-muted-foreground">
+              Shown to end users on the connect-database form so they can
+              allowlist it.
+            </p>
+          </div>
+        </div>
+        {staticOutboundIp ? (
+          <div className="flex items-center gap-2">
+            <span className="rounded-md border border-border bg-background px-2 py-1 font-mono text-xs">
+              {staticOutboundIp}
+            </span>
+            <CopyButton text={staticOutboundIp} />
+          </div>
+        ) : (
+          <span className="font-mono text-xs text-muted-foreground">
+            (not configured)
+          </span>
+        )}
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-6">
         <div className="flex items-baseline justify-between">

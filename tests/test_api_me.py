@@ -54,6 +54,7 @@ def app_state():
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
         mock_settings.user_session_ttl_hours = 24
+        mock_settings.static_outbound_ip = ""
         yield
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -232,3 +233,75 @@ def test_revoke_api_key(client, registered_user):
     api_app.state.auth_key_cache.clear()
     me = client.get("/v1/account", headers={"x-api-key": registered_user["api_key"]})
     assert me.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Static outbound IP surfacing
+# ---------------------------------------------------------------------------
+
+
+def test_account_status_static_outbound_ip_default_null(client, registered_user):
+    resp = client.get(
+        "/v1/account/status",
+        headers={"x-session-token": registered_user["session_token"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "static_outbound_ip" in data
+    assert data["static_outbound_ip"] is None
+
+
+def test_account_status_returns_configured_static_outbound_ip(client, registered_user):
+    import src.api.app as app_module
+
+    with patch.object(app_module.settings, "static_outbound_ip", "203.0.113.42"):
+        resp = client.get(
+            "/v1/account/status",
+            headers={"x-session-token": registered_user["session_token"]},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["static_outbound_ip"] == "203.0.113.42"
+
+
+# ---------------------------------------------------------------------------
+# _dry_run_connect error shape
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_connect_network_error_returns_network_unreachable_code():
+    import pytest
+    from fastapi import HTTPException
+
+    from src.api import app as app_module
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise OSError("connection timed out")
+
+    with patch("src.api.app.create_engine", side_effect=_raise_timeout):
+        with pytest.raises(HTTPException) as exc_info:
+            app_module._dry_run_connect("postgresql://u:p@h/d")
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail["code"] == "network_unreachable"
+    assert "firewall" in exc_info.value.detail["message"].lower()
+
+
+def test_dry_run_connect_auth_error_returns_connection_failed_code():
+    import pytest
+    from fastapi import HTTPException
+
+    from src.api import app as app_module
+
+    def _raise_auth(*_args, **_kwargs):
+        raise OSError("FATAL: password authentication failed for user")
+
+    with patch("src.api.app.create_engine", side_effect=_raise_auth):
+        with pytest.raises(HTTPException) as exc_info:
+            app_module._dry_run_connect("postgresql://u:p@h/d")
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail["code"] == "connection_failed"
+    assert "credentials" in exc_info.value.detail["message"].lower()

@@ -96,6 +96,7 @@ class AccountStatusResponse(BaseModel):
     next_step: str
     blockers: list[str]
     can_issue_api_key: bool
+    static_outbound_ip: str | None = None
 
 
 class AccountResponse(BaseModel):

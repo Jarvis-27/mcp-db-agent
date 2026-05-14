@@ -4,7 +4,37 @@ import { redirect } from 'next/navigation'
 import { backendFetch } from '@/lib/api/backend'
 import type { SetupPayloadResponse } from '@/types/api'
 
-type State = { error?: string } | null
+type State = { error?: string; errorCode?: string } | null
+
+export async function getStaticOutboundIpAction(): Promise<string | null> {
+  const res = await backendFetch('/v1/account/status', { cache: 'no-store' })
+  if (!res.ok) return null
+  try {
+    const data = await res.json()
+    return typeof data?.static_outbound_ip === 'string' ? data.static_outbound_ip : null
+  } catch {
+    return null
+  }
+}
+
+function _extractErrorDetail(payload: unknown): { message: string; code?: string } {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'detail' in payload
+  ) {
+    const detail = (payload as { detail: unknown }).detail
+    if (typeof detail === 'string') return { message: detail }
+    if (detail && typeof detail === 'object') {
+      const d = detail as { message?: unknown; code?: unknown }
+      return {
+        message: typeof d.message === 'string' ? d.message : 'Unknown error.',
+        code: typeof d.code === 'string' ? d.code : undefined,
+      }
+    }
+  }
+  return { message: 'Unknown error.' }
+}
 
 export async function submitDatabaseAction(
   _prevState: State,
@@ -82,7 +112,8 @@ export async function submitDatabaseAction(
   if (res.status === 409) {
     try {
       const err = await res.json()
-      return { error: err.detail ?? 'Database already connected.' }
+      const detail = _extractErrorDetail(err)
+      return { error: detail.message || 'Database already connected.', errorCode: detail.code }
     } catch {
       return { error: 'Database already connected.' }
     }
@@ -90,10 +121,12 @@ export async function submitDatabaseAction(
 
   try {
     const err = await res.json()
+    const detail = _extractErrorDetail(err)
     return {
       error:
-        err.detail ??
+        detail.message ||
         'Could not connect to the database. Check the URL and try again.',
+      errorCode: detail.code,
     }
   } catch {
     return { error: 'Could not connect to the database. Check the URL and try again.' }

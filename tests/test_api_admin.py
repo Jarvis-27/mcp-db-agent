@@ -60,6 +60,7 @@ def app_state():
         mock_settings.app_base_url = "http://localhost:8000"
         mock_settings.frontend_base_url = "http://localhost:3000"
         mock_settings.user_session_ttl_hours = 24
+        mock_settings.static_outbound_ip = ""
 
         admin_settings.admin_emails_set.return_value = {_ADMIN_EMAIL}
         yield

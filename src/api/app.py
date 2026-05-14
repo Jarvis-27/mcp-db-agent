@@ -177,6 +177,18 @@ AuthedUser = Annotated[UserConfig, Depends(require_api_key)]
 AuthedSession = Annotated[UserSessionContext, Depends(require_user_session)]
 
 
+_NETWORK_ERROR_TOKENS = (
+    "timeout",
+    "timed out",
+    "could not connect",
+    "connection refused",
+    "no route to host",
+    "network is unreachable",
+    "name or service not known",
+    "could not translate host",
+)
+
+
 def _dry_run_connect(database_url: str, timeout: int = 5) -> None:
     from sqlalchemy.engine import make_url
 
@@ -193,13 +205,21 @@ def _dry_run_connect(database_url: str, timeout: int = 5) -> None:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         engine.dispose()
-    except Exception:
+    except Exception as exc:
+        message = str(exc).lower()
+        is_network = any(token in message for token in _NETWORK_ERROR_TOKENS)
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Could not connect to the provided database. "
-                "Check your database_url credentials and ensure the database is reachable."
-            ),
+            detail={
+                "code": "network_unreachable" if is_network else "connection_failed",
+                "message": (
+                    "Could not reach the database. If your database has an IP "
+                    "allowlist or firewall, see the firewall hint on the form."
+                    if is_network
+                    else "Could not connect to the provided database. "
+                    "Check your database_url credentials and ensure the database is reachable."
+                ),
+            },
         )
 
 
@@ -593,6 +613,7 @@ async def account_status(session: AuthedSession, request: Request) -> AccountSta
         next_step=onboarding.get_next_step_description(onboarding_st),
         blockers=_build_blockers(onboarding_st, account_st),
         can_issue_api_key=user_store.user_can_issue_api_keys(session.user_id),
+        static_outbound_ip=settings.static_outbound_ip or None,
     )
 
 
@@ -633,10 +654,14 @@ async def validate_database_connection(
         )
         raise HTTPException(status_code=400, detail=str(exc))
     except HTTPException as exc:
+        if isinstance(exc.detail, dict):
+            stored_error = str(exc.detail.get("message") or exc.detail)
+        else:
+            stored_error = str(exc.detail)
         user_store.set_user_database_validation_status(
             session.user_id,
             validation_status="error",
-            validation_error=str(exc.detail),
+            validation_error=stored_error,
         )
         raise
 

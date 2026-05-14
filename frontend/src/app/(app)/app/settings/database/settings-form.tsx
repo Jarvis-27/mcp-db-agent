@@ -1,15 +1,16 @@
 'use client'
 
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 import { Cable, KeyRound, Link2 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { FirewallHint } from '@/components/firewall-hint'
 import { cn } from '@/lib/utils'
-import { updateDatabaseAction } from './actions'
+import { getStaticOutboundIpAction, updateDatabaseAction } from './actions'
 
-type State = { error?: string; success?: boolean } | null
+type State = { error?: string; errorCode?: string; success?: boolean } | null
 type ConnectionMethod = 'guided' | 'url'
 
 const providers = [
@@ -39,10 +40,21 @@ const methodOptions = [
 export function DatabaseSettingsForm() {
   const [method, setMethod] = useState<ConnectionMethod>('guided')
   const [provider, setProvider] = useState('generic_postgres')
+  const [staticOutboundIp, setStaticOutboundIp] = useState<string | null>(null)
   const [state, formAction, isPending] = useActionState<State, FormData>(
     updateDatabaseAction,
     null,
   )
+
+  useEffect(() => {
+    let cancelled = false
+    getStaticOutboundIpAction().then((ip) => {
+      if (!cancelled) setStaticOutboundIp(ip)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return (
     <form action={formAction} className="space-y-5">
@@ -51,6 +63,9 @@ export function DatabaseSettingsForm() {
       {state?.error && (
         <Alert variant="destructive">
           <AlertDescription>{state.error}</AlertDescription>
+          {state.errorCode === 'network_unreachable' && (
+            <FirewallHint staticOutboundIp={staticOutboundIp} variant="error" />
+          )}
         </Alert>
       )}
       {state?.success && (
@@ -58,6 +73,8 @@ export function DatabaseSettingsForm() {
           <AlertDescription>Database connection updated successfully.</AlertDescription>
         </Alert>
       )}
+
+      <FirewallHint staticOutboundIp={staticOutboundIp} variant="form" />
 
       <div className="grid gap-3 md:grid-cols-2">
         {methodOptions.map((option) => {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 import {
   Cable,
   Database,
@@ -16,10 +16,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageHeader } from '@/components/page-header'
 import { CodeBlockWithCopy } from '@/components/code-block-with-copy'
+import { FirewallHint } from '@/components/firewall-hint'
 import { cn } from '@/lib/utils'
-import { submitDatabaseAction } from './actions'
+import { getStaticOutboundIpAction, submitDatabaseAction } from './actions'
 
-type State = { error?: string } | null
+type State = { error?: string; errorCode?: string } | null
 type ConnectionMethod = 'guided' | 'url'
 
 const providers = [
@@ -77,10 +78,21 @@ const hints = [
 export default function SetupDatabasePage() {
   const [method, setMethod] = useState<ConnectionMethod>('guided')
   const [provider, setProvider] = useState('generic_postgres')
+  const [staticOutboundIp, setStaticOutboundIp] = useState<string | null>(null)
   const [state, formAction, isPending] = useActionState<State, FormData>(
     submitDatabaseAction,
     null,
   )
+
+  useEffect(() => {
+    let cancelled = false
+    getStaticOutboundIpAction().then((ip) => {
+      if (!cancelled) setStaticOutboundIp(ip)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return (
     <div className="space-y-8">
@@ -109,8 +121,16 @@ export default function SetupDatabasePage() {
             {state?.error && (
               <Alert variant="destructive">
                 <AlertDescription>{state.error}</AlertDescription>
+                {state.errorCode === 'network_unreachable' && (
+                  <FirewallHint
+                    staticOutboundIp={staticOutboundIp}
+                    variant="error"
+                  />
+                )}
               </Alert>
             )}
+
+            <FirewallHint staticOutboundIp={staticOutboundIp} variant="form" />
 
             <div className="grid gap-3 md:grid-cols-2">
               {methodOptions.map((option) => {

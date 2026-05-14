@@ -46,6 +46,7 @@ export interface AccountStatusResponse {
   next_step: string
   blockers: OnboardingBlocker[]
   can_issue_api_key: boolean
+  static_outbound_ip: string | null
 }
 
 export interface AccountResponse {

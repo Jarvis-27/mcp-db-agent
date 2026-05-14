@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # ── Application base URL (used to build the MCP endpoint URL in setup payloads) ──
     app_base_url: str = "http://localhost:8000"
 
+    # Static outbound IP from the hosting platform (Render add-on, AWS NAT,
+    # Fly.io reserved IP, etc.). Surfaced to end users on the connect-DB form
+    # so they can add it to their firewall/allowlist. Empty = hide the UI hint.
+    static_outbound_ip: str = ""
+
     # ── Frontend base URL (used for email verification/login link redirects) ──
     frontend_base_url: str = "http://localhost:3000"
 
