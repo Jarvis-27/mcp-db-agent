@@ -67,6 +67,7 @@ class StripeClient:
                 "client_reference_id": user_id,
                 "metadata[user_id]": user_id,
                 "subscription_data[metadata][user_id]": user_id,
+                "billing_address_collection": "required",
             },
         )
         return StripeCheckoutSession(id=str(data["id"]), url=str(data["url"]))
