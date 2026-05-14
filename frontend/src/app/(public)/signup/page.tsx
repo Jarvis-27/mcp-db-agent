@@ -1,6 +1,6 @@
 'use client'
 
-import { useActionState } from 'react'
+import { Suspense, useActionState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowRight, CheckCircle2, Info, Mail, ShieldCheck } from 'lucide-react'
@@ -15,6 +15,14 @@ import { registerAction } from './actions'
 type State = { success?: boolean; error?: string } | null
 
 export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupPageContents />
+    </Suspense>
+  )
+}
+
+function SignupPageContents() {
   const [state, formAction, isPending] = useActionState<State, FormData>(
     registerAction,
     null,
