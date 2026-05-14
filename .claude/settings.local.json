@@ -11,7 +11,10 @@
       "Bash(Get-ChildItem -Path \"D:\\\\Abhishek\\\\MCP Database Analytics Agent\\\\mcp-db-agent\\\\frontend\\\\src\\\\app\" -Recurse -Filter \"*.tsx\" -Filter \"*.ts\")",
       "Bash(Select-Object FullName)",
       "Bash(Get-ChildItem *)",
-      "PowerShell(uv run *)"
+      "PowerShell(uv run *)",
+      "Bash(awk '{print $1}')",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(npm run *)"
     ]
   }
 }

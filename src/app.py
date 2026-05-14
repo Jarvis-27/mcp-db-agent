@@ -337,6 +337,13 @@ async def lifespan(app: Starlette):
                 raise
             log.warning("Could not verify Alembic schema version: %s", exc)
 
+    admin_email_count = len(settings.admin_emails_set())
+    log.info("admin_emails_configured", extra={"count": admin_email_count})
+    if admin_email_count == 0:
+        log.warning(
+            "ADMIN_EMAILS is empty; /api/v1/admin/* will return 403 for everyone."
+        )
+
     # 4. Build UserStore, caches, executor pool, query log, pipeline factory
     user_store = UserStore(auth_engine, cipher)
     auth_key_cache: TTLCache = TTLCache(maxsize=10_000, ttl=60)

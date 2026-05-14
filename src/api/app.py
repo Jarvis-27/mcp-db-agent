@@ -1262,6 +1262,16 @@ async def oauth_unlink(request: Request, session: AuthedSession) -> OAuthUnlinkR
 
 
 # ---------------------------------------------------------------------------
+# Admin (operator-only)
+# ---------------------------------------------------------------------------
+
+
+from src.api.admin import router as admin_router  # noqa: E402
+
+api_app.include_router(admin_router)  # type: ignore[has-type]
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 

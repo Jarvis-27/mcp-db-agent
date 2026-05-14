@@ -306,3 +306,128 @@ class OAuthLinkStatusResponse(BaseModel):
 
 class OAuthUnlinkResponse(BaseModel):
     message: str
+
+
+# ── Admin schemas ─────────────────────────────────────────────────────
+
+
+class AdminGrant(BaseModel):
+    scope: str  # currently always "operator"
+
+
+class AdminMeResponse(BaseModel):
+    user_id: str
+    email: str
+    is_admin: bool
+    grants: list[AdminGrant]
+
+
+class AdminUserCountsByStatus(BaseModel):
+    active: int
+    suspended: int
+    closed: int
+    pending_email_verification: int
+
+
+class AdminQueryDailyCount(BaseModel):
+    date: str  # YYYY-MM-DD
+    total: int
+    errors: int
+
+
+class AdminOverviewResponse(BaseModel):
+    users_total: int
+    users_active_7d: int
+    users_by_status: AdminUserCountsByStatus
+    queries_today: int
+    error_rate_today: float  # 0.0 — 1.0
+    p50_duration_ms_today: int | None
+    p95_duration_ms_today: int | None
+    daily_query_counts: list[AdminQueryDailyCount]  # last 14 days
+
+
+class AdminUserListItem(BaseModel):
+    user_id: str
+    email: str
+    plan_code: str
+    account_status: str
+    onboarding_status: str
+    daily_query_count: int
+    daily_quota_reset_at: str
+    created_at: str
+    last_query_at: str | None
+
+
+class AdminUsersListResponse(BaseModel):
+    items: list[AdminUserListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminApiKeySummary(BaseModel):
+    id: str
+    name: str
+    prefix: str
+    scopes: list[str]
+    created_at: str
+    last_used_at: str | None
+    revoked_at: str | None
+
+
+class AdminUserDetailResponse(BaseModel):
+    user_id: str
+    email: str
+    plan_code: str
+    billing_status: str
+    account_status: str
+    onboarding_status: str
+    timezone: str
+    created_at: str
+    updated_at: str
+    email_verified_at: str | None
+    suspended_at: str | None
+    closed_at: str | None
+    db_name: str | None
+    db_validation_status: str | None
+    db_last_validation_at: str | None
+    daily_query_count: int
+    daily_quota_reset_at: str
+    api_keys: list[AdminApiKeySummary]
+    recent_queries: list[RecentQueryItem]
+
+
+class AdminSuspendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AdminUserActionResponse(BaseModel):
+    user_id: str
+    account_status: str
+    suspended_at: str | None
+    closed_at: str | None
+
+
+class AdminQueryListItem(BaseModel):
+    id: int
+    timestamp: str
+    user_id: str
+    user_email: str | None
+    api_key_id: str | None
+    question: str
+    sql: str | None
+    success: bool
+    row_count: int | None
+    duration_ms: int | None
+    error: str | None
+    error_code: str | None
+    attempts: int
+
+
+class AdminQueryListResponse(BaseModel):
+    items: list[AdminQueryListItem]
+    total: int
+    limit: int
+    offset: int

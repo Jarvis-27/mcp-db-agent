@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     register_rate_limit: str = "5/minute"
     schema_cache_ttl_seconds: int = 600
 
+    # ── Operator admin allowlist ──────────────────────────────────────
+    # Comma-separated emails granted access to /api/v1/admin/*. Case-
+    # insensitive. Empty = no admins (all admin endpoints return 403).
+    admin_emails: str = ""
+
     # ── Onboarding gates (disabled by default; enable when Auth0/Stripe integrated) ──
     billing_gate_enabled: bool = False
     mfa_gate_enabled: bool = False
@@ -192,6 +197,9 @@ class Settings(BaseSettings):
 
     def credential_encryption_keys_list(self) -> list[str]:
         return [k.strip() for k in self.credential_encryption_keys.split(",") if k.strip()]
+
+    def admin_emails_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
 
     def oauth_required_scopes_list(self) -> list[str]:
         return [s.strip() for s in self.oauth_required_scopes.split(",") if s.strip()]

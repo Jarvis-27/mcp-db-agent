@@ -204,3 +204,121 @@ export interface BillingSessionResponse {
 export interface ApiError {
   detail: string
 }
+
+// ── Admin types ──────────────────────────────────────────────────────
+
+export interface AdminGrant {
+  scope: string
+}
+
+export interface AdminMeResponse {
+  user_id: string
+  email: string
+  is_admin: boolean
+  grants: AdminGrant[]
+}
+
+export interface AdminUserCountsByStatus {
+  active: number
+  suspended: number
+  closed: number
+  pending_email_verification: number
+}
+
+export interface AdminQueryDailyCount {
+  date: string
+  total: number
+  errors: number
+}
+
+export interface AdminOverviewResponse {
+  users_total: number
+  users_active_7d: number
+  users_by_status: AdminUserCountsByStatus
+  queries_today: number
+  error_rate_today: number
+  p50_duration_ms_today: number | null
+  p95_duration_ms_today: number | null
+  daily_query_counts: AdminQueryDailyCount[]
+}
+
+export interface AdminUserListItem {
+  user_id: string
+  email: string
+  plan_code: string
+  account_status: AccountStatus
+  onboarding_status: OnboardingStatus
+  daily_query_count: number
+  daily_quota_reset_at: string
+  created_at: string
+  last_query_at: string | null
+}
+
+export interface AdminUsersListResponse {
+  items: AdminUserListItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface AdminApiKeySummary {
+  id: string
+  name: string
+  prefix: string
+  scopes: string[]
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+export interface AdminUserDetailResponse {
+  user_id: string
+  email: string
+  plan_code: string
+  billing_status: string
+  account_status: AccountStatus
+  onboarding_status: OnboardingStatus
+  timezone: string
+  created_at: string
+  updated_at: string
+  email_verified_at: string | null
+  suspended_at: string | null
+  closed_at: string | null
+  db_name: string | null
+  db_validation_status: string | null
+  db_last_validation_at: string | null
+  daily_query_count: number
+  daily_quota_reset_at: string
+  api_keys: AdminApiKeySummary[]
+  recent_queries: RecentQueryItem[]
+}
+
+export interface AdminUserActionResponse {
+  user_id: string
+  account_status: AccountStatus
+  suspended_at: string | null
+  closed_at: string | null
+}
+
+export interface AdminQueryListItem {
+  id: number
+  timestamp: string
+  user_id: string
+  user_email: string | null
+  api_key_id: string | null
+  question: string
+  sql: string | null
+  success: boolean
+  row_count: number | null
+  duration_ms: number | null
+  error: string | null
+  error_code: string | null
+  attempts: number
+}
+
+export interface AdminQueryListResponse {
+  items: AdminQueryListItem[]
+  total: number
+  limit: number
+  offset: number
+}

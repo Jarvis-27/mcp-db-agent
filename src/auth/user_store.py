@@ -241,6 +241,21 @@ class DailyQuotaSnapshot:
 
 
 @dataclass(frozen=True)
+class AdminUserRow:
+    """Row shape returned by UserStore.list_users for the admin user list."""
+
+    user_id: str
+    email: str
+    plan_code: str
+    account_status: str
+    onboarding_status: str
+    daily_query_count: int
+    daily_quota_reset_at: datetime
+    created_at: datetime
+    last_query_at: datetime | None
+
+
+@dataclass(frozen=True)
 class OAuthLinkStatus:
     """Snapshot of the OAuth identity bound to a local user account."""
 
@@ -1104,6 +1119,159 @@ class UserStore:
             session.commit()
         rowcount = getattr(result, "rowcount", 0)
         return int(rowcount or 0) > 0
+
+    # ------------------------------------------------------------------
+    # Admin / operator helpers
+    # ------------------------------------------------------------------
+
+    def list_users(
+        self,
+        *,
+        q: str | None = None,
+        status: str | None = None,
+        plan: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[AdminUserRow], int]:
+        """Paginated user list for the operator admin UI.
+
+        Filters:
+          q       – case-insensitive substring match against email
+          status  – exact match against account_status
+          plan    – exact match against plan_code
+
+        Returns (items, total). last_query_at is derived from MAX(query_history.timestamp).
+        """
+        with Session(self._engine) as session:
+            base = session.query(User)
+            if q:
+                base = base.filter(User.email.ilike(f"%{q.strip().lower()}%"))
+            if status:
+                base = base.filter(User.account_status == status)
+            if plan:
+                base = base.filter(User.plan_code == plan)
+
+            total = base.count()
+
+            users = (
+                base.order_by(User.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            )
+            user_ids = [str(u.id) for u in users]
+
+            last_query_map: dict[str, datetime] = {}
+            if user_ids:
+                from sqlalchemy import func
+
+                rows = (
+                    session.query(
+                        QueryHistory.user_id, func.max(QueryHistory.timestamp)
+                    )
+                    .filter(QueryHistory.user_id.in_(user_ids))
+                    .group_by(QueryHistory.user_id)
+                    .all()
+                )
+                for row_user_id, last_ts in rows:
+                    if last_ts is None:
+                        continue
+                    if isinstance(last_ts, str):
+                        last_ts = datetime.fromisoformat(last_ts)
+                    last_query_map[str(row_user_id)] = _ensure_utc(last_ts)
+
+            items = [
+                AdminUserRow(
+                    user_id=str(u.id),
+                    email=str(u.email),
+                    plan_code=str(u.plan_code),
+                    account_status=str(u.account_status),
+                    onboarding_status=str(u.onboarding_status),
+                    daily_query_count=int(u.daily_query_count or 0),
+                    daily_quota_reset_at=_ensure_utc(cast(datetime, u.daily_quota_reset_at)),
+                    created_at=_ensure_utc(cast(datetime, u.created_at)),
+                    last_query_at=last_query_map.get(str(u.id)),
+                )
+                for u in users
+            ]
+            return items, total
+
+    def revoke_all_user_api_keys(self, user_id: str) -> int:
+        """Mark every currently-active API key for user_id as revoked. Returns count revoked."""
+        now = _utcnow()
+        with Session(self._engine) as session:
+            keys = (
+                session.query(ApiKey)
+                .filter(ApiKey.user_id == user_id, ApiKey.revoked_at.is_(None))
+                .all()
+            )
+            for key in keys:
+                key.revoked_at = now  # type: ignore[assignment]
+            session.commit()
+            return len(keys)
+
+    def revoke_all_user_sessions(self, user_id: str) -> int:
+        """Mark every currently-active session for user_id as revoked. Returns count revoked."""
+        now = _utcnow()
+        with Session(self._engine) as session:
+            sessions = (
+                session.query(UserSession)
+                .filter(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
+                .all()
+            )
+            for s in sessions:
+                s.revoked_at = now  # type: ignore[assignment]
+            session.commit()
+            return len(sessions)
+
+    def count_users_by_status(self) -> dict[str, int]:
+        """Return counts grouped by account_status.
+
+        Always includes the canonical keys (active, suspended, closed) plus the
+        bucket of users still pending email verification, even when zero.
+        """
+        from sqlalchemy import func
+
+        counts: dict[str, int] = {
+            ACCOUNT_ACTIVE: 0,
+            ACCOUNT_SUSPENDED: 0,
+            ACCOUNT_CLOSED: 0,
+            "pending_email_verification": 0,
+        }
+        with Session(self._engine) as session:
+            rows = (
+                session.query(User.account_status, func.count(User.id))
+                .group_by(User.account_status)
+                .all()
+            )
+            for status_value, count in rows:
+                counts[str(status_value)] = int(count)
+
+            pending = (
+                session.query(func.count(User.id))
+                .filter(User.onboarding_status == "pending_email_verification")
+                .scalar()
+                or 0
+            )
+            counts["pending_email_verification"] = int(pending)
+        return counts
+
+    def count_users_active_in_window(self, since: datetime) -> int:
+        """Count distinct user_ids that have logged a query since the given timestamp."""
+        from sqlalchemy import func
+
+        since_utc = _ensure_utc(since)
+        with Session(self._engine) as session:
+            result = (
+                session.query(func.count(func.distinct(QueryHistory.user_id)))
+                .filter(QueryHistory.timestamp >= since_utc)
+                .scalar()
+            )
+            return int(result or 0)
+
+    def get_active_api_keys_for_admin(self, user_id: str) -> list[ApiKey]:
+        """Return all API keys (including revoked) for a user. Used by admin detail view."""
+        return self.list_api_keys(user_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
