@@ -41,12 +41,24 @@ export default function SupportPage() {
       </PolicySection>
 
       <PolicySection title="Contact support">
+        <ul className="list-disc space-y-2 pl-5">
+          <li>
+            <strong>Email:</strong>{' '}
+            <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
+          </li>
+          <li>
+            <strong>Phone:</strong>{' '}
+            <a href="tel:+917015854119">+91 7015854119</a>
+          </li>
+          <li>
+            <strong>Address:</strong> #919, Dwarkapuri, Jagadhri, Haryana –
+            135003, District Yamunanagar, India
+          </li>
+        </ul>
         <p>
-          Email us at{' '}
-          <a href={`mailto:${supportEmail}`}>{supportEmail}</a>. Include the
-          email address on your PlainQuery account, a short description of the
-          issue, relevant timestamps, and any Stripe receipt or invoice ID for
-          billing questions.
+          Include the email address on your PlainQuery account, a short
+          description of the issue, relevant timestamps, and any Stripe receipt
+          or invoice ID for billing questions.
         </p>
         <p>
           We review support requests on business days and prioritize account
