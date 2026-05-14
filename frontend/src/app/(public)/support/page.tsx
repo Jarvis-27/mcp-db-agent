@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { PolicyPage, PolicySection } from '@/components/policy-page'
 
-const supportEmail = 'hello@plainquery.in'
+const supportEmail = 'support@plainquery.in'
 
 export const metadata: Metadata = {
   title: 'Support | PlainQuery',
