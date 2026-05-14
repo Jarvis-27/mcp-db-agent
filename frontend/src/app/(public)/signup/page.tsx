@@ -2,7 +2,8 @@
 
 import { useActionState } from 'react'
 import Link from 'next/link'
-import { ArrowRight, CheckCircle2, Mail, ShieldCheck } from 'lucide-react'
+import { useSearchParams } from 'next/navigation'
+import { ArrowRight, CheckCircle2, Info, Mail, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,6 +20,9 @@ export default function SignupPage() {
     null,
   )
   const timezone = useDetectedTimezone()
+  const searchParams = useSearchParams()
+  const prefilledEmail = searchParams.get('email') ?? ''
+  const reason = searchParams.get('reason')
 
   return (
     <main className="mx-auto grid min-h-[calc(100vh-8rem)] max-w-6xl items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[1fr_0.9fr] lg:px-8">
@@ -78,6 +82,16 @@ export default function SignupPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {reason === 'no-account' && prefilledEmail && (
+              <Alert className="mb-4">
+                <Info className="h-4 w-4" />
+                <AlertDescription>
+                  No account found for <strong>{prefilledEmail}</strong>.
+                  Create one below to get started.
+                </AlertDescription>
+              </Alert>
+            )}
+
             <form action={formAction} className="space-y-4">
               {state?.error && (
                 <Alert variant="destructive">
@@ -92,6 +106,7 @@ export default function SignupPage() {
                   name="email"
                   type="email"
                   placeholder="you@example.com"
+                  defaultValue={prefilledEmail}
                   required
                   autoComplete="email"
                   className="h-11"

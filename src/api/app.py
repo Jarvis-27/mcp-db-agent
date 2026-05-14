@@ -489,7 +489,13 @@ async def request_login_link(
     user_store: UserStore = request.app.state.user_store
     ctx = user_store.get_user_by_email(body.email)
 
-    if ctx is not None and ctx.onboarding_status != PENDING_EMAIL_VERIFICATION:
+    if ctx is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No account found for this email. Please sign up first.",
+        )
+
+    if ctx.onboarding_status != PENDING_EMAIL_VERIFICATION:
         if body.timezone:
             try:
                 user_store.update_timezone(ctx.user_id, body.timezone)
@@ -504,7 +510,7 @@ async def request_login_link(
         except Exception as exc:
             logger.warning("Failed to send login email for %s: %s", body.email, exc)
 
-    return GenericAcceptedResponse(message="If an account exists, a sign-in link has been sent.")
+    return GenericAcceptedResponse(message="A sign-in link has been sent.")
 
 
 @api_app.get("/v1/auth/exchange-login-link", response_model=SessionResponse)

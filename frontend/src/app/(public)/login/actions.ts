@@ -1,5 +1,6 @@
 'use server'
 
+import { redirect } from 'next/navigation'
 import { backendFetchPublic } from '@/lib/api/backend'
 
 type State = { success?: boolean; error?: string } | null
@@ -17,11 +18,14 @@ export async function requestLoginLinkAction(
     body: JSON.stringify({ email, timezone }),
   })
 
-  // Backend always returns 202 to avoid user enumeration; we mirror that.
-  if (res.status === 202 || res.ok) return { success: true }
-
-  // Rate-limit or other server error
-  if (res.status === 429) return { error: 'Too many requests. Please wait a minute and try again.' }
-
-  return { success: true } // still show success to avoid enumeration
+  if (res.status === 404) {
+    redirect(`/signup?email=${encodeURIComponent(email)}&reason=no-account`)
+  }
+  if (res.status === 429) {
+    return { error: 'Too many requests. Please wait a minute and try again.' }
+  }
+  if (!res.ok) {
+    return { error: 'Could not send sign-in link. Please try again.' }
+  }
+  return { success: true }
 }

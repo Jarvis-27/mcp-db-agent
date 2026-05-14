@@ -172,6 +172,15 @@ def test_request_login_link_unverified_account_does_not_send_email(client):
     send_login_email.assert_not_called()
 
 
+def test_request_login_link_unknown_email_returns_404(client):
+    resp = client.post(
+        "/v1/auth/request-login-link",
+        json={"email": "no-such-user@example.com"},
+    )
+    assert resp.status_code == 404
+    assert "sign up" in resp.json()["detail"].lower()
+
+
 def test_exchange_login_link_requires_verified_email(client):
     client.post("/v1/auth/signup", json={"email": "preverify@example.com"})
 
