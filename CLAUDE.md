@@ -151,6 +151,25 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 > (`uvicorn --workers 1`) or accept the worker-multiplied cap. Tracking: G4 in
 > `PRODUCTION_GAPS_PLAN.md`.
 
+### Local Stripe webhook testing
+
+Stripe Cloud cannot reach localhost. To exercise the webhook flow (renewals,
+cancellations, `past_due` transitions) in dev, run the Stripe CLI:
+
+```bash
+stripe listen --forward-to localhost:8000/api/v1/billing/webhook
+```
+
+Copy the `whsec_...` value the CLI prints into `STRIPE_WEBHOOK_SECRET` in
+`.env` and restart the backend. The webhook is mounted under the FastAPI
+sub-app at `/api/v1/billing/webhook` (the parent Starlette app mounts
+`api_app` at `/api` — see `src/app.py`).
+
+The synchronous confirm endpoint (`POST /api/v1/account/billing/confirm-session`)
+upgrades the user immediately on the post-checkout redirect even without the
+CLI running. The webhook is still required for everything that happens
+*after* checkout (renewals, dunning, cancellations).
+
 ### Observability (G16)
 
 Distributed traces are emitted via OTLP when `OTEL_ENABLED=true`. SQL bodies

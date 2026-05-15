@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import {
   ArrowRight,
   CreditCard,
@@ -14,19 +15,29 @@ import { MetricCard } from '@/components/metric-card'
 import { StatusBadge } from '@/components/status-badge'
 import { QuotaMeter } from '@/components/quota-meter'
 import { buttonVariants } from '@/components/ui/button'
-import { getBillingSummaryOrRedirect } from '@/lib/api/billing'
+import {
+  confirmCheckoutSession,
+  getBillingSummaryOrRedirect,
+} from '@/lib/api/billing'
 import { cn } from '@/lib/utils'
 import { createCheckoutSessionAction, createPortalSessionAction } from './actions'
 
 interface BillingPageProps {
-  searchParams: Promise<{ checkout?: string; error?: string }>
+  searchParams: Promise<{ checkout?: string; error?: string; session_id?: string }>
 }
 
 export default async function BillingPage({ searchParams }: BillingPageProps) {
-  const [billing, params] = await Promise.all([
-    getBillingSummaryOrRedirect(),
-    searchParams,
-  ])
+  const params = await searchParams
+
+  // Bridge the post-redirect race: if Stripe handed us back a session_id,
+  // confirm the session server-side before fetching the summary, then scrub
+  // the id from the URL bar so a refresh doesn't re-trigger the confirm POST.
+  if (params.checkout === 'success' && params.session_id) {
+    await confirmCheckoutSession(params.session_id)
+    redirect('/app/billing?checkout=success')
+  }
+
+  const billing = await getBillingSummaryOrRedirect()
   const isPro = billing.plan_code === 'pro'
   const isPastDue = billing.billing_status === 'past_due'
   const quotaPct =
@@ -62,9 +73,13 @@ export default async function BillingPage({ searchParams }: BillingPageProps) {
 
       {params.checkout === 'success' && (
         <Notice
-          tone="success"
-          title="Checkout complete"
-          description="Your plan updates after Stripe sends the confirmation webhook."
+          tone={isPro ? 'success' : 'warning'}
+          title={isPro ? 'Subscription active' : 'Checkout complete'}
+          description={
+            isPro
+              ? 'Pro entitlements are now active on your account.'
+              : 'Stripe is still confirming this payment. Refresh in a moment if the plan does not update.'
+          }
         />
       )}
 

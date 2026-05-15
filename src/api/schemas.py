@@ -286,6 +286,17 @@ class BillingWebhookResponse(BaseModel):
     plan_code: str | None = None
 
 
+class BillingConfirmRequest(BaseModel):
+    session_id: str
+
+
+class BillingConfirmResponse(BaseModel):
+    processed: bool
+    already_pro: bool
+    not_paid: bool
+    summary: BillingSummaryResponse
+
+
 # ── OAuth MCP account-linking schemas ─────────────────────────────────────────
 
 

@@ -87,6 +87,22 @@ class StripeClient:
         )
         return StripePortalSession(id=str(data["id"]), url=str(data["url"]))
 
+    async def get_checkout_session(self, session_id: str) -> dict[str, Any]:
+        """Fetch a checkout session with its subscription expanded.
+
+        Used by the session-confirmation fallback that bridges the brief
+        post-redirect window before the `checkout.session.completed` webhook
+        is processed. The expanded subscription gives us the price id and
+        current_period_end in a single round trip.
+        """
+        return await self._get(
+            f"/v1/checkout/sessions/{session_id}",
+            [
+                ("expand[]", "subscription"),
+                ("expand[]", "subscription.items.data.price"),
+            ],
+        )
+
     async def _post(self, path: str, data: dict[str, str]) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {self._secret_key}"}
         async with httpx.AsyncClient(
@@ -96,6 +112,25 @@ class StripeClient:
         ) as client:
             response = await client.post(path, data=data)
 
+        return self._unwrap(response)
+
+    async def _get(
+        self,
+        path: str,
+        params: list[tuple[str, str | int | float | bool | None]] | None = None,
+    ) -> dict[str, Any]:
+        headers = {"Authorization": f"Bearer {self._secret_key}"}
+        async with httpx.AsyncClient(
+            base_url=self._api_base,
+            timeout=self._timeout_seconds,
+            headers=headers,
+        ) as client:
+            response = await client.get(path, params=params)
+
+        return self._unwrap(response)
+
+    @staticmethod
+    def _unwrap(response: httpx.Response) -> dict[str, Any]:
         if response.status_code >= 400:
             detail = response.text
             try:

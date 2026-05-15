@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -20,6 +21,8 @@ from src.config import Settings
 from src.entitlements.service import EntitlementService
 
 from .stripe_client import StripeCheckoutSession, StripeClient, StripePortalSession
+
+log = logging.getLogger(__name__)
 
 
 class BillingConfigurationError(RuntimeError):
@@ -52,6 +55,22 @@ class BillingEventResult:
     user_id: str | None = None
     billing_status: str | None = None
     plan_code: str | None = None
+
+
+@dataclass(frozen=True)
+class BillingConfirmResult:
+    """Outcome of a synchronous post-redirect checkout-session confirmation.
+
+    Returned by :meth:`BillingService.confirm_checkout_session`, which bridges
+    the brief window between Stripe's redirect to the success URL and the
+    eventual `checkout.session.completed` webhook. The webhook remains the
+    source of truth for ongoing subscription lifecycle events.
+    """
+
+    summary: BillingSummary
+    processed: bool
+    already_pro: bool
+    not_paid: bool
 
 
 class BillingService:
@@ -152,6 +171,108 @@ class BillingService:
         return await self._stripe_client.create_portal_session(
             customer_id=str(user.stripe_customer_id),
             return_url=self._settings.stripe_customer_portal_return_url_effective(),
+        )
+
+    async def confirm_checkout_session(
+        self, user_id: str, session_id: str
+    ) -> BillingConfirmResult:
+        """Synchronously apply a completed checkout session to the user.
+
+        Bridges the post-redirect race when Stripe's `checkout.session.completed`
+        webhook has not yet arrived (or, in local dev, isn't being forwarded).
+        Safe to call alongside the webhook handler: both write through
+        :meth:`UserStore.apply_billing_update`, which is state-overwriting, and
+        idempotency rows live under separate `event_id` namespaces
+        (``confirm:cs_xxx`` vs ``evt_xxx``).
+        """
+        self._require_billing_configured()
+        user = self._user_store.get_user_row(user_id)
+        if user is None:
+            raise LookupError("User not found")
+
+        session = await self._stripe_client.get_checkout_session(session_id)
+
+        session_user_id = _user_id_from_metadata(session)
+        if session_user_id != user_id:
+            log.info(
+                "billing_confirm_session_wrong_user",
+                extra={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "session_user_id": session_user_id,
+                },
+            )
+            raise StateTransitionError("Checkout session does not belong to this user.")
+
+        if str(session.get("mode") or "") != "subscription":
+            raise ValueError("Only subscription-mode checkout sessions can be confirmed.")
+
+        summary = self.build_summary(user_id)
+        paid = str(session.get("payment_status") or "") == "paid" and (
+            str(session.get("status") or "") == "complete"
+        )
+        if not paid:
+            log.info(
+                "billing_confirm_session_not_paid",
+                extra={
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "payment_status": session.get("payment_status"),
+                    "status": session.get("status"),
+                },
+            )
+            return BillingConfirmResult(
+                summary=summary, processed=False, already_pro=False, not_paid=True
+            )
+
+        confirm_event_id = f"confirm:{session_id}"
+        if self._user_store.has_processed_billing_event(confirm_event_id) or summary.plan_code == "pro":
+            log.info(
+                "billing_confirm_session_already_pro",
+                extra={"user_id": user_id, "session_id": session_id},
+            )
+            return BillingConfirmResult(
+                summary=self.build_summary(user_id),
+                processed=False,
+                already_pro=True,
+                not_paid=False,
+            )
+
+        subscription_obj = session.get("subscription")
+        if not isinstance(subscription_obj, dict):
+            subscription_obj = {}
+        customer_id = _stripe_id(session.get("customer"))
+        subscription_id = _stripe_id(session.get("subscription")) or _stripe_id(
+            subscription_obj.get("id")
+        )
+
+        self._user_store.apply_billing_update(
+            user_id=user_id,
+            billing_status=BILLING_ACTIVE_PAID,
+            plan_code="pro",
+            stripe_customer_id=customer_id,
+            stripe_subscription_id=subscription_id,
+            stripe_price_id=_price_id_from_subscription(subscription_obj)
+            or self._settings.stripe_pro_price_id,
+            billing_current_period_end=_period_end_from_subscription(subscription_obj),
+            billing_last_event_id=confirm_event_id,
+        )
+        self._user_store.record_billing_webhook_event(
+            event_id=confirm_event_id,
+            event_type="confirm.checkout.session",
+            user_id=user_id,
+            stripe_customer_id=customer_id,
+            stripe_subscription_id=subscription_id,
+        )
+        log.info(
+            "billing_confirm_session_upgraded",
+            extra={"user_id": user_id, "session_id": session_id},
+        )
+        return BillingConfirmResult(
+            summary=self.build_summary(user_id),
+            processed=True,
+            already_pro=False,
+            not_paid=False,
         )
 
     def process_webhook_event(self, event: dict[str, Any]) -> BillingEventResult:

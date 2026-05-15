@@ -20,6 +20,8 @@ from src.api.schemas import (
     AccountStatusResponse,
     ActiveDatabaseSummary,
     ApiKeyResponse,
+    BillingConfirmRequest,
+    BillingConfirmResponse,
     BillingSessionResponse,
     BillingSummaryResponse,
     BillingWebhookResponse,
@@ -988,6 +990,36 @@ async def create_portal_session(
     except StripeAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return BillingSessionResponse(id=portal.id, url=portal.url)
+
+
+@api_app.post(
+    "/v1/account/billing/confirm-session", response_model=BillingConfirmResponse
+)
+async def confirm_checkout_session(
+    request: Request,
+    session: AuthedSession,
+    payload: BillingConfirmRequest,
+) -> BillingConfirmResponse:
+    try:
+        result = await _billing_service(request).confirm_checkout_session(
+            session.user_id, payload.session_id
+        )
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except StateTransitionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except StripeAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return BillingConfirmResponse(
+        processed=result.processed,
+        already_pro=result.already_pro,
+        not_paid=result.not_paid,
+        summary=_billing_summary_response(result.summary),
+    )
 
 
 @api_app.post("/v1/billing/webhook", response_model=BillingWebhookResponse)

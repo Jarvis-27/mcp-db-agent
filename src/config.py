@@ -232,7 +232,13 @@ class Settings(BaseSettings):
     def stripe_checkout_success_url_effective(self) -> str:
         if self.stripe_checkout_success_url:
             return self.stripe_checkout_success_url
-        return f"{self.frontend_base_url.rstrip('/')}/app/billing?checkout=success"
+        # `{CHECKOUT_SESSION_ID}` is substituted by Stripe at redirect time and
+        # lets the billing page synchronously confirm the session before the
+        # `checkout.session.completed` webhook arrives.
+        return (
+            f"{self.frontend_base_url.rstrip('/')}"
+            "/app/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
+        )
 
     def stripe_checkout_cancel_url_effective(self) -> str:
         if self.stripe_checkout_cancel_url:

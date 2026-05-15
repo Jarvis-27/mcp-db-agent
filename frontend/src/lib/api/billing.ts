@@ -10,3 +10,18 @@ export async function getBillingSummaryOrRedirect(): Promise<BillingSummaryRespo
   }
   return res.json()
 }
+
+export async function confirmCheckoutSession(sessionId: string): Promise<void> {
+  const res = await backendFetch('/v1/account/billing/confirm-session', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+    cache: 'no-store',
+  })
+  if (!res.ok) {
+    console.error(
+      'confirmCheckoutSession failed',
+      res.status,
+      await res.text().catch(() => ''),
+    )
+  }
+}
