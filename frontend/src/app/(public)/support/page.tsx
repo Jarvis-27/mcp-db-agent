@@ -29,8 +29,8 @@ export default function SupportPage() {
           </li>
           <li>
             <strong>Service offered:</strong> digital SaaS access to an MCP
-            server that connects to customer-provided PostgreSQL, MySQL, or
-            SQLite databases, generates read-only SQL from plain-English
+            server that connects to customer-provided PostgreSQL or SQLite
+            databases, generates read-only SQL from plain-English
             questions, validates that SQL, and returns structured query results.
           </li>
           <li>

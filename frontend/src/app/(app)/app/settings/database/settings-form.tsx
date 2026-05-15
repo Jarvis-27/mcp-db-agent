@@ -264,7 +264,7 @@ export function DatabaseSettingsForm() {
               className="h-11 font-mono text-[13px]"
             />
             <p className="text-xs leading-5 text-muted-foreground">
-              PostgreSQL and MySQL URLs are supported here. The backend validates and
+              PostgreSQL URLs are supported here. The backend validates and
               tests the connection before replacing the stored credential.
             </p>
           </div>

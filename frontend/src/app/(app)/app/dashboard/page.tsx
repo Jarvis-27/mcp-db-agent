@@ -86,7 +86,7 @@ export default async function DashboardPage() {
           detail={
             isSetupComplete
               ? `${status?.plan_code ?? 'free'} plan active`
-              : 'Connect Postgres or MySQL'
+              : 'Connect Postgres'
           }
           icon={Database}
           tone={isSetupComplete ? 'success' : 'warning'}

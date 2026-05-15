@@ -13,7 +13,7 @@ const faqs = [
   {
     question: 'Which databases are supported?',
     answer:
-      'The hosted SaaS flow is designed for PostgreSQL and MySQL databases.',
+      'The hosted SaaS flow is designed for PostgreSQL databases.',
   },
   {
     question: 'Why is Pro listed without a dollar amount?',

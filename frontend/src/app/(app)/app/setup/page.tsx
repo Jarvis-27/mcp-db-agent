@@ -58,7 +58,7 @@ export default async function SetupPage() {
       title: 'Connect database',
       description: dbConnected
         ? 'Your primary database is connected and ready for guarded queries.'
-        : 'Use guided Postgres setup, or paste a PostgreSQL or MySQL connection string.',
+        : 'Use guided Postgres setup, or paste a PostgreSQL connection string.',
       done: dbConnected,
       icon: Database,
       action: dbConnected ? null : { href: '/app/setup/database', label: 'Connect database' },

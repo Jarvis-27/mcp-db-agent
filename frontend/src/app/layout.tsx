@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'PlainQuery — ask your database in plain English',
   description:
-    'PlainQuery is an MCP server that lets ChatGPT, Cursor, and VS Code query your Postgres or MySQL database in plain English. No SQL, no waiting on a data team.',
+    'PlainQuery is an MCP server that lets ChatGPT, Cursor, and VS Code query your Postgres database in plain English. No SQL, no waiting on a data team.',
 }
 
 export default function RootLayout({

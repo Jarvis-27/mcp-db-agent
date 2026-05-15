@@ -17,7 +17,6 @@ import { cn } from '@/lib/utils'
 
 const works = [
   'PostgreSQL',
-  'MySQL',
   'SQLite',
   'ChatGPT',
   'Cursor',
@@ -116,7 +115,7 @@ export default function HomePage() {
             </h1>
 
             <p className="animate-fade-up delay-200 mt-7 max-w-xl text-lg leading-8 text-muted-foreground text-pretty">
-              PlainQuery turns Postgres, MySQL, and SQLite into something
+              PlainQuery turns Postgres and SQLite into something
               anyone on your team can talk to. Connect once, then ask
               questions from <span className="font-medium text-foreground">ChatGPT</span>,{' '}
               <span className="font-medium text-foreground">Cursor</span>, or{' '}
