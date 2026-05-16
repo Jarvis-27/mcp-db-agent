@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Jarvis-27/mcp-db-agent",
-  "title": "MCP DB Agent",
+  "title": "PlainQuery| MCP DB Agent",
   "description": "Query PostgreSQL databases in plain English — LLM-generated, safety-validated SQL.",
   "repository": {
     "url": "https://github.com/Jarvis-27/mcp-db-agent",
