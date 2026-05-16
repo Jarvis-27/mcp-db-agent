@@ -1,7 +1,7 @@
 [project]
 name = "mcp-db-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Query any PostgreSQL or SQLite database in plain English via an MCP server."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
