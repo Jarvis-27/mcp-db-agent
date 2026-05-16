@@ -6,10 +6,9 @@
 [![CI](https://github.com/Jarvis-27/mcp-db-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Jarvis-27/mcp-db-agent/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3b82f6)
 
-<!-- TODO: add a demo GIF here. Record a 20-30s clip: open Claude Desktop, ask "What were our top 5 products by revenue last quarter?", show the answer. Save it to docs/demo.gif and uncomment the line below. -->
-<!-- ![PlainQuery demo](docs/demo.gif) -->
-
-> _Demo GIF coming soon — see [Add a demo](#add-a-demo) for what to record._
+<p align="center">
+  <img src="docs/PlainQuery_GIF.gif" alt="PlainQuery demo — querying a database in plain English from an MCP client" width="800">
+</p>
 
 ---
 
@@ -260,17 +259,6 @@ docker compose up --build
 ```
 
 The container image serves only the hosted HTTP runtime. The MCP endpoint remains `http://localhost:8000/mcp`.
-
----
-
-## Add a demo
-
-A short demo GIF at the top of this README is the single biggest conversion lever for a launch. To record one:
-
-1. Open Claude Desktop (or Cursor) connected to PlainQuery against the demo database.
-2. Ask 2-3 questions that show range — a count, a ranking, an aggregation by month.
-3. Record ~20-30 seconds, export as a GIF, save to `docs/demo.gif`.
-4. Uncomment the image line near the top of this file.
 
 ## License
 
