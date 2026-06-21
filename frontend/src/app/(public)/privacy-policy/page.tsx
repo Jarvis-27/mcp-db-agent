@@ -8,6 +8,9 @@ export const metadata: Metadata = {
   title: 'Privacy Policy | PlainQuery',
   description:
     'How PlainQuery collects, uses, shares, protects, and retains customer data.',
+  alternates: {
+    canonical: '/privacy-policy',
+  },
 }
 
 export default function PrivacyPolicyPage() {

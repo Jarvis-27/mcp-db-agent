@@ -8,6 +8,9 @@ export const metadata: Metadata = {
   title: 'Support | PlainQuery',
   description:
     'Support, billing, cancellation, refund, and product information for PlainQuery customers.',
+  alternates: {
+    canonical: '/support',
+  },
 }
 
 export default function SupportPage() {
