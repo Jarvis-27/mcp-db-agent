@@ -45,6 +45,12 @@ Your question
    → Structured JSON result
 ```
 
+### Architecture
+
+<p align="center">
+  <img src="docs/diagram/plainquery-architecture.png" alt="PlainQuery architecture diagram showing clients, Next.js frontend, Starlette/FastAPI backend, FastMCP endpoint, query pipeline, LLM provider, and customer database" width="900">
+</p>
+
 ---
 
 ## Quick start
@@ -138,6 +144,10 @@ The product model is single-account and user-scoped:
 `signup → verify email → connect database → link OAuth identity → use /mcp → upgrade with Stripe`
 
 ## Security
+
+<p align="center">
+  <img src="docs/diagram/plainquery-security.png" alt="PlainQuery security diagram showing URL validation, SSRF protection, encrypted credential storage, MCP authentication, per-request isolation, SQL validation, rate limits, and controlled execution" width="900">
+</p>
 
 - User-supplied database URLs are validated against SSRF, path traversal, private IPs, and DNS rebinding before any connection attempt.
 - Database URLs and LLM keys are Fernet-encrypted at rest, with support for key rotation.
