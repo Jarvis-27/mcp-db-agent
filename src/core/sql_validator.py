@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 import sqlparse
+from sqlparse.sql import Identifier, IdentifierList, Parenthesis, TokenList
 import sqlparse.tokens as T
 
 from src.core.schema_inspector import SchemaInspector
@@ -244,10 +245,7 @@ def _first_sql_keyword(sql: str) -> str:
     return match.group(1).upper() if match else ""
 
 
-_QUALIFIED_REF_RE = re.compile(
-    r"\b(?:FROM|JOIN)\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*)?([a-zA-Z_][a-zA-Z0-9_]*)",
-    re.IGNORECASE,
-)
+_RELATION_PREFIX_KEYWORDS = {"LATERAL", "ONLY"}
 
 
 def _extract_qualified_table_refs(sql: str) -> list[tuple[str, str]]:
@@ -255,7 +253,102 @@ def _extract_qualified_table_refs(sql: str) -> list[tuple[str, str]]:
 
     ``schema`` is the empty string when the reference is unqualified.
     """
-    return _QUALIFIED_REF_RE.findall(sql)
+    refs: list[tuple[str, str]] = []
+    for statement in sqlparse.parse(sql):
+        refs.extend(_extract_refs_from_tokenlist(statement))
+    return refs
+
+
+def _extract_refs_from_tokenlist(token_list: TokenList) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    expect_relation = False
+
+    for token in token_list.tokens:
+        if token.is_whitespace or token.ttype in T.Comment:
+            continue
+
+        if _is_relation_keyword(token):
+            expect_relation = True
+            continue
+
+        if expect_relation:
+            if _is_relation_prefix_keyword(token):
+                continue
+            refs.extend(_extract_refs_from_relation_token(token))
+            expect_relation = False
+            continue
+
+        if isinstance(token, TokenList):
+            refs.extend(_extract_refs_from_tokenlist(token))
+
+    return refs
+
+
+def _is_relation_keyword(token) -> bool:  # type: ignore[no-untyped-def]
+    if not token.is_keyword:
+        return False
+    keyword = " ".join(str(token.value).upper().split())
+    return keyword == "FROM" or keyword == "JOIN" or keyword.endswith(" JOIN")
+
+
+def _is_relation_prefix_keyword(token) -> bool:  # type: ignore[no-untyped-def]
+    if not token.is_keyword:
+        return False
+    return " ".join(str(token.value).upper().split()) in _RELATION_PREFIX_KEYWORDS
+
+
+def _extract_refs_from_relation_token(token) -> list[tuple[str, str]]:  # type: ignore[no-untyped-def]
+    if isinstance(token, IdentifierList):
+        refs: list[tuple[str, str]] = []
+        for identifier in token.get_identifiers():
+            refs.extend(_extract_refs_from_relation_token(identifier))
+        return refs
+
+    if isinstance(token, Identifier):
+        if _identifier_contains_subquery(token):
+            refs: list[tuple[str, str]] = []
+            for child in token.tokens:
+                if isinstance(child, Parenthesis):
+                    refs.extend(_extract_refs_from_tokenlist(child))
+            return refs
+
+        table = _normalize_identifier_name(token.get_real_name() or token.get_name())
+        if not table:
+            return []
+        schema = _normalize_identifier_name(token.get_parent_name())
+        return [(schema, table)]
+
+    if isinstance(token, Parenthesis):
+        return _extract_refs_from_tokenlist(token)
+
+    if isinstance(token, TokenList):
+        return _extract_refs_from_tokenlist(token)
+
+    name = _normalize_identifier_name(str(token.value))
+    return [("", name)] if name else []
+
+
+def _identifier_contains_subquery(identifier: Identifier) -> bool:
+    for token in identifier.tokens:
+        if isinstance(token, Parenthesis):
+            inner = str(token.value)[1:-1]
+            if _first_sql_keyword(inner) in _ALLOWED_FIRST_KEYWORDS:
+                return True
+    return False
+
+
+def _normalize_identifier_name(name: str | None) -> str:
+    if name is None:
+        return ""
+    value = name.strip()
+    if len(value) >= 2:
+        if value[0] == '"' and value[-1] == '"':
+            return value[1:-1].replace('""', '"')
+        if value[0] == "`" and value[-1] == "`":
+            return value[1:-1].replace("``", "`")
+        if value[0] == "[" and value[-1] == "]":
+            return value[1:-1].replace("]]", "]")
+    return value
 
 
 def _extract_table_names(sql: str) -> list[str]:
@@ -407,5 +500,28 @@ def _extract_cte_names(sql: str) -> set[str]:
     sites — subquery aliases use ``(...) AS name`` (parenthesis on the left),
     so this pattern produces no false positives for ordinary subquery aliases.
     """
-    pattern = re.compile(r"\b(\w+)\s+AS\s*\(", re.IGNORECASE)
-    return {m.group(1).lower() for m in pattern.finditer(sql)}
+    names: set[str] = set()
+    for statement in sqlparse.parse(sql):
+        in_cte_list = False
+        for token in statement.tokens:
+            if token.is_whitespace or token.ttype in T.Comment:
+                continue
+            if token.ttype == T.Keyword.CTE and str(token.value).upper() == "WITH":
+                in_cte_list = True
+                continue
+            if not in_cte_list:
+                continue
+            if token.ttype == T.Keyword.DML and str(token.value).upper() == "SELECT":
+                break
+            if isinstance(token, IdentifierList):
+                for identifier in token.get_identifiers():
+                    name = _normalize_identifier_name(
+                        identifier.get_real_name() or identifier.get_name()
+                    )
+                    if name:
+                        names.add(name.lower())
+            elif isinstance(token, Identifier):
+                name = _normalize_identifier_name(token.get_real_name() or token.get_name())
+                if name:
+                    names.add(name.lower())
+    return names

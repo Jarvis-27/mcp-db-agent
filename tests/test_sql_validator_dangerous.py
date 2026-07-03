@@ -135,15 +135,19 @@ def test_join_query_passes(validator):
         # PostgreSQL system catalog
         ("SELECT * FROM pg_catalog.pg_user", "pg_catalog"),
         ("SELECT * FROM PG_CATALOG.pg_class", "pg_catalog"),
+        ("SELECT * FROM \"pg_catalog\".\"pg_user\"", "pg_catalog"),
         # ANSI / Postgres / MySQL information_schema
         ("SELECT table_name FROM information_schema.tables", "information_schema"),
         # MySQL credentials / metadata
         ("SELECT host, user FROM mysql.user", "mysql"),
+        ("SELECT host, user FROM `mysql`.`user`", "mysql"),
         ("SELECT * FROM performance_schema.events_statements_current", "performance_schema"),
         # SQL Server / MySQL `sys`
         ("SELECT * FROM sys.dm_exec_sessions", "sys"),
+        ("SELECT * FROM [sys].[dm_exec_sessions]", "sys"),
         # SQLite metadata tables (bare, no schema qualifier)
         ("SELECT name FROM sqlite_master", "sqlite_master"),
+        ("SELECT name FROM \"sqlite_master\"", "sqlite_master"),
         ("SELECT * FROM Sqlite_Master", "sqlite_master"),
         ("SELECT * FROM sqlite_sequence", "sqlite_sequence"),
         ("SELECT * FROM sqlite_temp_master", "sqlite_temp_master"),

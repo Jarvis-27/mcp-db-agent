@@ -99,6 +99,19 @@ def test_known_table_passes():
     assert result.is_valid is True
 
 
+def test_quoted_known_table_passes():
+    v = _validator(tables=["users"])
+    result = v.validate('SELECT id FROM "users" LIMIT 5')
+    assert result.is_valid is True
+
+
+def test_quoted_unknown_table_is_rejected():
+    v = _validator(tables=["users"])
+    result = v.validate('SELECT * FROM "ghost" LIMIT 5')
+    assert result.is_valid is False
+    assert "ghost" in result.error
+
+
 def test_join_with_unknown_table_rejected():
     v = _validator(tables=["users"])
     result = v.validate("SELECT u.id FROM users u JOIN ghost g ON u.id = g.user_id LIMIT 10")
@@ -120,6 +133,15 @@ def test_cte_alias_not_flagged_as_missing_table():
     result = v.validate(
         "WITH recent AS (SELECT id FROM orders WHERE status = 'pending') "
         "SELECT * FROM recent LIMIT 10"
+    )
+    assert result.is_valid is True
+
+
+def test_quoted_cte_alias_not_flagged_as_missing_table():
+    v = _validator()
+    result = v.validate(
+        'WITH "recent" AS (SELECT id FROM "orders" WHERE status = \'pending\') '
+        'SELECT * FROM "recent" LIMIT 10'
     )
     assert result.is_valid is True
 
@@ -409,6 +431,12 @@ def test_escaped_quote_in_string_literal_does_not_unbalance_mask():
 def test_schema_qualified_table_passes_existence_check():
     v = _validator(tables=["users"])
     result = v.validate("SELECT * FROM public.users LIMIT 5")
+    assert result.is_valid is True, result.error
+
+
+def test_quoted_schema_qualified_table_passes_existence_check():
+    v = _validator(tables=["users"])
+    result = v.validate('SELECT * FROM "public"."users" LIMIT 5')
     assert result.is_valid is True, result.error
 
 
