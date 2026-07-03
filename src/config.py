@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     credential_encryption_keys: str = ""  # comma-separated; first is the encryption key
     registration_open: bool | None = None  # None = not explicitly set → treated as False
     allow_sqlite_user_dbs: bool = False  # NEVER true in prod
-    sqlite_user_db_dir: str = ""  # directory where user SQLite files are permitted
+    sqlite_user_db_dir: str = ""  # dev-only directory where local user DB files are permitted
     extra_blocked_cidrs: str = ""  # comma-separated; e.g. "10.20.30.0/24,..."
     trusted_proxy_ips: str = "127.0.0.1"  # passed to uvicorn forwarded_allow_ips
     port: int = 8000

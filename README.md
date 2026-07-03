@@ -1,6 +1,6 @@
 # PlainQuery
 
-**Ask your database questions in plain English.** PlainQuery connects any PostgreSQL or SQLite database to Claude, Cursor, or VS Code — and answers with real, structured data instead of guesses.
+**Ask your database questions in plain English.** PlainQuery connects PostgreSQL databases to Claude, Cursor, or VS Code — and answers with real, structured data instead of guesses.
 
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.Jarvis--27%2Fmcp--db--agent-3b82f6)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Jarvis-27/mcp-db-agent)
 [![CI](https://github.com/Jarvis-27/mcp-db-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Jarvis-27/mcp-db-agent/actions/workflows/ci.yml)
@@ -166,7 +166,6 @@ The product model is single-account and user-scoped:
 | `LLM_PROVIDER` | Active provider name |
 | `APP_BASE_URL` | Base URL used in setup payloads |
 | `FRONTEND_BASE_URL` | Base URL used in email links |
-| `ALLOW_SQLITE_USER_DBS` | Dev-only escape hatch for user-supplied SQLite databases |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Stripe API and webhook credentials |
 | `STRIPE_PRO_PRICE_ID` | Stripe Price ID that maps to the Pro plan |
 | `STRIPE_CHECKOUT_SUCCESS_URL` / `STRIPE_CHECKOUT_CANCEL_URL` | Optional Checkout redirect overrides |

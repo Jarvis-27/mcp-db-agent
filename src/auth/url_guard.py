@@ -127,8 +127,8 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
     Hard rules:
       - Length <= 2048 chars; reject newline, null byte, semicolon
       - make_url() must succeed
-      - Scheme allow-list (sqlite only when allow_sqlite=True)
-      - For sqlite: path must be inside settings.sqlite_user_db_dir,
+      - Scheme allow-list (local file DBs only when allow_sqlite=True)
+      - For local file DBs: path must be inside settings.sqlite_user_db_dir,
             no '..' segments, not equal to AUTH_DATABASE_URL path
       - For network DBs: resolve hostname; reject any blocked IP (SSRF)
       - Strip dangerous query params
@@ -154,7 +154,7 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
     if scheme.startswith("sqlite"):
         if not allow_sqlite:
             raise InvalidDatabaseURL(
-                "SQLite user databases are not allowed in this deployment. Use PostgreSQL or MySQL."
+                "Local database file URLs are not allowed in this deployment. Use PostgreSQL or MySQL."
             )
         _validate_sqlite_url(url, raw)
         return url
@@ -162,7 +162,7 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
     if scheme not in _ALLOWED_SCHEMES:
         raise InvalidDatabaseURL(
             f"Unsupported database scheme '{scheme}'. "
-            f"Allowed: {', '.join(sorted(_ALLOWED_SCHEMES))} (or sqlite in dev mode)."
+            f"Allowed: {', '.join(sorted(_ALLOWED_SCHEMES))}."
         )
 
     # Strip dangerous query params
@@ -187,7 +187,7 @@ def validate_database_url(raw: str, *, allow_sqlite: bool = False) -> URL:
 
 
 def _validate_sqlite_url(url: URL, raw: str) -> None:
-    """Extra safety checks for SQLite user databases."""
+    """Extra safety checks for local file user databases."""
     # Extract the file path from the URL
     # sqlite:///./path/to/db  →  ./path/to/db
     # sqlite:////abs/path     →  /abs/path
@@ -195,7 +195,7 @@ def _validate_sqlite_url(url: URL, raw: str) -> None:
 
     # Reject memory databases and special paths
     if database in ("", ":memory:"):
-        raise InvalidDatabaseURL("SQLite in-memory databases are not allowed for user databases.")
+        raise InvalidDatabaseURL("In-memory databases are not allowed for user databases.")
 
     path = Path(database).resolve()
     allowed_dir = Path(settings.sqlite_user_db_dir).resolve()
@@ -205,7 +205,7 @@ def _validate_sqlite_url(url: URL, raw: str) -> None:
         path.relative_to(allowed_dir)
     except ValueError:
         raise InvalidDatabaseURL(
-            f"SQLite database path must be inside '{settings.sqlite_user_db_dir}'. "
+            f"Database file path must be inside '{settings.sqlite_user_db_dir}'. "
             "Path traversal is not allowed."
         )
 

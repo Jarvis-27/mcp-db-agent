@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-An MCP (Model Context Protocol) server that exposes any PostgreSQL or SQLite database as a natural-language queryable endpoint. Any MCP client (Claude Desktop, Cursor, VS Code Copilot) can connect and ask questions in plain English. The server introspects the schema, generates SQL via an LLM, validates it for safety, executes it, and returns structured JSON — with a self-correction retry loop if execution fails.
+An MCP (Model Context Protocol) server that exposes PostgreSQL databases as natural-language queryable endpoints. Any MCP client (Claude Desktop, Cursor, VS Code Copilot) can connect and ask questions in plain English. The server introspects the schema, generates SQL via an LLM, validates it for safety, executes it, and returns structured JSON — with a self-correction retry loop if execution fails.
 
 **Two deployment modes:**
 - **Stdio / single-user** (`uv run src/server.py`): local dev, Claude Desktop, VS Code Copilot.
@@ -46,7 +46,7 @@ uv run uvicorn src.app:app --reload
 # Debug with MCP Inspector (requires Node.js)
 npx @modelcontextprotocol/inspector uv run src/server.py
 
-# Seed the demo SQLite database
+# Seed the local demo database
 uv run scripts/seed_demo_db.py
 
 # Database migrations (Alembic)
@@ -104,7 +104,7 @@ HTTPS (terminated at reverse proxy)
 
 - **`src/core/sql_executor.py`** — `SQLExecutor` accepts an injected `ThreadPoolExecutor`. Async; runs SQLAlchemy synchronously in the pool. Exceptions are **not** caught — SelfCorrector handles retries.
 
-- **`src/core/query_log.py`** — Logs every query to `query_history` table. Non-nullable `user_id` (use `"__stdio__"` in single-user mode). UTC-aware timestamps. WAL mode enabled for SQLite.
+- **`src/core/query_log.py`** — Logs every query to `query_history` table. Non-nullable `user_id` (use `"__stdio__"` in single-user mode). UTC-aware timestamps. WAL mode enabled for local file-backed auth stores.
 
 - **`src/api/app.py`** — FastAPI REST API. Endpoints: `POST /v1/users/register`, `GET/PUT/DELETE /v1/users/me`, `POST /v1/users/me/rotate-key`, `GET /health/live`, `GET /health/ready`. Rate-limited by `slowapi`.
 
@@ -117,7 +117,7 @@ HTTPS (terminated at reverse proxy)
 Copy `.env.example` to `.env` and fill in the single-user section:
 
 ```env
-DATABASE_URL=sqlite:///./demo.db        # or postgresql://user:pass@host/db
+DATABASE_URL=postgresql://user:pass@host/db
 ANTHROPIC_API_KEY=sk-ant-...
 GROQ_API_KEY=gsk_...
 LLM_PROVIDER=anthropic                  # or "groq" for free-tier development
@@ -221,7 +221,7 @@ curl -X POST http://localhost:8000/api/v1/users/register \
 
 ## Demo Database Schema
 
-The demo SQLite database (`demo.db`) has four tables: `users`, `products`, `orders`, `order_items`. Seeded with 500 users, 100 products, 2000 orders, 5000 order_items spanning 2023–2024. Used for all integration tests and Claude Desktop demos.
+The local demo database (`demo.db`) has four tables: `users`, `products`, `orders`, `order_items`. Seeded with 500 users, 100 products, 2000 orders, 5000 order_items spanning 2023–2024. Used for all integration tests and Claude Desktop demos.
 
 ## Security Model
 

@@ -2,16 +2,16 @@
 
 **Total Duration:** ~8–10 minutes
 **Format:** Screen recording with voiceover narration
-**Prerequisite Setup:** Run `uv sync && uv run scripts/seed_demo_db.py` before recording. Have Claude Desktop open and configured with the MCP server.
+**Prerequisite Setup:** Run `uv sync`, start the Postgres demo database with `docker compose -f docker-compose.demo.yml up -d`, then seed it with `uv run scripts/seed_demo_db.py --db-url postgresql://admin:secret@localhost:5432/ecommerce` before recording. Have Claude Desktop open and configured with the MCP server.
 
 ---
 
 ## ACT 1: THE PROBLEM (0:00 – 1:30)
 
 ### What to show on screen
-- Open a terminal. Connect to a database with a raw SQL client (e.g., `sqlite3 demo.db`).
-- Run `.tables` to show the four tables.
-- Run `.schema users` to show column definitions.
+- Open a terminal. Connect to a database with a raw SQL client (e.g., `psql postgresql://admin:secret@localhost:5432/ecommerce`).
+- Run `\dt` to show the four tables.
+- Run `\d users` to show column definitions.
 - Type a deliberately wrong query like `SELECT * FROM user;` (wrong table name) and show the error.
 - Then type a correct but complex query: a multi-table JOIN with aggregation. Pause to show its complexity.
 
@@ -38,7 +38,7 @@
 
 ### Narration
 
-> "This is MCP Database Agent — an open-source server that turns any PostgreSQL or SQLite database into a natural-language endpoint.
+> "This is MCP Database Agent — an open-source server that turns a PostgreSQL database into a natural-language endpoint.
 >
 > It plugs into any MCP-compatible client — Claude Desktop, Cursor, VS Code Copilot — using the Model Context Protocol. You ask a question in English, and the agent introspects your schema, generates safe SQL, validates it, executes it, and returns clean, structured results.
 >
@@ -165,7 +165,7 @@ Open Claude Desktop connected to the MCP server. Run each query one at a time, p
 
 ### Narration
 
-> "Setup takes under two minutes. Point it at any PostgreSQL or SQLite database with a connection string, add your API key, and you're live.
+> "Setup takes under two minutes. Point it at a PostgreSQL database with a connection string, add your API key, and you're live.
 >
 > It supports two LLM backends — Anthropic's Claude for production quality, and Groq's Llama for free-tier development and testing. Switch with a single environment variable.
 >
@@ -190,7 +190,7 @@ Open Claude Desktop connected to the MCP server. Run each query one at a time, p
 >
 > With MCP Database Agent, anyone on your team gets the answer in seconds.
 >
-> To recap what you're getting: natural-language database access for your entire team. Production-safe, read-only queries with automatic validation. A self-correcting engine that handles errors gracefully. Full query logging and observability. Support for PostgreSQL and SQLite. And zero new tools to learn — it works inside the editors and assistants your team already uses.
+> To recap what you're getting: natural-language database access for your entire team. Production-safe, read-only queries with automatic validation. A self-correcting engine that handles errors gracefully. Full query logging and observability. Support for PostgreSQL. And zero new tools to learn — it works inside the editors and assistants your team already uses.
 >
 > Stop gatekeeping your data behind SQL expertise. Let your whole team ask questions and get answers."
 

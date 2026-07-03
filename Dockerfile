@@ -15,8 +15,8 @@ COPY src/ ./src/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# Persist auth DB and user-supplied SQLite DBs (dev only) on a volume
-RUN mkdir -p /var/lib/mcp-db-agent/user-dbs && \
+# Persist account data on a volume
+RUN mkdir -p /var/lib/mcp-db-agent && \
     chown -R app:app /app /var/lib/mcp-db-agent
 
 USER app

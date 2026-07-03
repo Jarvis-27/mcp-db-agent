@@ -9,7 +9,7 @@
         "src/server.py"
       ],
       "env": {
-        "DATABASE_URL": "sqlite:////absolute/path/to/mcp-db-agent/demo.db",
+        "DATABASE_URL": "postgresql://user:password@host:5432/dbname?sslmode=require",
         "GROQ_API_KEY": "your-groq-api-key",
         "ANTHROPIC_API_KEY": "your-anthropic-api-key",
         "LLM_PROVIDER": "groq",

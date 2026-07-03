@@ -321,8 +321,8 @@ export default function SetupDatabasePage() {
                     className="h-11 font-mono text-[13px]"
                   />
                   <p className="text-xs leading-5 text-muted-foreground">
-                    PostgreSQL URLs are supported here. Hosted setup does not
-                    accept SQLite database files.
+                    Use a PostgreSQL connection string with SSL enabled for
+                    hosted setup.
                   </p>
                 </div>
               </div>
