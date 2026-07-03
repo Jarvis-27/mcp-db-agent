@@ -1,8 +1,18 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ArrowRight, HelpCircle } from 'lucide-react'
 import { PricingCards } from '@/components/marketing/pricing-cards'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+
+export const metadata: Metadata = {
+  title: 'Pricing',
+  description:
+    'Start free with PlainQuery. Connect Postgres, ask database questions in plain English from MCP clients, and upgrade when your team needs more daily queries.',
+  alternates: {
+    canonical: '/pricing',
+  },
+}
 
 const faqs = [
   {

@@ -8,6 +8,9 @@ export const metadata: Metadata = {
   title: 'Terms of Service | PlainQuery',
   description:
     'PlainQuery terms covering accounts, subscriptions, acceptable use, customer data, cancellations, and refunds.',
+  alternates: {
+    canonical: '/terms-of-service',
+  },
 }
 
 export default function TermsOfServicePage() {
