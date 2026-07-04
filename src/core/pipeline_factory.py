@@ -45,15 +45,30 @@ class PipelineComponents:
 
 
 class _DisposingTTLCache(TTLCache):
-    """TTLCache that disposes the SQLAlchemy engine when an entry is evicted."""
+    """TTLCache that disposes the SQLAlchemy engine when an entry is evicted.
+
+    Both eviction paths must be hooked: ``popitem()`` handles size-based LRU
+    eviction, but TTL expiry removes entries via ``expire()`` without ever
+    calling ``popitem()``, so it needs its own override.
+    """
 
     def popitem(self):
         key, value = super().popitem()
+        self._dispose(value)
+        return key, value
+
+    def expire(self, time=None):
+        expired = super().expire(time)
+        for _key, value in expired:
+            self._dispose(value)
+        return expired
+
+    @staticmethod
+    def _dispose(value) -> None:
         try:
             value.engine.dispose()
         except Exception as exc:
             log.warning("engine_dispose_failed", extra={"err": str(exc)})
-        return key, value
 
 
 class PipelineFactory:

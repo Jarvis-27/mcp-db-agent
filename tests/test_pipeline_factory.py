@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auth.user_store import UserConfig
-from src.core.pipeline_factory import NoLLMKeyAvailable, PipelineFactory
+from src.core.pipeline_factory import NoLLMKeyAvailable, PipelineFactory, _DisposingTTLCache
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,59 @@ async def test_shutdown_disposes_all_engines(mock_settings, pool):
     engine1.dispose.assert_called_once()
     engine2.dispose.assert_called_once()
     assert len(factory._cache) == 0
+
+
+# ---------------------------------------------------------------------------
+# Cache eviction disposes engines — both the TTL-expiry and size-based paths
+# ---------------------------------------------------------------------------
+
+
+def test_ttl_expiry_disposes_engine():
+    """Entries that age out via TTL are removed by TTLCache.expire(), which
+    bypasses popitem() — the expire() override must dispose their engines."""
+    clock = [0.0]
+    cache = _DisposingTTLCache(maxsize=100, ttl=3600, timer=lambda: clock[0])
+    stale_engine = MagicMock()
+    cache[("user-A", "postgres://db1")] = MagicMock(engine=stale_engine)
+
+    clock[0] = 3601.0
+    # Any cache write triggers expire() on the aged-out entry.
+    fresh_engine = MagicMock()
+    cache[("user-B", "postgres://db2")] = MagicMock(engine=fresh_engine)
+
+    stale_engine.dispose.assert_called_once()
+    fresh_engine.dispose.assert_not_called()
+    assert ("user-A", "postgres://db1") not in cache
+    assert ("user-B", "postgres://db2") in cache
+
+
+def test_size_eviction_disposes_engine():
+    cache = _DisposingTTLCache(maxsize=1, ttl=3600)
+    lru_engine = MagicMock()
+    cache[("user-A", "postgres://db1")] = MagicMock(engine=lru_engine)
+
+    new_engine = MagicMock()
+    cache[("user-B", "postgres://db2")] = MagicMock(engine=new_engine)
+
+    lru_engine.dispose.assert_called_once()
+    new_engine.dispose.assert_not_called()
+    assert ("user-A", "postgres://db1") not in cache
+    assert ("user-B", "postgres://db2") in cache
+
+
+def test_dispose_failure_does_not_break_eviction():
+    """A failing engine.dispose() is logged, not raised, and eviction completes."""
+    clock = [0.0]
+    cache = _DisposingTTLCache(maxsize=100, ttl=3600, timer=lambda: clock[0])
+    bad_engine = MagicMock()
+    bad_engine.dispose.side_effect = RuntimeError("connection pool exploded")
+    cache[("user-A", "postgres://db1")] = MagicMock(engine=bad_engine)
+
+    clock[0] = 3601.0
+    cache[("user-B", "postgres://db2")] = MagicMock(engine=MagicMock())
+
+    bad_engine.dispose.assert_called_once()
+    assert ("user-A", "postgres://db1") not in cache
 
 
 # ---------------------------------------------------------------------------
