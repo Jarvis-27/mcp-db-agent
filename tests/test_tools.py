@@ -175,6 +175,17 @@ async def test_ask_database_failure_empty_errors_list():
     assert len(out["error"]) > 0
 
 
+async def test_ask_database_default_dialect_is_postgresql():
+    """The project is PostgreSQL-only; the tool must not steer the LLM toward
+    SQLite when a caller omits the dialect."""
+    corrector = _make_corrector(success=True)
+    fmt = ResultFormatter()
+
+    await ask_database("Count users", corrector, fmt)
+
+    corrector.execute_with_correction.assert_awaited_once_with("Count users", "postgresql")
+
+
 async def test_ask_database_forwards_dialect():
     corrector = _make_corrector(success=True)
     fmt = MagicMock()

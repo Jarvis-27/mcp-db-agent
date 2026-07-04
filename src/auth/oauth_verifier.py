@@ -128,11 +128,14 @@ class OAuthVerifier:
             raise OAuthVerificationError(f"Unexpected error fetching JWKS: {exc}") from exc
 
     def _decode_token(self, raw_token: str, signing_key) -> dict:
-        decode_options: dict[str, bool] = {
+        decode_options: dict[str, Any] = {
             "verify_exp": True,
             "verify_nbf": True,
             "verify_iss": False,  # checked manually in _extract_claims to handle trailing-slash variants
             "verify_aud": bool(self._audience),
+            # PyJWT only *enforces* exp when the claim is present; require it so a
+            # signed-but-non-expiring token cannot be replayed forever.
+            "require": ["exp"],
         }
         try:
             payload: dict = jwt.decode(

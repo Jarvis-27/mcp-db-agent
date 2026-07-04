@@ -10,7 +10,7 @@ async def ask_database(
     question: str,
     corrector: SelfCorrector,
     formatter: ResultFormatter,
-    dialect: str = "sqlite",
+    dialect: str = "postgresql",
 ) -> str:
     """Translate *question* to SQL, execute it, and return structured JSON.
 

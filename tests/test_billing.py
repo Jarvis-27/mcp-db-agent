@@ -352,6 +352,78 @@ def test_subscription_deleted_webhook_downgrades_to_free(client, app_state):
     assert str(user.billing_status) == "canceled"
 
 
+def test_checkout_session_blocked_for_active_pro_user(client, app_state):
+    """A user already on Pro must not be able to open a second checkout session
+    (which would create a duplicate, untracked Stripe subscription)."""
+    store, stripe_client = app_state
+    user_id, token = _active_session(store)
+    store.apply_billing_update(
+        user_id=user_id,
+        billing_status="active_paid",
+        plan_code="pro",
+        stripe_customer_id="cus_existing",
+        stripe_subscription_id="sub_existing",
+    )
+
+    resp = client.post("/v1/account/billing/checkout-session", headers=_auth(token))
+
+    assert resp.status_code == 409
+    assert "already have an active Pro subscription" in resp.json()["detail"]
+    # No Stripe checkout session was created.
+    assert stripe_client.checkout_sessions == []
+
+
+def test_stale_subscription_deleted_does_not_downgrade_active_user(client, app_state):
+    """A delayed cancel of a *superseded* subscription must not knock a paying
+    user (now on a newer subscription) back to the free plan."""
+    store, _stripe_client = app_state
+    user_id, _token = _active_session(store)
+    # User's current, active subscription is sub_new.
+    store.apply_billing_update(
+        user_id=user_id,
+        billing_status="active_paid",
+        plan_code="pro",
+        stripe_customer_id="cus_x",
+        stripe_subscription_id="sub_new",
+    )
+    # A late-arriving cancellation for the OLD subscription sub_old.
+    event = {
+        "id": "evt_stale_cancel",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_old", "customer": "cus_x"}},
+    }
+    payload, signature = _signed_event(event)
+
+    resp = client.post(
+        "/v1/billing/webhook",
+        content=payload,
+        headers={"Stripe-Signature": signature},
+    )
+
+    assert resp.status_code == 200
+    user = store.get_user_row(user_id)
+    assert user is not None
+    # Still Pro — the stale cancel was ignored.
+    assert str(user.plan_code) == "pro"
+    assert str(user.billing_status) == "active_paid"
+    assert str(user.stripe_subscription_id) == "sub_new"
+
+
+def test_confirm_session_rejects_malformed_session_id(client, app_state):
+    """A session_id that isn't a Stripe cs_ id is rejected at the API boundary,
+    so it can never be interpolated into the Stripe request path."""
+    _store, _stripe_client = app_state
+    _user_id, token = _active_session(_store)
+
+    resp = client.post(
+        "/v1/account/billing/confirm-session",
+        headers=_auth(token),
+        json={"session_id": "../../v1/subscriptions/sub_evil"},
+    )
+
+    assert resp.status_code == 422  # Pydantic pattern rejection
+
+
 def test_webhook_rejects_invalid_signature(client, app_state):
     _store, _stripe_client = app_state
     payload = b'{"id":"evt_bad","type":"checkout.session.completed"}'
@@ -441,6 +513,57 @@ def test_confirm_session_idempotent_with_webhook(client, app_state):
     # Both idempotency rows exist under their own namespaces.
     assert store.has_processed_billing_event("confirm:cs_dual_1") is True
     assert store.has_processed_billing_event("evt_dual_1") is True
+
+
+def test_confirm_then_webhook_preserves_billing_current_period_end(client, app_state):
+    """The checkout.session.completed webhook must not wipe the period end that
+    confirm_checkout_session stored from the expanded subscription object."""
+    store, stripe_client = app_state
+    user_id, token = _active_session(store)
+    period_end = 1_900_000_000
+    stripe_client.session_fixtures["cs_period_1"] = _paid_session_fixture(
+        user_id=user_id, session_id="cs_period_1", period_end=period_end
+    )
+
+    confirm = client.post(
+        "/v1/account/billing/confirm-session",
+        headers=_auth(token),
+        json={"session_id": "cs_period_1"},
+    )
+    assert confirm.status_code == 200
+
+    user = store.get_user_row(user_id)
+    assert user is not None
+    assert user.billing_current_period_end is not None
+    period_end_after_confirm = user.billing_current_period_end
+
+    # The webhook for the same checkout carries no subscription period end and
+    # arrives under its own event-id namespace, so it is not treated as a dupe.
+    event = {
+        "id": "evt_period_1",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "customer": "cus_confirm",
+                "subscription": "sub_confirm",
+                "metadata": {"user_id": user_id},
+            }
+        },
+    }
+    payload, signature = _signed_event(event)
+    webhook = client.post(
+        "/v1/billing/webhook",
+        content=payload,
+        headers={"Stripe-Signature": signature},
+    )
+    assert webhook.status_code == 200
+    assert webhook.json()["processed"] is True
+
+    user = store.get_user_row(user_id)
+    assert user is not None
+    # Regression: the period end survives the webhook rather than being NULLed.
+    assert user.billing_current_period_end is not None
+    assert user.billing_current_period_end == period_end_after_confirm
 
 
 def test_confirm_session_rejects_other_users_session(client, app_state):

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -95,8 +96,12 @@ class StripeClient:
         is processed. The expanded subscription gives us the price id and
         current_period_end in a single round trip.
         """
+        # Percent-encode the id so a caller-supplied value cannot alter the
+        # request target (path traversal / query injection) even if it reaches
+        # here unvalidated.
+        safe_id = quote(session_id, safe="")
         return await self._get(
-            f"/v1/checkout/sessions/{session_id}",
+            f"/v1/checkout/sessions/{safe_id}",
             [
                 ("expand[]", "subscription"),
                 ("expand[]", "subscription.items.data.price"),

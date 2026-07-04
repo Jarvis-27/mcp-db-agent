@@ -106,14 +106,17 @@ class QueryLog:
             if total == 0:
                 return AggregateStats(total=0, errors=0, p50_duration_ms=None, p95_duration_ms=None)
 
+            # Do NOT order by duration here: `ORDER BY duration_ms ASC LIMIT N`
+            # would keep the N *fastest* rows once a day exceeds N, biasing p95
+            # sharply low. Take an unordered slice (≈ a sample) and sort in
+            # Python so the percentiles reflect the whole day's distribution.
             rows = (
                 session.query(QueryHistory.duration_ms)
                 .filter(QueryHistory.timestamp >= start)
-                .order_by(QueryHistory.duration_ms.asc())
                 .limit(_MAX_PERCENTILE_SAMPLES)
                 .all()
             )
-            durations = [int(r[0]) for r in rows if r[0] is not None]
+            durations = sorted(int(r[0]) for r in rows if r[0] is not None)
 
         if not durations:
             return AggregateStats(
@@ -143,17 +146,13 @@ class QueryLog:
 
         with Session(self._engine) as session:
             rows = (
-                session.query(
-                    func.date(QueryHistory.timestamp), func.count(QueryHistory.id)
-                )
+                session.query(func.date(QueryHistory.timestamp), func.count(QueryHistory.id))
                 .filter(QueryHistory.timestamp >= start)
                 .group_by(func.date(QueryHistory.timestamp))
                 .all()
             )
             error_rows = (
-                session.query(
-                    func.date(QueryHistory.timestamp), func.count(QueryHistory.id)
-                )
+                session.query(func.date(QueryHistory.timestamp), func.count(QueryHistory.id))
                 .filter(QueryHistory.timestamp >= start, QueryHistory.success.is_(False))
                 .group_by(func.date(QueryHistory.timestamp))
                 .all()
@@ -178,9 +177,7 @@ class QueryLog:
         for offset in range(days):
             day = (start + timedelta(days=offset)).date().isoformat()
             out.append(
-                DailyCount(
-                    date=day, total=total_map.get(day, 0), errors=error_map.get(day, 0)
-                )
+                DailyCount(date=day, total=total_map.get(day, 0), errors=error_map.get(day, 0))
             )
         return out
 
@@ -211,15 +208,11 @@ class QueryLog:
 
             total = base.count()
 
-            rows = (
-                base.order_by(QueryHistory.id.desc()).limit(limit).offset(offset).all()
-            )
+            rows = base.order_by(QueryHistory.id.desc()).limit(limit).offset(offset).all()
             user_ids = list({str(r.user_id) for r in rows})
             email_map: dict[str, str] = {}
             if user_ids:
-                user_rows = (
-                    session.query(User.id, User.email).filter(User.id.in_(user_ids)).all()
-                )
+                user_rows = session.query(User.id, User.email).filter(User.id.in_(user_ids)).all()
                 email_map = {str(uid): str(email) for uid, email in user_rows}
 
             items: list[dict[str, object]] = []

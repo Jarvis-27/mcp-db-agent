@@ -450,6 +450,78 @@ def test_update_timezone_unknown_user_returns_false(store):
     assert store.update_timezone("00000000-0000-0000-0000-000000000000", "UTC") is False
 
 
+def _stored_reset(store, user_id):
+    user = store.get_user_row(user_id)
+    assert user is not None
+    reset_at = user.daily_quota_reset_at
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=UTC)
+    return reset_at
+
+
+def test_update_timezone_cannot_move_reset_earlier_once_quota_used(store):
+    """Quota-bypass regression: a timezone change must not pull the reset
+    boundary earlier after any quota has been consumed, or a near-limit user
+    could hop timezones to harvest an early count reset."""
+    user_id, _, _ = _make_active_user(store)
+    store.consume_daily_query_quota(user_id)  # count = 1, active window
+
+    # Pin the reset boundary beyond any possible next-local-midnight (which is
+    # always < ~24h away), so the assertion is independent of wall-clock time.
+    far_reset = datetime.now(UTC) + timedelta(hours=26)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET daily_quota_reset_at = :t WHERE id = :id"),
+            {"t": far_reset, "id": user_id},
+        )
+        conn.commit()
+
+    # Every timezone's local midnight is nearer than +26h; none may win.
+    for tz in ("Asia/Kolkata", "America/Los_Angeles", "Etc/GMT-14", "Etc/GMT+12"):
+        assert store.update_timezone(user_id, tz) is True
+        assert _stored_reset(store, user_id) >= far_reset - timedelta(seconds=1)
+        user = store.get_user_row(user_id)
+        assert int(user.daily_query_count) == 1  # count preserved, never reset
+
+
+def test_update_timezone_realigns_reset_later_when_quota_used(store):
+    """Forward realignment is still allowed: a new zone whose local midnight is
+    later than the current boundary moves the reset later (never a bypass)."""
+    user_id, _, _ = _make_active_user(store)
+    store.consume_daily_query_quota(user_id)  # count = 1, active window
+
+    near_reset = datetime.now(UTC) + timedelta(minutes=1)
+    with store._engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET daily_quota_reset_at = :t WHERE id = :id"),
+            {"t": near_reset, "id": user_id},
+        )
+        conn.commit()
+
+    assert store.update_timezone(user_id, "Asia/Kolkata") is True
+    # Boundary moved forward to the real next local midnight, well past +1 min.
+    assert _stored_reset(store, user_id) > near_reset + timedelta(minutes=1)
+
+
+def test_timezone_hop_does_not_grant_extra_quota(store):
+    """End-to-end: consuming to the free-plan limit, hopping timezones, then
+    consuming again does not reset the count — the daily cap still holds."""
+    from src.entitlements.plans import FREE_PLAN
+
+    user_id, _, _ = _make_active_user(store)
+    for _ in range(FREE_PLAN.ask_database_per_day):
+        snap = store.consume_daily_query_quota(user_id)
+    assert snap.daily_count == FREE_PLAN.ask_database_per_day
+
+    for tz in ("Etc/GMT-14", "Etc/GMT+12", "Asia/Kolkata", "Pacific/Kiritimati"):
+        assert store.update_timezone(user_id, tz) is True
+
+    # The window boundary is still in the future, so the next consume keeps
+    # climbing rather than resetting to 1.
+    snap = store.consume_daily_query_quota(user_id)
+    assert snap.daily_count == FREE_PLAN.ask_database_per_day + 1
+
+
 def test_consume_quota_uses_user_timezone(store):
     from zoneinfo import ZoneInfo
 
