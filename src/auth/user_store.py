@@ -843,7 +843,11 @@ class UserStore:
                 user.stripe_subscription_id = stripe_subscription_id  # type: ignore[assignment]
             if stripe_price_id is not None:
                 user.stripe_price_id = stripe_price_id  # type: ignore[assignment]
-            user.billing_current_period_end = billing_current_period_end  # type: ignore[assignment]
+            # Preserve-on-None like the sibling fields: events that don't carry a
+            # period end (checkout.session.completed, invoice.payment_failed) must
+            # not wipe the value stored by the subscription/confirm events.
+            if billing_current_period_end is not None:
+                user.billing_current_period_end = billing_current_period_end  # type: ignore[assignment]
             if billing_last_event_id is not None:
                 user.billing_last_event_id = billing_last_event_id  # type: ignore[assignment]
             user.updated_at = now  # type: ignore[assignment]
@@ -1088,37 +1092,51 @@ class UserStore:
         )
 
     def update_timezone(self, user_id: str, timezone: str) -> bool:
-        """Update the user's IANA timezone and recompute daily_quota_reset_at.
+        """Update the user's IANA timezone and realign daily_quota_reset_at.
 
         Returns True if the row exists, False otherwise. Falls back to "UTC"
         if `timezone` is not a recognized IANA name.
+
+        Security — quota-window integrity: the reset boundary is realigned to
+        the new zone's local midnight only while there is nothing to protect
+        (a fresh window with no consumed quota, or a window that has already
+        elapsed and is due to reset anyway). Once queries have been counted in
+        the current window, a timezone change may push the reset *later* but
+        never *earlier*. Allowing it to move earlier would let a user near
+        their daily limit hop timezones to slide the boundary just ahead of
+        ``now``, wait for it to pass, and harvest an early count reset in
+        ``consume_daily_query_quota`` (which zeroes the count once
+        ``now >= daily_quota_reset_at``), defeating the daily quota.
         """
         tz = _normalize_timezone(timezone)
         now = _utcnow()
-        next_reset = _next_local_midnight(now, tz)
+        computed_reset = _next_local_midnight(now, tz)
 
         with Session(self._engine) as session:
-            result = session.execute(
-                text(
-                    """
-                    UPDATE users
-                    SET
-                        timezone = :tz,
-                        daily_quota_reset_at = :next_reset,
-                        updated_at = :now
-                    WHERE id = :user_id
-                    """
-                ),
-                {
-                    "tz": tz,
-                    "next_reset": next_reset,
-                    "now": now,
-                    "user_id": user_id,
-                },
-            )
+            user = session.get(User, user_id)
+            if user is None:
+                return False
+
+            existing_reset = _ensure_utc(cast(datetime, user.daily_quota_reset_at))
+            used = int(user.daily_query_count or 0)
+
+            if used == 0:
+                # Fresh/unused window (e.g. onboarding): realign freely — an
+                # empty count cannot be gamed by an early reset.
+                new_reset = computed_reset
+            elif existing_reset <= now:
+                # Window already elapsed; the pending reset must still fire on
+                # next use, so leave the (past) boundary untouched.
+                new_reset = existing_reset
+            else:
+                # Active window with consumed quota: forward-only realignment.
+                new_reset = max(existing_reset, computed_reset)
+
+            user.timezone = tz  # type: ignore[assignment]
+            user.daily_quota_reset_at = new_reset  # type: ignore[assignment]
+            user.updated_at = now  # type: ignore[assignment]
             session.commit()
-        rowcount = getattr(result, "rowcount", 0)
-        return int(rowcount or 0) > 0
+        return True
 
     # ------------------------------------------------------------------
     # Admin / operator helpers
@@ -1153,12 +1171,7 @@ class UserStore:
 
             total = base.count()
 
-            users = (
-                base.order_by(User.created_at.desc())
-                .limit(limit)
-                .offset(offset)
-                .all()
-            )
+            users = base.order_by(User.created_at.desc()).limit(limit).offset(offset).all()
             user_ids = [str(u.id) for u in users]
 
             last_query_map: dict[str, datetime] = {}
@@ -1166,9 +1179,7 @@ class UserStore:
                 from sqlalchemy import func
 
                 rows = (
-                    session.query(
-                        QueryHistory.user_id, func.max(QueryHistory.timestamp)
-                    )
+                    session.query(QueryHistory.user_id, func.max(QueryHistory.timestamp))
                     .filter(QueryHistory.user_id.in_(user_ids))
                     .group_by(QueryHistory.user_id)
                     .all()

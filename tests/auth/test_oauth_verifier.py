@@ -211,6 +211,25 @@ def test_missing_sub_raises():
         verifier.verify(token)
 
 
+def test_missing_exp_claim_raises():
+    """A signed token with no `exp` must be rejected, not treated as valid — PyJWT
+    only enforces expiry when the claim is present, so we require it explicitly."""
+    priv, pub = _generate_rsa_key_pair()
+    verifier = _make_verifier(priv, pub)
+    now = int(time.time())
+    payload = {
+        "iss": _ISSUER,
+        "sub": "oauth2|test-user-123",
+        "aud": _AUDIENCE,
+        "iat": now,
+        "scope": "mcp:access",
+        # "exp" deliberately omitted
+    }
+    token = jwt.encode(payload, _private_pem(priv), algorithm="RS256")
+    with pytest.raises(OAuthVerificationError):
+        verifier.verify(token)
+
+
 def test_missing_required_scope_raises():
     priv, pub = _generate_rsa_key_pair()
     verifier = _make_verifier(priv, pub, required_scopes=["mcp:access", "mcp:write"])

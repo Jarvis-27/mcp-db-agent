@@ -287,7 +287,9 @@ class BillingWebhookResponse(BaseModel):
 
 
 class BillingConfirmRequest(BaseModel):
-    session_id: str
+    # Stripe checkout session ids look like ``cs_...``. Constrain the shape so a
+    # crafted value cannot be interpolated into the Stripe API request path.
+    session_id: str = Field(..., pattern=r"^cs_[A-Za-z0-9_]+$", max_length=255)
 
 
 class BillingConfirmResponse(BaseModel):

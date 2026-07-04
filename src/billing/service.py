@@ -142,6 +142,20 @@ class BillingService:
         ):
             raise StateTransitionError("Complete account setup before upgrading.")
 
+        # Block a second subscription for users who already have an active one.
+        # Without this, a user could POST directly to the checkout endpoint
+        # (bypassing the UI's advisory `checkout_available` flag) and end up
+        # paying for two live Stripe subscriptions, only one of which the app
+        # tracks.
+        if str(user.plan_code) == "pro" or str(user.billing_status) in {
+            BILLING_ACTIVE_PAID,
+            BILLING_TRIALING,
+        }:
+            raise StateTransitionError(
+                "You already have an active Pro subscription. "
+                "Manage it from the billing portal instead."
+            )
+
         stripe_customer_id = (
             str(user.stripe_customer_id) if user.stripe_customer_id is not None else None
         )
@@ -173,9 +187,7 @@ class BillingService:
             return_url=self._settings.stripe_customer_portal_return_url_effective(),
         )
 
-    async def confirm_checkout_session(
-        self, user_id: str, session_id: str
-    ) -> BillingConfirmResult:
+    async def confirm_checkout_session(self, user_id: str, session_id: str) -> BillingConfirmResult:
         """Synchronously apply a completed checkout session to the user.
 
         Bridges the post-redirect race when Stripe's `checkout.session.completed`
@@ -226,7 +238,10 @@ class BillingService:
             )
 
         confirm_event_id = f"confirm:{session_id}"
-        if self._user_store.has_processed_billing_event(confirm_event_id) or summary.plan_code == "pro":
+        if (
+            self._user_store.has_processed_billing_event(confirm_event_id)
+            or summary.plan_code == "pro"
+        ):
             log.info(
                 "billing_confirm_session_already_pro",
                 extra={"user_id": user_id, "session_id": session_id},
@@ -336,7 +351,7 @@ class BillingService:
             subscription_id = _stripe_id(obj.get("id")) or subscription_id
             customer_id = _stripe_id(obj.get("customer"))
             user_id = self._user_id_for_customer(customer_id)
-            if user_id:
+            if user_id and self._is_current_subscription(user_id, subscription_id):
                 billing_status = BILLING_CANCELED
                 plan_code = "free"
                 self._user_store.apply_billing_update(
@@ -394,6 +409,27 @@ class BillingService:
             return None
         user = self._user_store.get_user_by_stripe_customer_id(customer_id)
         return str(user.id) if user is not None else None
+
+    def _is_current_subscription(self, user_id: str, subscription_id: str | None) -> bool:
+        """Return True unless the event targets a subscription the user has replaced.
+
+        Stripe does not guarantee delivery order and retries failed deliveries
+        for hours. A delayed ``customer.subscription.deleted`` for a *superseded*
+        subscription must not downgrade a user who has since started a new one.
+        When we have no stored subscription id, or the ids match, the event is
+        treated as current (fail-open so genuine cancellations still apply).
+        """
+        if not subscription_id:
+            return True
+        user = self._user_store.get_user_row(user_id)
+        stored = (
+            str(user.stripe_subscription_id)
+            if user is not None and user.stripe_subscription_id is not None
+            else None
+        )
+        if stored is None:
+            return True
+        return stored == subscription_id
 
 
 def _status_to_billing_state(status: str) -> tuple[str, str]:
