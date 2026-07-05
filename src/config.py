@@ -1,9 +1,26 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LOCAL_HOSTNAMES = {"localhost", "localhost.localdomain", "0.0.0.0", "::1"}
+
+
+def _url_hostname_is_local(url: str) -> bool:
+    """Return True when a URL points at localhost / a loopback address.
+
+    Covers ``localhost``, the IPv4 loopback block (``127.0.0.0/8``), the IPv6
+    loopback ``::1``, and the unroutable ``0.0.0.0`` bind-all address.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    if host in _LOCAL_HOSTNAMES:
+        return True
+    return host.startswith("127.")
 
 
 @dataclass(frozen=True)
@@ -198,6 +215,24 @@ class Settings(BaseSettings):
                 "Stripe billing is enabled but STRIPE_SECRET_KEY, "
                 "STRIPE_WEBHOOK_SECRET, and STRIPE_PRO_PRICE_ID are not all set."
             )
+        if self.environment == "production":
+            local_urls = [
+                name
+                for name, url in (
+                    ("APP_BASE_URL", self.app_base_url),
+                    ("FRONTEND_BASE_URL", self.frontend_base_url),
+                )
+                if _url_hostname_is_local(url)
+            ]
+            if local_urls:
+                raise ValueError(
+                    f"{' and '.join(local_urls)} must be a public URL in "
+                    "production, not a localhost/loopback address. These build "
+                    "the links in verification emails and the MCP endpoint URLs "
+                    "in client setup payloads, so a localhost value is unusable "
+                    "for real users. Set them to your public base URLs "
+                    "(e.g. https://app.example.com)."
+                )
         if self.environment == "production" and self.auth_store_is_sqlite():
             raise ValueError(
                 "A SQLite AUTH_DATABASE_URL is not allowed in production. The "

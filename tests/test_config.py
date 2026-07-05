@@ -19,6 +19,9 @@ def _base_kwargs(**overrides) -> dict:
         # baseline prod config is valid and tests can override it explicitly.
         "resend_api_key": "re_testkey",
         "resend_from_address": "noreply@example.com",
+        # Public base URLs are required in production (non-localhost).
+        "app_base_url": "https://app.example.com",
+        "frontend_base_url": "https://app.example.com",
     }
     defaults.update(overrides)
     return defaults
@@ -156,3 +159,43 @@ class TestAuthStoreBackend:
             )
         )
         assert s.auth_store_is_sqlite() is True
+
+
+class TestPublicBaseUrls:
+    def test_localhost_app_base_url_in_production_raises(self):
+        with pytest.raises(ValidationError, match="APP_BASE_URL"):
+            Settings(**_base_kwargs(app_base_url="http://localhost:8000"))
+
+    def test_localhost_frontend_base_url_in_production_raises(self):
+        with pytest.raises(ValidationError, match="FRONTEND_BASE_URL"):
+            Settings(**_base_kwargs(frontend_base_url="http://localhost:3000"))
+
+    def test_loopback_ip_in_production_raises(self):
+        with pytest.raises(ValidationError, match="APP_BASE_URL"):
+            Settings(**_base_kwargs(app_base_url="http://127.0.0.1:8000"))
+
+    def test_public_urls_in_production_pass(self):
+        s = Settings(**_base_kwargs())  # https://app.example.com by default
+        assert s.app_base_url.startswith("https://")
+
+    def test_localhost_allowed_in_staging(self):
+        s = Settings(
+            **_base_kwargs(
+                environment="staging",
+                app_base_url="http://localhost:8000",
+                frontend_base_url="http://localhost:3000",
+            )
+        )
+        assert s.frontend_base_url == "http://localhost:3000"
+
+    def test_localhost_allowed_in_development(self):
+        s = Settings(
+            **_base_kwargs(
+                environment="development",
+                credential_encryption_keys="",
+                registration_open=None,
+                app_base_url="http://localhost:8000",
+                frontend_base_url="http://localhost:3000",
+            )
+        )
+        assert s.app_base_url == "http://localhost:8000"
