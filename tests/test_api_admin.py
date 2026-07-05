@@ -357,9 +357,7 @@ def test_admin_user_detail_omits_db_url_enc(client, admin_user, regular_user):
     assert data["db_validation_status"] == "validated"
 
 
-def test_admin_user_detail_includes_api_keys_and_recent_queries(
-    client, admin_user, regular_user
-):
+def test_admin_user_detail_includes_api_keys_and_recent_queries(client, admin_user, regular_user):
     query_log: QueryLog = api_app.state.query_log
     query_log.log_query(
         question="hello",

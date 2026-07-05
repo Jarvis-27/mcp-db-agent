@@ -27,9 +27,7 @@ def engine():
         poolclass=StaticPool,
     )
     with e.connect() as conn:
-        conn.execute(
-            text("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
-        )
+        conn.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"))
         conn.execute(text("INSERT INTO users (name, email) VALUES ('Alice', 'a@x.com')"))
         conn.commit()
     yield e
@@ -67,9 +65,7 @@ async def test_drift_mid_session_triggers_refresh_and_succeeds(engine, settings)
     pool = ThreadPoolExecutor(max_workers=2)
     try:
         executor = SQLExecutor(engine, settings, pool)
-        corrector = SelfCorrector(
-            generator, validator, executor, settings, inspector=inspector
-        )
+        corrector = SelfCorrector(generator, validator, executor, settings, inspector=inspector)
         result = await corrector.execute_with_correction("list user ids", "sqlite")
 
         assert result["success"] is True

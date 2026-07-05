@@ -135,7 +135,7 @@ def test_join_query_passes(validator):
         # PostgreSQL system catalog
         ("SELECT * FROM pg_catalog.pg_user", "pg_catalog"),
         ("SELECT * FROM PG_CATALOG.pg_class", "pg_catalog"),
-        ("SELECT * FROM \"pg_catalog\".\"pg_user\"", "pg_catalog"),
+        ('SELECT * FROM "pg_catalog"."pg_user"', "pg_catalog"),
         # ANSI / Postgres / MySQL information_schema
         ("SELECT table_name FROM information_schema.tables", "information_schema"),
         # MySQL credentials / metadata
@@ -147,7 +147,7 @@ def test_join_query_passes(validator):
         ("SELECT * FROM [sys].[dm_exec_sessions]", "sys"),
         # SQLite metadata tables (bare, no schema qualifier)
         ("SELECT name FROM sqlite_master", "sqlite_master"),
-        ("SELECT name FROM \"sqlite_master\"", "sqlite_master"),
+        ('SELECT name FROM "sqlite_master"', "sqlite_master"),
         ("SELECT * FROM Sqlite_Master", "sqlite_master"),
         ("SELECT * FROM sqlite_sequence", "sqlite_sequence"),
         ("SELECT * FROM sqlite_temp_master", "sqlite_temp_master"),
@@ -174,8 +174,7 @@ def test_system_schema_rejected_in_join():
     inspector.get_table_names.return_value = ["users"]
     v = SQLValidator(inspector)
     result = v.validate(
-        "SELECT u.id FROM users u JOIN information_schema.columns c "
-        "ON u.id = c.ordinal_position"
+        "SELECT u.id FROM users u JOIN information_schema.columns c ON u.id = c.ordinal_position"
     )
     assert not result.is_valid
     assert "information_schema" in result.error.lower()
@@ -185,9 +184,7 @@ def test_system_schema_rejected_inside_cte():
     inspector = MagicMock()
     inspector.get_table_names.return_value = ["users"]
     v = SQLValidator(inspector)
-    result = v.validate(
-        "WITH x AS (SELECT usename FROM pg_catalog.pg_user) SELECT * FROM x"
-    )
+    result = v.validate("WITH x AS (SELECT usename FROM pg_catalog.pg_user) SELECT * FROM x")
     assert not result.is_valid
     assert "pg_catalog" in result.error.lower()
 

@@ -81,12 +81,7 @@ def _delete_sqlite(engine) -> None:
         for table in _TABLES_IN_FK_ORDER:
             conn.execute(text(f"DELETE FROM {table}"))
         # Reset query_history's autoincrement counter if sqlite_sequence exists.
-        conn.execute(
-            text(
-                "DELETE FROM sqlite_sequence "
-                "WHERE name IN ('query_history')"
-            )
-        )
+        conn.execute(text("DELETE FROM sqlite_sequence WHERE name IN ('query_history')"))
 
 
 def main() -> int:

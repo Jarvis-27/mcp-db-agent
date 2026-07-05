@@ -992,9 +992,7 @@ async def create_portal_session(
     return BillingSessionResponse(id=portal.id, url=portal.url)
 
 
-@api_app.post(
-    "/v1/account/billing/confirm-session", response_model=BillingConfirmResponse
-)
+@api_app.post("/v1/account/billing/confirm-session", response_model=BillingConfirmResponse)
 async def confirm_checkout_session(
     request: Request,
     session: AuthedSession,

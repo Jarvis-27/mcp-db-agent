@@ -306,7 +306,7 @@ def _extract_refs_from_relation_token(token) -> list[tuple[str, str]]:  # type: 
 
     if isinstance(token, Identifier):
         if _identifier_contains_subquery(token):
-            refs: list[tuple[str, str]] = []
+            refs = []
             for child in token.tokens:
                 if isinstance(child, Parenthesis):
                     refs.extend(_extract_refs_from_tokenlist(child))

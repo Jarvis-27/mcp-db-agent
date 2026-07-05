@@ -440,9 +440,7 @@ async def test_schema_drift_without_inspector_is_noop():
     generator.get_schema_context = MagicMock(return_value="")
 
     executor = MagicMock()
-    executor.execute = AsyncMock(
-        side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]]
-    )
+    executor.execute = AsyncMock(side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]])
 
     corrector = SelfCorrector(generator, validator, executor, _make_settings(3))
     result = await corrector.execute_with_correction("q", "sqlite")
@@ -461,9 +459,7 @@ async def test_refresh_failure_does_not_abort_request():
     generator.get_schema_context = MagicMock(return_value="users(id)")
 
     executor = MagicMock()
-    executor.execute = AsyncMock(
-        side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]]
-    )
+    executor.execute = AsyncMock(side_effect=[RuntimeError("no such table: stale"), [{"id": 1}]])
 
     inspector = MagicMock()
     inspector.refresh = MagicMock(side_effect=RuntimeError("DB unreachable"))

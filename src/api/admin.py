@@ -154,9 +154,7 @@ async def admin_overview(request: Request, admin: AuthedAdmin) -> AdminOverviewR
         closed=status_counts.get(ACCOUNT_CLOSED, 0),
         pending_email_verification=status_counts.get("pending_email_verification", 0),
     )
-    users_total = (
-        users_by_status.active + users_by_status.suspended + users_by_status.closed
-    )
+    users_total = users_by_status.active + users_by_status.suspended + users_by_status.closed
     since_7d = datetime.now(UTC) - timedelta(days=7)
     users_active_7d = user_store.count_users_active_in_window(since_7d)
 
@@ -194,9 +192,7 @@ async def admin_list_users(
     offset: int = Query(default=0, ge=0),
 ) -> AdminUsersListResponse:
     user_store: UserStore = request.app.state.user_store
-    items, total = user_store.list_users(
-        q=q, status=status, plan=plan, limit=limit, offset=offset
-    )
+    items, total = user_store.list_users(q=q, status=status, plan=plan, limit=limit, offset=offset)
     return AdminUsersListResponse(
         items=[
             AdminUserListItem(
@@ -257,9 +253,7 @@ async def admin_user_detail(
         db_last_validation_at=_iso(user.db_last_validation_at),
         daily_query_count=int(user.daily_query_count or 0),
         daily_quota_reset_at=(
-            user.daily_quota_reset_at.isoformat()
-            if user.daily_quota_reset_at is not None
-            else ""
+            user.daily_quota_reset_at.isoformat() if user.daily_quota_reset_at is not None else ""
         ),
         api_keys=[
             AdminApiKeySummary(
@@ -273,9 +267,7 @@ async def admin_user_detail(
             )
             for k in api_keys
         ],
-        recent_queries=[
-            _recent_query_item(cast(dict[str, Any], r)) for r in recent
-        ],
+        recent_queries=[_recent_query_item(cast(dict[str, Any], r)) for r in recent],
     )
 
 
