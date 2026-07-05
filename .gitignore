@@ -10,6 +10,9 @@ wheels/
 .env
 frontend/.env.local
 
+# Secrets — never commit; provide via env vars or an out-of-tree secret manager
+secrets/
+
 # Databases
 *.db
 *.sqlite
