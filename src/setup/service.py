@@ -8,6 +8,7 @@ from src.auth.user_store import ApiKey, User, UserStore
 from src.entitlements.service import EntitlementService
 from src.setup.config_templates import (
     build_chatgpt_payload,
+    build_claude_desktop_payload,
     build_cursor_payload,
     build_generic_http_payload,
     build_vs_code_payload,
@@ -124,6 +125,12 @@ class SetupPayloadService:
             chatgpt_developer_mode=build_chatgpt_payload(
                 mcp_url,
                 oauth_configured=oauth_enabled_for_mcp,
+            ),
+            claude_desktop=build_claude_desktop_payload(
+                mcp_url,
+                raw_key,
+                oauth_configured=oauth_enabled_for_mcp,
+                api_keys_enabled=api_keys_enabled_for_mcp,
             ),
             generic_http=build_generic_http_payload(
                 mcp_url,

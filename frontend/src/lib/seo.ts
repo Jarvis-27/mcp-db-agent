@@ -1,5 +1,7 @@
 export const siteUrl = 'https://plainquery.in'
 
+export const repoUrl = 'https://github.com/Jarvis-27/mcp-db-agent'
+
 export const siteName = 'PlainQuery'
 
 export const siteTitle = 'PlainQuery — ask your database in plain English'
@@ -54,7 +56,7 @@ export const softwareJsonLd = {
     'Read-only SQL validation with row caps and timeouts',
     'Hosted service and open-source self-hosting option',
   ],
-  sameAs: ['https://github.com/Jarvis-27/mcp-db-agent'],
+  sameAs: [repoUrl],
 }
 
 export const organizationJsonLd = {
@@ -63,5 +65,5 @@ export const organizationJsonLd = {
   name: siteName,
   url: siteUrl,
   logo: absoluteUrl('/pq-mark.svg'),
-  sameAs: ['https://github.com/Jarvis-27/mcp-db-agent'],
+  sameAs: [repoUrl],
 }

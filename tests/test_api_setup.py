@@ -135,6 +135,9 @@ def test_setup_payload_returns_user_scoped_payload_and_no_secret_leaks(client):
     assert data["api_key_state"]["raw_key_included"] is True
     assert data["api_key_state"]["requires_manual_key_entry"] is False
     assert raw_key in data["clients"]["vs_code"]["snippet"]
+    assert raw_key in data["clients"]["claude_desktop"]["snippet"]
+    assert data["clients"]["claude_desktop"]["status"] == "ready"
+    assert '"mcpServers"' in data["clients"]["claude_desktop"]["snippet"]
     assert "postgresql://user:pass@8.8.8.8/mydb" not in payload_text
     assert "key_hash" not in payload_text
     assert "session_token" not in payload_text

@@ -187,12 +187,15 @@ def build_chatgpt_payload(mcp_url: str, *, oauth_configured: bool = False) -> Cl
                 "Do not paste a bearer API key here. ChatGPT app connectivity requires OAuth."
             ),
             instructions=(
-                "Keep using VS Code, Cursor, or a generic HTTP MCP client for now.",
-                "Enable OAuth 2.1 support before offering a connectable ChatGPT config.",
+                "ChatGPT's remote MCP connector needs OAuth sign-in, which isn't "
+                "available on this server yet.",
+                "In the meantime, connect with Claude Desktop, VS Code, Cursor, or "
+                "any HTTP MCP client from the other tabs.",
             ),
             availability_reason=(
-                f"ChatGPT remote MCP app connections require OAuth. "
-                f"This deployment only exposes bearer API-key auth at {mcp_url} today."
+                "ChatGPT's remote MCP connector requires OAuth sign-in, which this "
+                "server doesn't offer yet. Use Claude Desktop, VS Code, Cursor, or "
+                "a generic HTTP MCP client instead."
             ),
         )
 
@@ -225,6 +228,76 @@ def build_chatgpt_payload(mcp_url: str, *, oauth_configured: bool = False) -> Cl
             f"Set the MCP server URL to: {mcp_url}",
             "ChatGPT will complete the OAuth flow and prompt you to authorize.",
             "Verify the connection by asking: 'List the tables in my database.'",
+        ),
+    )
+
+
+def build_claude_desktop_payload(
+    mcp_url: str,
+    raw_api_key: str | None,
+    *,
+    oauth_configured: bool = False,
+    api_keys_enabled: bool = True,
+) -> ClientSetupPayload:
+    config_path_hint = (
+        "Claude Desktop → Settings → Developer → Edit Config (claude_desktop_config.json)"
+    )
+    if oauth_configured:
+        oauth_config: dict[str, object] = {
+            "mcpServers": {
+                _SERVER_LABEL: {
+                    "url": mcp_url,
+                }
+            }
+        }
+        api_key_handling = (
+            "Claude Desktop discovers the authorization server from the MCP "
+            "resource metadata and prompts you to sign in with OAuth."
+        )
+        if api_keys_enabled:
+            api_key_handling += " API keys remain available as a rollout fallback."
+        return ClientSetupPayload(
+            client_id="claude_desktop",
+            display_name="Claude Desktop",
+            status="ready",
+            auth_method="oauth_2_1",
+            config_path_hint=config_path_hint,
+            snippet_format="application/json",
+            snippet=_json_snippet(oauth_config),
+            api_key_handling=api_key_handling,
+            instructions=(
+                "Open Claude Desktop → Settings → Developer → Edit Config.",
+                "Paste this server entry into claude_desktop_config.json and save.",
+                "Restart Claude Desktop and complete the OAuth sign-in prompt.",
+            ),
+        )
+
+    api_key_config: dict[str, object] = {
+        "mcpServers": {
+            _SERVER_LABEL: {
+                "url": mcp_url,
+                "headers": {"X-API-Key": raw_api_key or "<paste-api-key-here>"},
+            }
+        }
+    }
+    api_key_handling = (
+        "The raw API key is embedded in this snippet."
+        if raw_api_key
+        else "Replace <paste-api-key-here> with an active API key before saving."
+    )
+    return ClientSetupPayload(
+        client_id="claude_desktop",
+        display_name="Claude Desktop",
+        status="ready",
+        auth_method="bearer_api_key",
+        config_path_hint=config_path_hint,
+        snippet_format="application/json",
+        snippet=_json_snippet(api_key_config),
+        api_key_handling=api_key_handling,
+        instructions=(
+            "Open Claude Desktop → Settings → Developer → Edit Config.",
+            "Paste this server entry into claude_desktop_config.json and save.",
+            "Restart Claude Desktop and verify it can call list_tables.",
         ),
     )
 

@@ -3,6 +3,7 @@ import { ArrowUpRight } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { repoUrl } from '@/lib/seo'
 
 function GithubMark({ className }: { className?: string }) {
   return (
@@ -55,7 +56,7 @@ const footerNav: Array<{
         external: true,
       },
       {
-        href: 'https://github.com/anthropics',
+        href: repoUrl,
         label: 'GitHub',
         external: true,
       },
@@ -159,7 +160,7 @@ export default function PublicLayout({
                   <ArrowUpRight className="h-4 w-4" />
                 </Link>
                 <Link
-                  href="https://github.com"
+                  href={repoUrl}
                   className="inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium text-background/80 ring-1 ring-inset ring-background/20 transition-colors hover:text-background"
                   rel="noopener noreferrer"
                   target="_blank"
@@ -205,16 +206,13 @@ export default function PublicLayout({
                 ))}
               </div>
 
-              {/* Status row */}
+              {/* Security posture row */}
               <div className="mt-12 rounded-2xl border border-background/15 bg-background/[0.04] p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <span className="relative flex h-2.5 w-2.5">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-70 animate-ping" />
-                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                    </span>
+                    <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
                     <p className="font-mono text-xs uppercase tracking-[0.16em] text-background/75">
-                      All systems normal · 99.97% / 30d
+                      Read-only by design · encrypted at rest · validated SQL
                     </p>
                   </div>
                   <Link

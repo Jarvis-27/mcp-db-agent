@@ -26,14 +26,14 @@ const faqs = [
       'The hosted SaaS flow is designed for PostgreSQL databases.',
   },
   {
-    question: 'Why is Pro listed without a dollar amount?',
+    question: 'How much is Pro?',
     answer:
-      'The launch price is configured in Stripe. Signed-in users upgrade from the billing page when their workspace is ready.',
+      'Pro is $25/month, billed securely through Stripe. Signed-in users upgrade from the billing page once their workspace is ready.',
   },
   {
-    question: 'Can I use ChatGPT, Cursor, or VS Code?',
+    question: 'Can I use ChatGPT, Cursor, VS Code, or Claude Desktop?',
     answer:
-      'Yes. The app generates client-specific setup guidance for ChatGPT, Cursor, VS Code, and generic HTTP MCP clients.',
+      'Yes. The app generates client-specific setup guidance for ChatGPT, Cursor, VS Code, Claude Desktop, and generic HTTP MCP clients.',
   },
 ]
 

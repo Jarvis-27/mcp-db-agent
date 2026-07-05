@@ -53,6 +53,8 @@ def test_service_uses_placeholder_when_raw_key_not_supplied():
     assert "${input:mcpDbAgentApiKey}" in payload.vs_code.snippet
     assert "${env:MCP_DB_AGENT_API_KEY}" in payload.cursor.snippet
     assert "<paste-api-key-here>" in payload.generic_http.snippet
+    assert raw_key not in payload.claude_desktop.snippet
+    assert "<paste-api-key-here>" in payload.claude_desktop.snippet
 
 
 def test_service_embeds_raw_key_only_when_explicitly_provided():
@@ -73,6 +75,24 @@ def test_service_embeds_raw_key_only_when_explicitly_provided():
     assert raw_key in payload.vs_code.snippet
     assert raw_key in payload.cursor.snippet
     assert raw_key in payload.generic_http.snippet
+    assert raw_key in payload.claude_desktop.snippet
+
+
+def test_claude_desktop_payload_uses_mcpservers_with_api_key_header():
+    store = _make_store()
+    user_id = _activate_user(store)
+    store.create_api_key(user_id=user_id, name="default", scopes=["mcp_read"])
+    service = SetupPayloadService(store, app_base_url="http://localhost:8000")
+
+    payload = service.build_payload(user_id)
+
+    cd = payload.claude_desktop
+    assert cd.client_id == "claude_desktop"
+    assert cd.display_name == "Claude Desktop"
+    assert cd.status == "ready"
+    assert '"mcpServers"' in cd.snippet
+    assert '"X-API-Key"' in cd.snippet
+    assert "claude_desktop_config.json" in cd.config_path_hint
 
 
 def test_service_rejects_revoked_raw_key():

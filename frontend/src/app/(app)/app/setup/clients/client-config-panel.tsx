@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Code2, Laptop, MessageSquareText, Terminal } from 'lucide-react'
+import { Bot, Code2, Laptop, MessageSquareText, Terminal } from 'lucide-react'
 import { CodeBlockWithCopy } from '@/components/code-block-with-copy'
 import { StatusBadge } from '@/components/status-badge'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,7 @@ const TABS = [
   { key: 'chatgpt_developer_mode' as const, label: 'ChatGPT', icon: MessageSquareText },
   { key: 'cursor' as const, label: 'Cursor', icon: Code2 },
   { key: 'vs_code' as const, label: 'VS Code', icon: Laptop },
+  { key: 'claude_desktop' as const, label: 'Claude Desktop', icon: Bot },
   { key: 'generic_http' as const, label: 'HTTP MCP', icon: Terminal },
 ]
 
@@ -19,12 +20,13 @@ interface ClientConfigPanelProps {
     vs_code: ClientSetupPayloadResponse
     cursor: ClientSetupPayloadResponse
     chatgpt_developer_mode: ClientSetupPayloadResponse
+    claude_desktop: ClientSetupPayloadResponse
     generic_http: ClientSetupPayloadResponse
   }
 }
 
 export function ClientConfigPanel({ clients }: ClientConfigPanelProps) {
-  const [active, setActive] = useState<keyof typeof clients>('chatgpt_developer_mode')
+  const [active, setActive] = useState<keyof typeof clients>('claude_desktop')
   const payload = clients[active]
   const isReady = payload.status === 'ready'
 

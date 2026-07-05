@@ -18,14 +18,14 @@ const plans = [
       '25 database questions per day',
       '1 active API key',
       '1 active database',
-      'ChatGPT, Cursor, VS Code, HTTP MCP setup',
+      'ChatGPT, Cursor, VS Code, Claude Desktop, HTTP MCP setup',
     ],
   },
   {
     name: 'Pro',
     eyebrow: '01 · scale',
-    price: '500',
-    suffix: '/ daily questions',
+    price: '$25',
+    suffix: '/ month',
     description:
       'Higher daily limits and additional keys — for the moment PlainQuery becomes part of your workflow, not a curiosity.',
     cta: 'Start free',

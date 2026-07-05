@@ -194,6 +194,7 @@ class SetupClientsResponse(BaseModel):
     vs_code: ClientSetupPayloadResponse
     cursor: ClientSetupPayloadResponse
     chatgpt_developer_mode: ClientSetupPayloadResponse
+    claude_desktop: ClientSetupPayloadResponse
     generic_http: ClientSetupPayloadResponse
 
 

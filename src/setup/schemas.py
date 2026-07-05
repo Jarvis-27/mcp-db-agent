@@ -55,4 +55,5 @@ class SetupPayload:
     vs_code: ClientSetupPayload
     cursor: ClientSetupPayload
     chatgpt_developer_mode: ClientSetupPayload
+    claude_desktop: ClientSetupPayload
     generic_http: ClientSetupPayload

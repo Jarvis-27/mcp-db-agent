@@ -897,6 +897,7 @@ async def get_setup_payloads(
             vs_code=_client_setup_response(payload.vs_code),
             cursor=_client_setup_response(payload.cursor),
             chatgpt_developer_mode=_client_setup_response(payload.chatgpt_developer_mode),
+            claude_desktop=_client_setup_response(payload.claude_desktop),
             generic_http=_client_setup_response(payload.generic_http),
         ),
     )
