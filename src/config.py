@@ -198,6 +198,16 @@ class Settings(BaseSettings):
                 "Stripe billing is enabled but STRIPE_SECRET_KEY, "
                 "STRIPE_WEBHOOK_SECRET, and STRIPE_PRO_PRICE_ID are not all set."
             )
+        if self.environment == "production" and self.auth_store_is_sqlite():
+            raise ValueError(
+                "A SQLite AUTH_DATABASE_URL is not allowed in production. The "
+                "auth store holds Fernet-encrypted tenant credentials and must "
+                "be a durable, concurrency-safe database (e.g. PostgreSQL). The "
+                "default 'sqlite:///./auth.db' is ephemeral (lost on restart) "
+                "and unsafe for multi-worker deployments — set AUTH_DATABASE_URL "
+                "to a PostgreSQL URL. (SQLite remains fine for development and "
+                "staging QA.)"
+            )
         if self.environment != "development" and not self.email_backend_is_configured():
             raise ValueError(
                 "An email backend is required in non-development environments. "
@@ -236,6 +246,15 @@ class Settings(BaseSettings):
         return bool(
             self.stripe_secret_key and self.stripe_webhook_secret and self.stripe_pro_price_id
         )
+
+    def auth_store_is_sqlite(self) -> bool:
+        """Return True when AUTH_DATABASE_URL points at a SQLite backend.
+
+        Covers plain ``sqlite://`` and driver-qualified forms like
+        ``sqlite+pysqlite://``.
+        """
+        scheme = self.auth_database_url.split("://", 1)[0].strip().lower()
+        return scheme == "sqlite" or scheme.startswith("sqlite+")
 
     def email_backend_is_configured(self) -> bool:
         """Return True when a real email backend (Resend or SMTP) is configured.

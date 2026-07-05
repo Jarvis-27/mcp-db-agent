@@ -126,3 +126,33 @@ class TestEmailBackendRequired:
             )
         )
         assert s.email_backend_is_configured() is False
+
+
+class TestAuthStoreBackend:
+    def test_sqlite_auth_url_in_production_raises(self):
+        with pytest.raises(ValidationError, match="SQLite AUTH_DATABASE_URL"):
+            Settings(**_base_kwargs(auth_database_url="sqlite:///./auth.db"))
+
+    def test_driver_qualified_sqlite_in_production_raises(self):
+        with pytest.raises(ValidationError, match="SQLite AUTH_DATABASE_URL"):
+            Settings(**_base_kwargs(auth_database_url="sqlite+pysqlite:///./auth.db"))
+
+    def test_postgres_auth_url_in_production_passes(self):
+        s = Settings(**_base_kwargs())  # postgresql:// by default
+        assert s.auth_store_is_sqlite() is False
+
+    def test_sqlite_auth_url_allowed_in_staging(self):
+        # Staging is the permissive QA environment (see docs-gate); SQLite is ok.
+        s = Settings(**_base_kwargs(environment="staging", auth_database_url="sqlite:///./auth.db"))
+        assert s.auth_store_is_sqlite() is True
+
+    def test_sqlite_auth_url_allowed_in_development(self):
+        s = Settings(
+            **_base_kwargs(
+                environment="development",
+                auth_database_url="sqlite:///./auth.db",
+                credential_encryption_keys="",
+                registration_open=None,
+            )
+        )
+        assert s.auth_store_is_sqlite() is True
