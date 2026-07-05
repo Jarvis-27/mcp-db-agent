@@ -34,6 +34,12 @@ class RequestLoginLinkRequest(BaseModel):
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class ResendVerificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(..., min_length=1, max_length=254)
+
+
 class GenericAcceptedResponse(BaseModel):
     message: str
 

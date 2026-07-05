@@ -21,6 +21,20 @@ from src.email_sender import LogEmailSender
 _VALID_PG_URL = "postgresql://user:pass@8.8.8.8/mydb"
 
 
+class _SpyEmailSender:
+    """Captures outgoing emails so tests can assert what was (not) sent."""
+
+    def __init__(self) -> None:
+        self.verification_calls: list[tuple[str, str]] = []
+        self.login_calls: list[tuple[str, str]] = []
+
+    def send_verification_email(self, to_address: str, verification_url: str) -> None:
+        self.verification_calls.append((to_address, verification_url))
+
+    def send_login_email(self, to_address: str, login_url: str) -> None:
+        self.login_calls.append((to_address, login_url))
+
+
 @pytest.fixture(autouse=True)
 def app_state():
     import src.auth.url_guard as ug_module
@@ -87,6 +101,44 @@ def _register_and_get_session(client, email: str) -> tuple[str, str]:
     verify = client.get(f"/v1/auth/verify-email?token={raw_token}")
     assert verify.status_code == 200, verify.text
     return user_id, verify.json()["session_token"]
+
+
+def test_resend_verification_sends_for_pending_user(client):
+    spy = _SpyEmailSender()
+    api_app.state.email_sender = spy
+
+    reg = client.post("/v1/auth/signup", json={"email": "pending@example.com"})
+    assert reg.status_code == 201
+    assert len(spy.verification_calls) == 1  # signup itself sent one
+
+    resp = client.post("/v1/auth/resend-verification", json={"email": "pending@example.com"})
+    assert resp.status_code == 202
+    assert len(spy.verification_calls) == 2  # resend sent another
+    to_address, url = spy.verification_calls[1]
+    assert to_address == "pending@example.com"
+    assert "/auth/verify?token=" in url
+
+
+def test_resend_verification_is_silent_for_unknown_email(client):
+    spy = _SpyEmailSender()
+    api_app.state.email_sender = spy
+
+    resp = client.post("/v1/auth/resend-verification", json={"email": "nobody@example.com"})
+    # Anti-enumeration: same 202 as a real pending account, but nothing sent.
+    assert resp.status_code == 202
+    assert spy.verification_calls == []
+
+
+def test_resend_verification_is_silent_for_verified_user(client):
+    spy = _SpyEmailSender()
+    api_app.state.email_sender = spy
+
+    _register_and_get_session(client, "verified@example.com")
+    spy.verification_calls.clear()
+
+    resp = client.post("/v1/auth/resend-verification", json={"email": "verified@example.com"})
+    assert resp.status_code == 202
+    assert spy.verification_calls == []  # no longer pending → no resend
 
 
 def test_happy_path_self_serve_activation(client):

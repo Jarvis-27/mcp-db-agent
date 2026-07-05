@@ -39,6 +39,7 @@ from src.api.schemas import (
     QuotaSummary,
     RecentQueryItem,
     RequestLoginLinkRequest,
+    ResendVerificationRequest,
     RotateKeyResponse,
     SessionResponse,
     SetupApiKeyStateResponse,
@@ -435,7 +436,12 @@ async def signup(request: Request, body: SignupRequest) -> SignupPendingResponse
         email_sender = request.app.state.email_sender
         email_sender.send_verification_email(body.email, verification_url)
     except Exception as exc:
-        logger.warning("Failed to send verification email for user %s: %s", user_id, exc)
+        logger.error(
+            "Failed to send verification email for user %s: %s. "
+            "User can recover via POST /v1/auth/resend-verification.",
+            user_id,
+            exc,
+        )
 
     return SignupPendingResponse(
         user_id=user_id,
@@ -498,6 +504,36 @@ async def verify_email(
         next_step=onboarding.get_next_step_description(new_state),
         session_token=session_token,
         expires_in_seconds=settings.user_session_ttl_hours * 3600,
+    )
+
+
+@api_app.post(
+    "/v1/auth/resend-verification", response_model=GenericAcceptedResponse, status_code=202
+)
+@limiter.limit("5/minute")
+async def resend_verification(
+    request: Request, body: ResendVerificationRequest
+) -> GenericAcceptedResponse:
+    """Re-send the email-verification link for an account still awaiting it.
+
+    Recovery path when the signup email is lost or its delivery failed. Replies
+    identically whether or not a matching pending account exists, so the
+    endpoint cannot be used to enumerate registered addresses.
+    """
+    user_store: UserStore = request.app.state.user_store
+    ctx = user_store.get_user_by_email(body.email)
+    if ctx is not None and ctx.onboarding_status == PENDING_EMAIL_VERIFICATION:
+        try:
+            token_store: TokenStore = request.app.state.token_store
+            raw_token = token_store.issue_email_verification_token(ctx.user_id)
+            verification_url = f"{settings.frontend_base_url}/auth/verify?token={raw_token}"
+            request.app.state.email_sender.send_verification_email(body.email, verification_url)
+        except Exception as exc:
+            logger.error("Failed to resend verification email for %s: %s", body.email, exc)
+
+    return GenericAcceptedResponse(
+        message="If an account awaiting verification exists for that address, "
+        "a new verification link has been sent."
     )
 
 

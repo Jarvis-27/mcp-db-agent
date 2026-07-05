@@ -198,6 +198,14 @@ class Settings(BaseSettings):
                 "Stripe billing is enabled but STRIPE_SECRET_KEY, "
                 "STRIPE_WEBHOOK_SECRET, and STRIPE_PRO_PRICE_ID are not all set."
             )
+        if self.environment != "development" and not self.email_backend_is_configured():
+            raise ValueError(
+                "An email backend is required in non-development environments. "
+                "Email verification and passwordless sign-in links cannot be "
+                "delivered without one, so every signup would dead-end. Set "
+                "RESEND_API_KEY + RESEND_FROM_ADDRESS, or SMTP_HOST (with the "
+                "related SMTP_* settings)."
+            )
         return self
 
     def credential_encryption_keys_list(self) -> list[str]:
@@ -228,6 +236,18 @@ class Settings(BaseSettings):
         return bool(
             self.stripe_secret_key and self.stripe_webhook_secret and self.stripe_pro_price_id
         )
+
+    def email_backend_is_configured(self) -> bool:
+        """Return True when a real email backend (Resend or SMTP) is configured.
+
+        Mirrors ``make_email_sender``: Resend needs both an API key and a from
+        address; SMTP needs at least a host. When neither is set the sender
+        falls back to LogEmailSender, which only writes links to the log — fine
+        in development, unusable for real users.
+        """
+        resend = bool(self.resend_api_key and self.resend_from_address)
+        smtp = bool(self.smtp_host)
+        return resend or smtp
 
     def stripe_checkout_success_url_effective(self) -> str:
         if self.stripe_checkout_success_url:
