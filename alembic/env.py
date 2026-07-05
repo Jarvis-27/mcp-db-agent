@@ -26,7 +26,11 @@ _auth_url = os.environ.get("AUTH_DATABASE_URL")
 if _auth_url:
     config.set_main_option("sqlalchemy.url", _auth_url)
 
-# Import our models so autogenerate can detect schema changes
+# Import our models so autogenerate can detect schema changes. Importing each
+# model module registers its tables on the shared Base.metadata — token_store
+# defines VerificationToken on the same Base as user_store, so it must be
+# imported too or autogenerate wrongly reports verification_tokens as removed.
+from src.auth import token_store  # noqa: E402, F401  (registers VerificationToken)
 from src.auth.user_store import Base as AuthBase  # noqa: E402
 
 target_metadata = AuthBase.metadata

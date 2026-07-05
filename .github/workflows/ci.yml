@@ -35,6 +35,8 @@ jobs:
         run: uv run pip-audit
 
       - name: Alembic schema check
-        run: uv run alembic check
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
         env:
           AUTH_DATABASE_URL: sqlite:///./auth_ci.db
