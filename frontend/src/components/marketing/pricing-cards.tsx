@@ -24,7 +24,7 @@ const plans = [
   {
     name: 'Pro',
     eyebrow: '01 · scale',
-    price: '$25',
+    price: '$49',
     suffix: '/ month',
     description:
       'Higher daily limits and additional keys — for the moment PlainQuery becomes part of your workflow, not a curiosity.',

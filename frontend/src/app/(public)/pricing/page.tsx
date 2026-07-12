@@ -28,7 +28,7 @@ const faqs = [
   {
     question: 'How much is Pro?',
     answer:
-      'Pro is $25/month, billed securely through Stripe. Signed-in users upgrade from the billing page once their workspace is ready.',
+      'Pro is $49/month, billed securely through Stripe. Signed-in users upgrade from the billing page once their workspace is ready.',
   },
   {
     question: 'Can I use ChatGPT, Cursor, VS Code, or Claude Desktop?',
