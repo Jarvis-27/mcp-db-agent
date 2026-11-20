@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from cachetools import TTLCache  # type: ignore[import-untyped]
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine.url import URL
+from sqlalchemy.engine.url import URL, make_url
 
 from src.auth import url_guard
 from src.auth.user_store import UserConfig
@@ -20,6 +20,11 @@ from src.core.sql_generator import SQLGenerator
 from src.core.sql_validator import SQLValidator
 
 log = logging.getLogger(__name__)
+
+# Synthetic user id for stdio / single-user mode, where there is no registered
+# tenant. query_history.user_id is non-nullable, so every local query is
+# attributed to this sentinel.
+STDIO_USER_ID = "__stdio__"
 
 
 class NoLLMKeyAvailable(Exception):
@@ -110,6 +115,47 @@ class PipelineFactory:
 
             # Build engine off the event loop — pool warmup + dry connect block
             components = await asyncio.to_thread(self._build_components, validated_url, user_config)
+            self._cache[cache_key] = components
+            return components
+
+    async def get_from_settings(self) -> PipelineComponents:
+        """Return the pipeline built from the operator's own ``DATABASE_URL``.
+
+        This is the stdio / single-user path. Unlike :meth:`get`, the URL comes
+        from the server's ``.env`` rather than from a registered tenant, so it
+        deliberately skips ``url_guard``: that guard exists to stop a *user*
+        pointing the server at loopback, private, or cloud-metadata addresses
+        (T1, T9), and an operator running stdio mode already controls the
+        process. Enforcing it here would reject the ``localhost`` and local
+        file URLs that local development and the demo database rely on.
+        """
+        raw_url = self._settings.database_url
+        if not raw_url:
+            raise ValueError("DATABASE_URL is not set. Add it to .env before starting stdio mode.")
+
+        uc = UserConfig(
+            user_id=STDIO_USER_ID,
+            database_url=raw_url,
+            is_active=True,
+            onboarding_status="complete",
+            email=None,
+        )
+        cache_key = self._build_key(uc)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        async with self._lock:
+            key_lock = self._per_key_locks.setdefault(cache_key, asyncio.Lock())
+        async with key_lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+            try:
+                parsed = make_url(raw_url)
+            except Exception as exc:
+                raise ValueError(f"DATABASE_URL is not a valid database URL: {exc}") from exc
+
+            components = await asyncio.to_thread(self._build_components, parsed, uc)
             self._cache[cache_key] = components
             return components
 

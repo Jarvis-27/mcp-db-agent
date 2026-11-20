@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     mcp_burst_capacity: int = 30
     mcp_burst_window_seconds: float = 60.0
 
+    # ── Stdio / single-user mode ──────────────────────────────────────
+    # The single database served by `python src/server.py` (stdio transport).
+    # Unused in hosted mode, where each tenant registers their own URL, so it
+    # stays optional and defaults to empty.
+    database_url: str = ""
+
     # ── Hosted account mode ────────────────────────────────────────────
     environment: Literal["development", "staging", "production"] = "development"
     auth_database_url: str = "sqlite:///./auth.db"

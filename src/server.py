@@ -24,7 +24,7 @@ from src.config import settings
 from src.entitlements.service import EntitlementService
 from src.core.logger import get_logger
 from src.core.observability import add_request_id, get_tracer
-from src.core.pipeline_factory import PipelineFactory, PipelineComponents
+from src.core.pipeline_factory import STDIO_USER_ID, PipelineFactory, PipelineComponents
 from src.resources.schema_overview import get_schema_overview
 
 _tracer = get_tracer(__name__)
@@ -42,6 +42,7 @@ _query_log = None  # QueryLog | None — populated by src/app.py
 _user_store = None  # UserStore | None — populated by src/app.py
 _mcp_limiter = None  # PerUserSlidingWindow | None — populated by src/app.py
 _drain_state = None  # DrainState | None — populated by src/app.py
+_stdio_mode = False  # True only when started via `python src/server.py` (stdio transport)
 
 from cachetools import TTLCache  # type: ignore[import-untyped]
 
@@ -113,6 +114,11 @@ async def _get_pipeline() -> PipelineComponents:
             "PipelineFactory not initialised. Start the server with `uvicorn src.app:app`."
         )
 
+    # stdio / single-user: there is no API key and no tenant, so fall back to
+    # the operator's own DATABASE_URL.
+    if _stdio_mode and user_config is None:
+        return await _factory.get_from_settings()
+
     if user_config is None:
         raise RuntimeError("No user config available — missing API key.")
 
@@ -122,6 +128,8 @@ async def _get_pipeline() -> PipelineComponents:
 def _current_user_id() -> str:
     uc = user_config_var.get()
     if uc is None:
+        if _stdio_mode:
+            return STDIO_USER_ID
         raise RuntimeError("No user config available — missing API key.")
     return uc.user_id
 
@@ -134,6 +142,13 @@ def _current_api_key_id() -> str | None:
 def _get_query_log():
     global _query_log
     if _query_log is None:
+        if _stdio_mode:
+            raise RuntimeError(
+                "Query logging is unavailable because the auth database has no "
+                "`query_history` table. Run `uv run alembic upgrade head`, then "
+                "restart. Schema tools (list_tables, describe_schema, "
+                "get_sample_data) work without it."
+            )
         raise RuntimeError("QueryLog not initialised. Start the server with `uvicorn src.app:app`.")
     return _query_log
 
@@ -562,3 +577,78 @@ async def _list_tools_with_app_metadata() -> list[MCPTool]:
 
 
 mcp._mcp_server.list_tools()(_list_tools_with_app_metadata)  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# stdio entry point (single-user / local mode)
+# ---------------------------------------------------------------------------
+
+
+def _build_stdio_query_log():
+    """Return a QueryLog bound to the auth DB, or None if it is not migrated.
+
+    ask_database records every question in ``query_history``; the schema tools
+    do not. Rather than refuse to start, we degrade: warn on stderr and let the
+    read-only tools work.
+    """
+    from sqlalchemy import create_engine, inspect as sa_inspect
+
+    from src.core.query_log import QueryLog
+
+    try:
+        auth_engine = create_engine(settings.auth_database_url, pool_pre_ping=True)
+        if not sa_inspect(auth_engine).has_table("query_history"):
+            # Mirrors the dev-mode auto-migration in src/app.py.
+            from alembic import command
+            from alembic.config import Config
+
+            alembic_cfg = Config(str(_project_root / "alembic.ini"))
+            alembic_cfg.set_main_option("script_location", str(_project_root / "alembic"))
+            alembic_cfg.set_main_option("sqlalchemy.url", settings.auth_database_url)
+            command.upgrade(alembic_cfg, "head")
+        return QueryLog(engine=auth_engine)
+    except Exception as exc:
+        print(
+            f"[warn] query logging disabled ({exc}). "
+            "Run `uv run alembic upgrade head` to enable ask_database.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def main() -> None:
+    """Serve the MCP tools over stdio for a single, operator-configured database.
+
+    This is the path used by Claude Desktop and `claude mcp add`. There is no
+    API key and no tenant: the database comes from DATABASE_URL in .env, and
+    _get_pipeline() resolves it via PipelineFactory.get_from_settings().
+    """
+    global _factory, _query_log, _stdio_mode
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not settings.database_url:
+        print(
+            "DATABASE_URL is not set. Add it to .env (or pass it in the MCP "
+            "client's `env` block) before starting stdio mode.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    _stdio_mode = True
+    executor_pool = ThreadPoolExecutor(
+        max_workers=settings.query_pool_size, thread_name_prefix="sql-exec"
+    )
+    _factory = PipelineFactory(settings, executor_pool, instrument_engines=settings.otel_enabled)
+    _query_log = _build_stdio_query_log()
+
+    # _user_store, _mcp_limiter and _drain_state stay None: quota, burst limits
+    # and graceful drain are multi-tenant concerns. Every call site guards on None.
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        executor_pool.shutdown(wait=False, cancel_futures=True)
+
+
+if __name__ == "__main__":
+    main()
