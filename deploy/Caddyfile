@@ -1,0 +1,19 @@
+plainquery.in {
+	encode zstd gzip
+
+	@backend path /api/* /mcp /mcp/* /.well-known/*
+	handle @backend {
+		# flush_interval -1 keeps MCP streamable-HTTP / SSE responses unbuffered.
+		reverse_proxy backend:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+www.plainquery.in {
+	redir https://plainquery.in{uri} permanent
+}

@@ -1,0 +1,98 @@
+# PlainQuery production stack for a single VPS.
+#
+#   cd deploy && docker compose up -d --build
+#
+# Caddy terminates HTTPS (automatic Let's Encrypt certs) and routes:
+#   /api/*, /mcp*, /.well-known/*  -> backend (FastAPI + MCP)
+#   everything else                -> frontend (Next.js)
+# Only Caddy publishes ports; Postgres and the app containers stay internal.
+name: plainquery
+
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+x-backend: &backend
+  build: ..
+  image: plainquery-backend:latest
+  env_file: .env
+  environment:
+    ENVIRONMENT: production
+    # Caddy's fixed address below: the only proxy whose X-Forwarded-For we trust.
+    TRUSTED_PROXY_IPS: 172.28.0.10
+  networks: [internal]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: plainquery
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: plainquery_auth
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plainquery -d plainquery_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  # One-shot: production refuses to boot unless the schema is at head.
+  migrate:
+    <<: *backend
+    command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    restart: unless-stopped
+    # One worker: rate limiters are in-process (see CLAUDE.md "Rate-limiter scope").
+    command:
+      - sh
+      - -c
+      - >-
+        exec uv run --no-sync uvicorn src.app:app
+        --host 0.0.0.0 --port 8000 --workers 1
+        --proxy-headers --forwarded-allow-ips "$${TRUSTED_PROXY_IPS}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build: ../frontend
+    image: plainquery-frontend:latest
+    restart: unless-stopped
+    environment:
+      BACKEND_API_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [internal]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend, backend]
+    networks:
+      internal:
+        ipv4_address: 172.28.0.10
